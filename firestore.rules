@@ -1,0 +1,314 @@
+rules_version = '2';
+
+// Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2.
+//
+// How to publish: Firebase console > Firestore Database > Rules > paste this whole file > Publish.
+// Test locally first with `npm run test:rules` (Firestore emulator + tests/rules).
+//
+// Anything not matched below is denied. Every server timestamp (createdAt, updatedAt, joinedAt,
+// submittedAt, settledAt) must be written with serverTimestamp(): the rules compare it to request.time.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- generic helpers ----------
+
+    function signedIn() { return request.auth != null; }
+    function isUser(uid) { return signedIn() && request.auth.uid == uid; }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function exactKeys(m, ks) { return m is map && m.keys().hasOnly(ks) && m.keys().hasAll(ks); }
+    function changedOnly(ks) { return incoming().diff(existing()).affectedKeys().hasOnly(ks); }
+    function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    // User-visible text: 1..max chars (size() counts UTF-16 units, like JS .length) and not blank.
+    function text(v, max) { return str(v, 1, max) && v.trim().size() > 0; }
+    function isInviteCode(c) { return c is string && c.matches('^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$'); }
+    function near(t, target, tol) { return t is timestamp && t >= target - tol && t <= target + tol; }
+
+    function spacePath(spaceId) { return /databases/$(database)/documents/spaces/$(spaceId); }
+    function weekPath(spaceId, weekId) { return /databases/$(database)/documents/spaces/$(spaceId)/weeks/$(weekId); }
+    function isMember(spaceId) { return signedIn() && request.auth.uid in get(spacePath(spaceId)).data.memberIds; }
+
+    // ---------- users ----------
+
+    function validProfile(d) {
+      return exactKeys(d, ['name', 'color', 'createdAt'])
+        && text(d.name, 40)
+        && str(d.color, 1, 32)
+        && d.createdAt is timestamp;
+    }
+
+    function validPushSub(d) {
+      return exactKeys(d, ['endpoint', 'keys', 'createdAt', 'ua'])
+        && str(d.endpoint, 1, 1024) && d.endpoint.matches('^https://.+')
+        && exactKeys(d.keys, ['p256dh', 'auth'])
+        && str(d.keys.p256dh, 1, 256)
+        && str(d.keys.auth, 1, 256)
+        && d.createdAt is timestamp
+        && str(d.ua, 0, 512);
+    }
+
+    match /users/{uid} {
+      // get, not list: friends look up each other's profiles, nobody enumerates all users.
+      allow get: if signedIn();
+      allow create: if isUser(uid) && validProfile(incoming()) && incoming().createdAt == request.time;
+      allow update: if isUser(uid) && validProfile(incoming()) && incoming().createdAt == existing().createdAt;
+      allow delete: if isUser(uid);
+
+      match /push/{subId} {
+        allow read, delete: if isUser(uid);
+        allow create: if isUser(uid) && validPushSub(incoming()) && incoming().createdAt == request.time;
+        allow update: if isUser(uid) && validPushSub(incoming())
+          && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time);
+      }
+    }
+
+    // ---------- invites ----------
+
+    function validInvite(code, d) {
+      let space = get(spacePath(d.spaceId)).data;
+      return isInviteCode(code)
+        && exactKeys(d, ['spaceId', 'spaceName', 'inviterName', 'createdBy', 'createdAt'])
+        && str(d.spaceId, 1, 128)
+        && text(d.spaceName, 40)
+        && text(d.inviterName, 40)
+        && d.createdBy == request.auth.uid
+        && d.createdAt == request.time
+        && request.auth.uid in space.memberIds
+        && space.inviteCode == code;
+    }
+
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && validInvite(code, incoming());
+      allow delete: if signedIn()
+        && (existing().createdBy == request.auth.uid || isMember(existing().spaceId));
+    }
+
+    // ---------- spaces ----------
+
+    function validSpaceText(d) {
+      return text(d.name, 40) && text(d.reward, 120) && text(d.penalty, 120);
+    }
+
+    function validNewSpace(d) {
+      return exactKeys(d, ['name', 'reward', 'penalty', 'ownerId', 'memberIds', 'joinedAt',
+                           'timezone', 'inviteCode', 'threshold', 'latePenalty', 'createdAt'])
+        && validSpaceText(d)
+        && d.ownerId == request.auth.uid
+        && d.memberIds == [request.auth.uid]
+        && d.joinedAt == {request.auth.uid: request.time}
+        && str(d.timezone, 1, 64) && d.timezone.matches('^[A-Za-z0-9_+/-]+$')
+        && isInviteCode(d.inviteCode)
+        && d.threshold == 90
+        && d.latePenalty == 5
+        && d.createdAt == request.time;
+    }
+
+    function editsSpaceText() {
+      return request.auth.uid in existing().memberIds
+        && changedOnly(['name', 'reward', 'penalty'])
+        && validSpaceText(incoming());
+    }
+
+    function leavesSpace() {
+      let uid = request.auth.uid;
+      return uid in existing().memberIds
+        && changedOnly(['memberIds', 'joinedAt'])
+        && incoming().memberIds == existing().memberIds.removeAll([uid])
+        && incoming().joinedAt.diff(existing().joinedAt).affectedKeys().hasOnly([uid])
+        && !(uid in incoming().joinedAt);
+    }
+
+    // The joins/{uid} doc written in the same batch is the proof of invite.
+    function joinsSpace(spaceId) {
+      let uid = request.auth.uid;
+      let proof = getAfter(/databases/$(database)/documents/spaces/$(spaceId)/joins/$(uid)).data;
+      return !(uid in existing().memberIds)
+        && changedOnly(['memberIds', 'joinedAt'])
+        && incoming().memberIds == existing().memberIds.concat([uid])
+        && incoming().memberIds.size() <= 8
+        && incoming().joinedAt.diff(existing().joinedAt).affectedKeys().hasOnly([uid])
+        && incoming().joinedAt[uid] == request.time
+        && proof.createdAt == request.time
+        && get(/databases/$(database)/documents/invites/$(proof.code)).data.spaceId == spaceId;
+    }
+
+    match /spaces/{spaceId} {
+      allow read: if signedIn() && request.auth.uid in existing().memberIds;
+      allow create: if signedIn() && validNewSpace(incoming());
+      allow update: if signedIn() && (editsSpaceText() || leavesSpace() || joinsSpace(spaceId));
+
+      match /joins/{uid} {
+        allow get: if isUser(uid);
+        allow create, update: if isUser(uid)
+          && exactKeys(incoming(), ['code', 'createdAt'])
+          && isInviteCode(incoming().code)
+          && incoming().createdAt == request.time
+          && get(/databases/$(database)/documents/invites/$(incoming().code)).data.spaceId == spaceId;
+      }
+
+      // ---------- weeks ----------
+
+      // weekId 'YYYY-MM-DD' must be a real Monday. timestamp.date() errors (= deny) on impossible dates.
+      function validNewWeek(weekId, d) {
+        let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
+        let tol = duration.value(2, 'h');
+        return weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          && monday.dayOfWeek() == 1
+          && exactKeys(d, ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy'])
+          // Monday 00:00 local is within ±14h of Monday 00:00 UTC for every timezone.
+          && near(d.startAt, monday, duration.value(14, 'h'))
+          && near(d.lockAt, d.startAt + duration.value(1, 'd'), tol)
+          && near(d.reviewOpenAt, d.startAt + duration.value(4, 'd'), tol)
+          && near(d.deadlineAt, d.startAt + duration.value(5, 'd'), tol)
+          && d.submittedBy == []
+          && d.members == (request.time < d.lockAt ? [request.auth.uid] : [])
+          && request.time < d.startAt + duration.value(8, 'd')
+          && d.startAt < request.time + duration.value(8, 'd');
+      }
+
+      function joinsWeek(spaceId) {
+        let uid = request.auth.uid;
+        return changedOnly(['members'])
+          && !(uid in existing().members)
+          && incoming().members == existing().members.concat([uid])
+          && request.time < existing().lockAt
+          && isMember(spaceId);
+      }
+
+      function submitsReviews() {
+        let uid = request.auth.uid;
+        let w = existing();
+        return changedOnly(['submittedBy'])
+          && uid in w.members
+          && !(uid in w.submittedBy)
+          && incoming().submittedBy == w.submittedBy.concat([uid])
+          && w.reviewOpenAt <= request.time && request.time < w.deadlineAt;
+      }
+
+      // Exactly {id, title}: size() == 2 and both keys are read. matches() also rejects non-strings.
+      // Titles are 1-120 characters; blank titles are left to the UI to keep this check cheap.
+      function validTask(t) {
+        return t.size() == 2
+          && t.id.matches('[A-Za-z0-9_-]{1,64}')
+          && t.title.matches('(?s).{1,120}');
+      }
+      // Rules have no loops, so each of the 25 slots is checked explicitly. Sharing one size() call
+      // across slots keeps a full 25-task plan inside the 1000-expression limit, with room to spare
+      // when batched with the week join (measured in the emulator).
+      function validTasks(ts) {
+        let n = ts.size();
+        return ts is list && n <= 25
+          && (n <= 0 || validTask(ts[0])) && (n <= 1 || validTask(ts[1])) && (n <= 2 || validTask(ts[2])) && (n <= 3 || validTask(ts[3])) && (n <= 4 || validTask(ts[4]))
+          && (n <= 5 || validTask(ts[5])) && (n <= 6 || validTask(ts[6])) && (n <= 7 || validTask(ts[7])) && (n <= 8 || validTask(ts[8])) && (n <= 9 || validTask(ts[9]))
+          && (n <= 10 || validTask(ts[10])) && (n <= 11 || validTask(ts[11])) && (n <= 12 || validTask(ts[12])) && (n <= 13 || validTask(ts[13])) && (n <= 14 || validTask(ts[14]))
+          && (n <= 15 || validTask(ts[15])) && (n <= 16 || validTask(ts[16])) && (n <= 17 || validTask(ts[17])) && (n <= 18 || validTask(ts[18])) && (n <= 19 || validTask(ts[19]))
+          && (n <= 20 || validTask(ts[20])) && (n <= 21 || validTask(ts[21])) && (n <= 22 || validTask(ts[22])) && (n <= 23 || validTask(ts[23])) && (n <= 24 || validTask(ts[24]));
+      }
+
+      // getAfter so that joining the week and writing in the same batch also works.
+      function canPlan(spaceId, weekId, uid) {
+        let w = getAfter(weekPath(spaceId, weekId)).data;
+        return isUser(uid) && request.time < w.lockAt && uid in w.members && isMember(spaceId);
+      }
+      function canTick(spaceId, weekId, uid) {
+        let w = getAfter(weekPath(spaceId, weekId)).data;
+        return isUser(uid) && request.time < w.deadlineAt && uid in w.members && isMember(spaceId);
+      }
+
+      function revealed(w) {
+        return request.time >= w.deadlineAt || w.submittedBy.hasAll(w.members);
+      }
+
+      // Reviews are only written in the submit batch: the reviewer was not in submittedBy before
+      // the batch (get) and is after it (getAfter). That already implies the review window (the
+      // submittedBy update checks it); the window is still checked here so the rule reads like the spec.
+      // Two access calls per review keep an 8-member batch (7 reviews + the week update) well inside
+      // the 20-call limit.
+      function validReview(spaceId, weekId, rid) {
+        let d = incoming();
+        let uid = request.auth.uid;
+        let w = get(weekPath(spaceId, weekId)).data;
+        return exactKeys(d, ['reviewerId', 'revieweeId', 'marks', 'submittedAt'])
+          && d.reviewerId == uid
+          && d.revieweeId is string && d.revieweeId != uid
+          && rid == uid + '_' + d.revieweeId
+          && d.submittedAt == request.time
+          && d.marks is map && d.marks.size() <= 25
+          // `in` and hasOnly() tell ints from floats, so both spellings of 0 and 1 are listed.
+          && d.marks.values().hasOnly([0, 0.5, 1, 0.0, 1.0])
+          && uid in w.members && d.revieweeId in w.members
+          && w.reviewOpenAt <= request.time && request.time < w.deadlineAt
+          && !(uid in w.submittedBy)
+          && uid in getAfter(weekPath(spaceId, weekId)).data.submittedBy;
+      }
+
+      match /weeks/{weekId} {
+        allow read: if isMember(spaceId);
+        allow create: if isMember(spaceId) && validNewWeek(weekId, incoming());
+        allow update: if signedIn() && (joinsWeek(spaceId) || submitsReviews());
+
+        match /plans/{uid} {
+          allow read: if isMember(spaceId);
+          allow create, update: if canPlan(spaceId, weekId, uid)
+            && exactKeys(incoming(), ['tasks', 'updatedAt'])
+            && validTasks(incoming().tasks)
+            && incoming().updatedAt == request.time;
+          allow delete: if canPlan(spaceId, weekId, uid);
+        }
+
+        match /progress/{uid} {
+          allow read: if isMember(spaceId);
+          // setDoc(..., {merge: true}) is validated on the merged document.
+          allow create, update: if canTick(spaceId, weekId, uid)
+            && exactKeys(incoming(), ['done', 'updatedAt'])
+            && incoming().done is map
+            && incoming().done.size() <= 200
+            && incoming().done.values().hasOnly([true, false])
+            && incoming().updatedAt == request.time;
+        }
+
+        // Blind until revealed. Clients query where('reviewerId', '==', uid) before the reveal
+        // and the whole collection after it.
+        match /reviews/{rid} {
+          allow read: if signedIn()
+            && (existing().reviewerId == request.auth.uid
+                || (isMember(spaceId) && revealed(get(weekPath(spaceId, weekId)).data)));
+          allow create: if signedIn() && validReview(spaceId, weekId, rid);
+        }
+      }
+
+      // ---------- settlements ----------
+
+      function validSettlement(spaceId, sid) {
+        let d = incoming();
+        let members = get(spacePath(spaceId)).data.memberIds;
+        return exactKeys(d, ['monthId', 'uid', 'settled', 'settledBy', 'settledAt'])
+          && d.monthId is string && d.monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+          && d.uid is string
+          && sid == d.monthId + '_' + d.uid
+          && request.auth.uid in members
+          && d.uid in members
+          && d.settled is bool
+          && d.settledBy == request.auth.uid
+          && d.settledAt == request.time;
+      }
+
+      match /settlements/{sid} {
+        allow read: if isMember(spaceId);
+        allow create, update: if signedIn() && validSettlement(spaceId, sid);
+      }
+    }
+
+    // ---------- app config (written by the reminders job with admin credentials) ----------
+
+    match /public/config {
+      allow get: if signedIn();
+    }
+
+    match /_private/{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

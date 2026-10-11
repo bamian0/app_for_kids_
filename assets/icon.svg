@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Stakes app icon. Source art for scripts/make-icons.ts (rendered with Chromium).
+    A single ring, 90% closed: the gap is the 10% you are allowed to miss.
+    Ring: center 512,512, radius 272, stroke 110, round caps. The path runs clockwise from
+    12 o'clock + 11.586° to 324° − 11.586°, so with its caps the visible ring covers 0°…324°.
+    Square and full-bleed on purpose: iOS applies its own mask.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3a3f"/>
+      <stop offset="1" stop-color="#141416"/>
+    </linearGradient>
+
+    <mask id="ring" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <path d="M566.63 245.54A272 272 0 1 1 311.19 328.54" fill="none" stroke="#fff" stroke-width="110" stroke-linecap="round"/>
+    </mask>
+
+    <filter id="bloom" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="44"/>
+    </filter>
+    <filter id="soften" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+
+    <!-- Cylindrical shading across the stroke: darker edges, a soft lit center line. -->
+    <radialGradient id="tube" cx="512" cy="512" r="327" gradientUnits="userSpaceOnUse">
+      <stop offset="0.664" stop-color="#000" stop-opacity="0.09"/>
+      <stop offset="0.832" stop-color="#fff" stop-opacity="0.075"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.075"/>
+    </radialGradient>
+
+    <!-- Specular glints along the outer edge (top right) and inner edge (bottom left). -->
+    <linearGradient id="glint-outer" gradientUnits="userSpaceOnUse" x1="512" y1="180" x2="840" y2="560">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.45" stop-color="#fff"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="glint-inner" gradientUnits="userSpaceOnUse" x1="300" y1="520" x2="560" y2="740">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#fff"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect id="bg" width="1024" height="1024" fill="url(#bg)"/>
+
+  <g id="art">
+    <!-- Light spilling from the ring onto the graphite. -->
+    <g id="glow" opacity="0.2" filter="url(#bloom)">
+      <g mask="url(#ring)">
+        <foreignObject width="1024" height="1024">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:1024px;height:1024px;background:conic-gradient(from -6deg, #7aa9ff 0deg, #8ad8ff 45deg, #a4eecf 95deg, #efeab8 145deg, #ffbfa6 195deg, #f4a6d3 245deg, #b4a0ff 295deg, #e2e6ff 336deg)"></div>
+        </foreignObject>
+      </g>
+    </g>
+
+    <g id="ring-body" mask="url(#ring)">
+      <!-- Prismatic sweep, like light through glass. The seam sits inside the gap. -->
+      <foreignObject width="1024" height="1024">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="width:1024px;height:1024px;background:conic-gradient(from -6deg, #7aa9ff 0deg, #8ad8ff 45deg, #a4eecf 95deg, #efeab8 145deg, #ffbfa6 195deg, #f4a6d3 245deg, #b4a0ff 295deg, #e2e6ff 336deg)"></div>
+      </foreignObject>
+      <rect width="1024" height="1024" fill="url(#tube)"/>
+      <path d="M567.22 198.83A318 318 0 0 1 810.82 620.76" fill="none" stroke="url(#glint-outer)" stroke-width="12" stroke-linecap="round" opacity="0.9" filter="url(#soften)"/>
+      <path d="M531.61 736.14A225 225 0 0 1 287.86 531.61" fill="none" stroke="url(#glint-inner)" stroke-width="8" stroke-linecap="round" opacity="0.35" filter="url(#soften)"/>
+    </g>
+  </g>
+</svg>

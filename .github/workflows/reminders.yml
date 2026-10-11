@@ -1,0 +1,68 @@
+name: Reminders
+
+# Hourly push reminders (scripts/reminders.ts, docs/SPEC.md §4).
+#
+# Scheduled workflows only run from the default branch (main): this file has to be on main for
+# the hourly schedule to fire. GitHub can delay scheduled runs or drop some under load; the job
+# catches up on the next run without sending anything twice. In a public repository GitHub
+# pauses schedules after 60 days without commits; re-enable it from the Actions tab.
+#
+# Setup: add the Firebase service account key (Firebase console → Project settings → Service
+# accounts → Generate new private key) as the repository secret FIREBASE_SERVICE_ACCOUNT, pasting
+# the whole JSON file. Optional: a repository variable APP_URL if the app is not served from
+# https://<owner>.github.io/<repo>/.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only log what would be sent
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reminders
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check for the service account secret
+        id: check
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The FIREBASE_SERVICE_ACCOUNT secret is not set, so no reminders were sent."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.check.outputs.enabled == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+        if: steps.check.outputs.enabled == 'true'
+
+      # Node 24 runs TypeScript directly (type stripping is on by default).
+      - name: Send reminders
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          APP_URL: ${{ vars.APP_URL }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          export APP_URL="${APP_URL:-https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/}"
+          node scripts/reminders.ts

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AVATAR_COLORS,
   INVITE_ALPHABET,
+  MAX_SUBTASKS,
   colorForUid,
   formatInviteCode,
   newInviteCode,
@@ -72,6 +73,13 @@ describe('newTaskId', () => {
     const ids = Array.from({ length: 5000 }, newTaskId)
     for (const id of ids) expect(id).toMatch(/^[a-z][a-z0-9]{9}$/)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('MAX_SUBTASKS', () => {
+  it('keeps a full plan (25 tasks) within a progress doc\'s 200 check-off keys', () => {
+    expect(MAX_SUBTASKS).toBe(8)
+    expect(25 * MAX_SUBTASKS).toBeLessThanOrEqual(200)
   })
 })
 

@@ -104,6 +104,27 @@ describe('reminders job', () => {
     expect(push.sent.map((p) => p.endpoint).sort()).toEqual(['d2', 'd3', 'd4', 'd5', 'd6'].map((d) => `https://web.push.apple.com/${d}`))
   })
 
+  it('reads tasks with steps and tasks added after the lock like the app does', async () => {
+    // Alone in the space, so nobody reviews a: the score is a's own check-offs, steps as fractions.
+    await space('s1', ['a'])
+    const W = '2026-10-05'
+    const b = weekBounds(W, 'UTC')
+    await db.doc(`spaces/s1/weeks/${W}`).set({
+      startAt: ts(b.startAt), lockAt: ts(b.lockAt), reviewOpenAt: ts(b.reviewOpenAt), deadlineAt: ts(b.deadlineAt), members: ['a'], submittedBy: [],
+    })
+    await db.doc(`spaces/s1/weeks/${W}/plans/a`).set({
+      tasks: [{ id: 'a1', title: 'Shoot', subs: ['s1|Scout', 's2|Rent a lens'] }, { id: 'a2', title: 'Client work' }],
+      added: { a2: ts(b.lockAt + 3_600_000) },
+      updatedAt: ts(b.lockAt + 3_600_000),
+    })
+    // a1's own key is ignored: it has steps, and one of two is ticked.
+    await db.doc(`spaces/s1/weeks/${W}/progress/a`).set({ done: { a1: true, s1: true, a2: true }, updatedAt: ts(b.lockAt) })
+    await device('a', 'd', 'https://web.push.apple.com/a', at('2026-10-01T00:00:00Z'))
+    const push = fakePush()
+    await runReminders({ db, send: push.send, nowMs: at('2026-10-10T09:17:00Z'), log: quiet })
+    expect(push.sent.map((p) => `${p.title} | ${p.body}`)).toEqual(['Results are in | You scored 75%. See how s1 did this week.'])
+  })
+
   it('the verdict quotes the stakes frozen for the month, and spaces get their utcOffsetMin backfilled', async () => {
     // b lost October, then edited the penalty; the frozen October stakes still apply.
     await space('s1', ['a', 'b'], { penalty: 'A high five' })

@@ -3,6 +3,8 @@ import type { MonthId, UID } from './types.ts'
 
 export const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 export const INVITE_CODE_LENGTH = 8
+/** Steps per task. 25 tasks × 8 steps stays within a progress doc's 200 check-off keys. */
+export const MAX_SUBTASKS = 8
 
 const LOWER = 'abcdefghijklmnopqrstuvwxyz'
 const LOWER_ALNUM = `${LOWER}0123456789`

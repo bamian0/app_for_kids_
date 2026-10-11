@@ -18,16 +18,19 @@ import {
   type DocumentSnapshot,
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
-import { reviewDocId } from '../domain/ids.ts'
-import { isRevealed, joinedAfterLock } from '../domain/scoring.ts'
+import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
+import { earningId } from '../domain/money.ts'
+import { isRevealed, isTaskDone, joinedAfterLock } from '../domain/scoring.ts'
 import { boundsDiffer, weekBounds, type WeekBounds } from '../domain/time.ts'
 import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
 import { isMark, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
-import { humanError, isDenied, MSG } from './errors.ts'
+import { errorCode, humanError, isDenied, MSG } from './errors.ts'
+import { earnedAtChange, earningRef, inBackground, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
 import { requireUser } from './session.ts'
-import type { Emit, Start } from './store.ts'
+import { peek, type Emit, type Start } from './store.ts'
+import { encodeTask, oneLine, TASK_ID } from './tasks.ts'
 
 const MAX_TASKS = 25
 /** Rules compare against server time; give the server a moment past deadlineAt before asking for everyone's reviews. */
@@ -347,39 +350,170 @@ async function notInWeekMessage(space: Space, weekId: WeekId, uid: UID): Promise
     : "This week started without you. You're in from next week."
 }
 
+const MAX_TITLE = 120
+const TOO_MANY_STEPS = `A task can have up to ${MAX_SUBTASKS} steps.`
+const LONG_TASK = `Keep each task under ${MAX_TITLE} characters.`
+const LONG_STEP = `Keep each step under ${MAX_TITLE} characters.`
+
+/** Steps are edited in the task sheet, not inline, so they are tidied: one line, trimmed, blank ones dropped. */
+function cleanSteps(task: Task): Task {
+  const steps = (task.subtasks ?? []).map((step) => ({ id: step.id, title: oneLine(step.title) })).filter((step) => step.title !== '')
+  return steps.length > 0 ? { id: task.id, title: task.title, subtasks: steps } : { id: task.id, title: task.title }
+}
+
 function cleanTasks(tasks: Task[]): Task[] {
   // Blank rows are dropped; titles are otherwise stored as typed so autosave can't fight the cursor.
-  const out = tasks.filter((t) => t.title.trim() !== '').map((t) => ({ id: t.id, title: t.title }))
+  // addedAt never comes along: before the lock nothing counts as added.
+  const out = tasks.filter((t) => t.title.trim() !== '').map(cleanSteps)
   if (out.length > MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a week.`)
-  if (out.some((t) => t.title.length > 120)) throw new Error('Keep each task under 120 characters.')
-  const ids = new Set(out.map((t) => t.id))
-  if (ids.size !== out.length || out.some((t) => !t.id || t.id.length > 64)) throw new Error(MSG.generic)
+  if (out.some((t) => t.title.length > MAX_TITLE)) throw new Error(LONG_TASK)
+  if (out.some((t) => (t.subtasks?.length ?? 0) > MAX_SUBTASKS)) throw new Error(TOO_MANY_STEPS)
+  if (out.some((t) => t.subtasks?.some((step) => step.title.length > MAX_TITLE))) throw new Error(LONG_STEP)
+  // Steps are ticked by id like tasks, so every id is unique across the whole list.
+  const ids = out.flatMap((t) => [t.id, ...(t.subtasks ?? []).map((step) => step.id)])
+  if (new Set(ids).size !== ids.length || !ids.every((id) => TASK_ID.test(id))) throw new Error(MSG.generic)
   return out
+}
+
+function planRef(spaceId: string, weekId: WeekId, uid: UID) {
+  return doc(weekRef(spaceId, weekId), 'plans', uid)
+}
+
+function progressRef(spaceId: string, weekId: WeekId, uid: UID) {
+  return doc(weekRef(spaceId, weekId), 'progress', uid)
+}
+
+/** The user's plan and check-offs as this device has them (cache, else the open week); each undefined when it can't tell. */
+async function localWeek(space: Space, weekId: WeekId, uid: UID): Promise<{ tasks?: Task[]; done?: Record<string, boolean> }> {
+  const fromCache = (ref: ReturnType<typeof planRef>) => getDocFromCache(ref).catch(() => null)
+  const [plan, progress] = await Promise.all([fromCache(planRef(space.id, weekId, uid)), fromCache(progressRef(space.id, weekId, uid))])
+  // A doc the open week's listeners never saw doesn't exist; the cache can't tell that apart from "not loaded".
+  const live = peek<WeekData>(weekKey(uid, space.id, weekId)).data
+  return {
+    tasks: plan ? (plan.exists() ? toPlan(plan).tasks : []) : live && (live.plans[uid]?.tasks ?? []),
+    done: progress ? (progress.exists() ? toProgress(progress).done : {}) : live && (live.progress[uid]?.done ?? {}),
+  }
+}
+
+/** The task a check-off id belongs to: the task itself or the task holding that step. */
+function taskOf(tasks: Task[], id: string): Task | undefined {
+  return tasks.find((t) => t.id === id) ?? tasks.find((t) => t.subtasks?.some((step) => step.id === id))
 }
 
 /** Replaces the current user's task list (only before lockAt). */
 export async function savePlan(space: Space, weekId: WeekId, tasks: Task[]): Promise<void> {
   const clean = cleanTasks(tasks)
   const uid = requireUser().uid
+  const ref = planRef(space.id, weekId, uid)
+  let before: Task[] | undefined
   try {
     if (now() >= (await boundsOf(space, weekId)).lockAt) throw new Error(MSG.closed)
     if (!(await joinWeek(space, weekId))) throw new Error(MSG.closed)
-    await setDoc(doc(weekRef(space.id, weekId), 'plans', uid), { tasks: clean, updatedAt: serverTimestamp() })
+    before = (await localWeek(space, weekId, uid)).tasks
+    await setDoc(ref, { tasks: clean.map(encodeTask), updatedAt: serverTimestamp() })
+  } catch (e) {
+    throw humanError(e)
+  }
+  // Earnings follow renamed and deleted tasks. After the save and in the background: it never holds
+  // up or fails the save, and a lost sync only leaves an earning to be fixed by the next one.
+  const ids = new Set(clean.map((t) => t.id))
+  const removed = before ? new Set(before.map((t) => t.id).filter((id) => !ids.has(id))) : null
+  const titles = new Map(before?.map((t) => [t.id, t.title.trim()]))
+  const renamed = clean.some((t) => titles.has(t.id) && titles.get(t.id) !== t.title.trim())
+  if (removed === null || removed.size > 0 || renamed) void syncPlanEarnings(uid, space.id, weekId, clean, removed)
+}
+
+export interface NewTaskInput {
+  title: string
+  /** Step titles in order; blank ones are dropped. */
+  subtasks?: string[]
+}
+
+/**
+ * Appends one task (with its steps) to the current user's list after the lock, until the review window
+ * opens (SPEC §6.2). Final: it can't be edited or removed. Resolves with the task as stored; its
+ * addedAt is the device's estimate until the plan's snapshot brings the server time.
+ */
+export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewTaskInput): Promise<Task> {
+  const uid = requireUser().uid
+  const title = input.title.trim()
+  if (!title) throw new Error('Give the task a title.')
+  if (title.length > MAX_TITLE) throw new Error(LONG_TASK)
+  const steps = (input.subtasks ?? []).map(oneLine).filter((step) => step !== '')
+  if (steps.length > MAX_SUBTASKS) throw new Error(TOO_MANY_STEPS)
+  if (steps.some((step) => step.length > MAX_TITLE)) throw new Error(LONG_STEP)
+  const task: Task = { id: newTaskId(), title }
+  if (steps.length > 0) task.subtasks = steps.map((step) => ({ id: newTaskId(), title: step }))
+  const ref = planRef(space.id, weekId, uid)
+  try {
+    const bounds = await boundsOf(space, weekId)
+    if (now() < bounds.lockAt) throw new Error('Your list hasn’t locked yet. Add the task to it instead.')
+    if (now() >= bounds.reviewOpenAt) throw new Error('Adding tasks closes when reviews open on Friday.')
+    if (!space.memberIds.includes(uid)) throw new Error('You’re no longer in this space.')
+    if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
+    await runTransaction(getFirebase().db, async (tx) => {
+      const snap = await tx.get(ref)
+      // Everything already stored goes back exactly as it is: the rules compare it item by item.
+      const stored: unknown = snap.get('tasks')
+      const existing = Array.isArray(stored) ? stored : []
+      if (existing.length >= MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a week.`)
+      const added: unknown = snap.get('added')
+      tx.set(ref, {
+        tasks: [...existing, encodeTask(task)],
+        added: { ...(added && typeof added === 'object' ? added : {}), [task.id]: serverTimestamp() },
+        updatedAt: serverTimestamp(),
+      })
+    })
+  } catch (e) {
+    throw humanError(e)
+  }
+  return { ...task, addedAt: Date.now() }
+}
+
+/**
+ * Self check-off (until deadlineAt). `id` is a task id or a step id. The task's earning, if it has one,
+ * follows: earned when the task becomes done (its last step, or the task itself), not when it isn't.
+ */
+export async function setTaskDone(space: Space, weekId: WeekId, id: string, done: boolean): Promise<void> {
+  const uid = requireUser().uid
+  try {
+    if (now() >= (await boundsOf(space, weekId)).deadlineAt) throw new Error(MSG.closed)
+    if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
+    const ref = progressRef(space.id, weekId, uid)
+    const progress = { done: { [id]: done }, updatedAt: serverTimestamp() }
+    // Ticking reads only what this device has, so it stays instant and works offline.
+    const local = await localWeek(space, weekId, uid)
+    const task = local.tasks && taskOf(local.tasks, id)
+    const earning = task ? earningId(space.id, weekId, task.id) : null
+    const known = earning ? await knownEarning(uid, earning) : null
+    const change = task && known && local.done ? earnedAtChange(known.earned, isTaskDone(task, { ...local.done, [id]: done })) : undefined
+    if (change && earning) {
+      const batch = writeBatch(getFirebase().db)
+      batch.set(ref, progress, { merge: true })
+      batch.update(earningRef(uid, earning), change)
+      try {
+        await batch.commit()
+        return
+      } catch (e) {
+        // The earning may be gone (switched off on another device): the check-off still counts.
+        if (!isDenied(e) && errorCode(e) !== 'not-found') throw e
+      }
+    }
+    await setDoc(ref, progress, { merge: true })
+    if (!local.tasks || (known && !local.done) || known === undefined) settleLater(space.id, weekId, uid, id)
   } catch (e) {
     throw humanError(e)
   }
 }
 
-/** Self check-off (until deadlineAt). */
-export async function setTaskDone(space: Space, weekId: WeekId, taskId: string, done: boolean): Promise<void> {
-  const uid = requireUser().uid
-  try {
-    if (now() >= (await boundsOf(space, weekId)).deadlineAt) throw new Error(MSG.closed)
-    if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
-    await setDoc(doc(weekRef(space.id, weekId), 'progress', uid), { done: { [taskId]: done }, updatedAt: serverTimestamp() }, { merge: true })
-  } catch (e) {
-    throw humanError(e)
-  }
+/** When the device couldn't tell at tick time (nothing cached), the earning is put in step from the server. */
+function settleLater(spaceId: string, weekId: WeekId, uid: UID, id: string): void {
+  void inBackground(`${uid}|earning|${spaceId}|${weekId}`, async () => {
+    const [plan, progress] = await Promise.all([getDoc(planRef(spaceId, weekId, uid)), getDoc(progressRef(spaceId, weekId, uid))])
+    const task = plan.exists() ? taskOf(toPlan(plan).tasks, id) : undefined
+    if (!task) return
+    await settleEarning(uid, earningId(spaceId, weekId, task.id), isTaskDone(task, progress.exists() ? toProgress(progress).done : {}))
+  })
 }
 
 /** Writes all of the current user's reviews and marks them submitted, in one batch. Final. */

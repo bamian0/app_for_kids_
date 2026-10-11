@@ -13,7 +13,8 @@ import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'f
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
-import type { Mark, MonthId, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
+import { decodeTasks } from '../src/data/tasks.ts'
+import type { Mark, MonthId, Space, UID, WeekData, WeekId } from '../src/domain/types.ts'
 import { dueWindows, offsetToStore, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
 
 export const DEFAULT_APP_URL = 'https://bamian0.github.io/app_for_kids_/'
@@ -157,7 +158,9 @@ async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise
   }
   const [plans, progress, reviews] = await Promise.all(['plans', 'progress', 'reviews'].map((name) => ref.collection(name).get()))
   for (const p of plans.docs) {
-    data.plans[p.id] = { uid: p.id, tasks: Array.isArray(p.get('tasks')) ? (p.get('tasks') as Task[]) : [], updatedAt: ms(p.get('updatedAt')) }
+    // Steps and mid-week additions decode as in the app, so a task with steps scores by its steps.
+    const tasks = decodeTasks(p.get('tasks'), p.get('added'), (v) => (v instanceof Timestamp ? v.toMillis() : null))
+    data.plans[p.id] = { uid: p.id, tasks, updatedAt: ms(p.get('updatedAt')) }
   }
   for (const p of progress.docs) {
     data.progress[p.id] = { uid: p.id, done: (p.get('done') ?? {}) as Record<string, boolean>, updatedAt: ms(p.get('updatedAt')) }

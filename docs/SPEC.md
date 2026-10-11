@@ -108,6 +108,11 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
 ### Security rules (`firestore.rules`), what must hold
 - `users/{uid}`: any signed-in user can `get` a profile; `list` is denied, so nobody can enumerate users. Only the owner can write, with field validation; `color` must be `#RRGGBB` (it lands in CSS).
 - `users/{uid}/push/*`: only the owner can read and write. `endpoint` must be on a real push service: `web.push.apple.com`, `fcm.googleapis.com`, `updates.push.services.mozilla.com` or `*.notify.windows.com`. The number of subscriptions is not capped by the rules; the reminders job only uses each user's 5 newest.
+- `users/{uid}/money/state`, `earnings/*`, `moves/*`, `goals/*` (§6.3): only the owner can read and write. The profile's `get` doesn't reach them (rules don't cascade) and there is no collection-group access. Exact keys and types:
+  - `money/state` (no other id): `currency` matches `^[A-Z]{3}$`; `baseline` null or a number within ±1e9; `baselineAt` null or a timestamp, and `request.time` whenever the baseline changes (otherwise unchanged); `updatedAt == request.time`.
+  - `earnings/{eid}`: `eid == spaceId + '_' + weekId + '_' + taskId`, `spaceId` 1–128 characters, `weekId` matches `^\d{4}-\d{2}-\d{2}$`, `taskId` like a task id, `title` 1–120 characters, `amount` 0…1e9, `earnedAt` null, `request.time` or (on update) unchanged, `updatedAt == request.time`.
+  - `moves/*`: create and delete only. `kind` is `add` or `spend`, `amount` > 0 and ≤ 1e9, `note` 0–80 characters, `at == request.time`.
+  - `goals/*`: `name` 1–60 characters and not blank, `cost` > 0 and ≤ 1e9, `order` within ±1e6, `createdAt == request.time` on create and unchanged after.
 - `invites/{code}`: anyone, signed in or not, can `get` (the code is the secret); `list` is denied. Only a member of `spaceId` can create, with `createdBy == auth.uid`, only under the space's own `inviteCode`, and with `spaceName`, `reward` and `penalty` equal to the space's (checked with `getAfter`, so the space and its invite can be written in one batch). A member can update `spaceName`/`reward`/`penalty` alone, and only to mirror the space. The creator or any space member can delete.
 - `spaces/{id}`: only members can read. Create requires `ownerId == auth.uid`, `memberIds == [auth.uid]`, `joinedAt == {auth.uid: request.time}`, `utcOffsetMin` an int in −720…840, threshold 90, latePenalty 5, and validated fields. Allowed updates, and nothing else (timezone, utcOffsetMin, threshold, latePenalty and createdAt never change):
   - a member edits `name`/`reward`/`penalty`;
@@ -128,7 +133,11 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
   - before `lockAt`, a space member appends current space members who are missing from `members` (no duplicates);
   - before `lockAt`, one uid leaves `members` if it is no longer a space member (`getAfter`, so it goes in the same batch as leaving the space); the writer is that uid or the space's owner. From `lockAt` on nobody leaves `members`, so leaving or removal can't take anyone out of a locked week;
   - add self to `submittedBy` while `reviewOpenAt ≤ request.time < deadlineAt`, self ∈ `members` and self is still a space member.
-- `plans/{uid}`: members of the space can read. The owner can write while `request.time < lockAt` and owner ∈ `week.members`; `tasks` must be a list of ≤ 25 items.
+- `plans/{uid}`: members of the space can read. Only the owner writes, while owner ∈ `week.members` and still a space member:
+  - before `lockAt`: exactly `{tasks, updatedAt}` (no `added`), `updatedAt == request.time`; `tasks` is a list of ≤ 25 tasks, each exactly `{id, title}` or `{id, title, subs}`: `id` like a task id, `title` 1–120 characters, `subs` 1–8 strings `"<id>|<title>"` (step id like a task id, step title 1–120 characters on one line). Deleting the plan is allowed only before `lockAt`;
+  - while `lockAt ≤ request.time < reviewOpenAt`, append only (§6.2): exactly `{tasks, added, updatedAt}`; `tasks` is the stored list unchanged (same order, same content) plus one valid task, ≤ 25 in all (with no plan yet: just that task); `added` gains exactly that task's id, not already in it, with `request.time` and keeps every other entry; `updatedAt == request.time`.
+
+  A plan of 25 tasks with 8 steps each fits the 1000-expression limit (about 890, measured in the emulator); the task check is written for cost (see the comments in `firestore.rules`).
 - `progress/{uid}`: members can read. The owner can write while `request.time < deadlineAt` and owner ∈ `week.members`; `done` has ≤ 200 boolean entries and each write adds at most one key, shaped like a task id.
 - `reviews/{rid}`:
   - create only, no update or delete;
@@ -156,7 +165,9 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
 - `sendPasswordReset` resolves for unknown emails too (no account enumeration).
 
 Known limits:
-- The rules don't cap how many spaces an account creates.
+- The rules don't cap how many spaces an account creates, or how many earnings, moves and goals it stores.
+- Steps are checked with one regex over the joined list, which can't count lines within the expression budget: a step whose title hides a newline followed by more step-like text (`"a|x\nb|y"` as one step) passes. Step ids are still always valid; only the writer's own step title is affected.
+- The rules don't check that task ids are unique within a plan (the data layer makes new ones with `newTaskId()`). A duplicate only confuses the writer's own list.
 - A determined member can still write a week with a skew of up to an hour, up to 2h on a space created in the other DST season (its stored offset is an hour off), or up to 14h on a space the reminders job hasn't backfilled yet. The client flags it (`boundsMismatch`).
 - A retired invite code (reset, or the last member left) can be claimed by another space: anyone who knows it can create a space with that `inviteCode` and its invite, and the old link then previews and joins that space instead. Low severity: it needs the old code, and the preview shows the new space's name and inviter.
 

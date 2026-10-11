@@ -1,7 +1,24 @@
 // Firestore documents -> domain types. Timestamps become epoch ms; a pending serverTimestamp()
 // reads as the SDK's local estimate, so optimistic writes render immediately.
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
-import type { Invite, Mark, MonthStakes, Plan, Progress, Review, Settlement, Space, Task, UID, UserProfile, Week } from '../domain/types.ts'
+import type {
+  Earning,
+  Goal,
+  Invite,
+  Mark,
+  MoneyMove,
+  MoneyState,
+  MonthStakes,
+  Plan,
+  Progress,
+  Review,
+  Settlement,
+  Space,
+  UID,
+  UserProfile,
+  Week,
+} from '../domain/types.ts'
+import { decodeTasks } from './tasks.ts'
 
 type Snap = DocumentSnapshot | QueryDocumentSnapshot
 
@@ -77,12 +94,14 @@ export function toWeek(snap: Snap, spaceId: string): Week {
   }
 }
 
+/** A stored time, or null for anything else (a missing earnedAt, a malformed added entry). */
+function msOrNull(value: unknown): number | null {
+  return value instanceof Timestamp ? value.toMillis() : typeof value === 'number' ? value : null
+}
+
 export function toPlan(snap: Snap): Plan {
   const d = data(snap)
-  const tasks: Task[] = Array.isArray(d.tasks)
-    ? d.tasks.map((t: unknown) => ({ id: str(record(t).id), title: str(record(t).title) })).filter((t: Task) => t.id !== '')
-    : []
-  return { uid: snap.id, tasks, updatedAt: ms(d.updatedAt) }
+  return { uid: snap.id, tasks: decodeTasks(d.tasks, d.added, msOrNull), updatedAt: ms(d.updatedAt) }
 }
 
 export function toProgress(snap: Snap): Progress {
@@ -119,4 +138,42 @@ export function toSettlement(snap: Snap): Settlement {
 export function toMonthStakes(snap: Snap): MonthStakes {
   const d = data(snap)
   return { reward: str(d.reward), penalty: str(d.penalty), frozen: true }
+}
+
+// ---------- Money (users/{uid}/...) ----------
+
+const amount = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+export function toMoneyState(snap: Snap): MoneyState {
+  const d = data(snap)
+  return {
+    currency: str(d.currency) || 'USD',
+    baseline: typeof d.baseline === 'number' && Number.isFinite(d.baseline) ? d.baseline : null,
+    baselineAt: msOrNull(d.baselineAt),
+    updatedAt: ms(d.updatedAt),
+  }
+}
+
+export function toEarning(snap: Snap): Earning {
+  const d = data(snap)
+  return {
+    id: snap.id,
+    spaceId: str(d.spaceId),
+    weekId: str(d.weekId),
+    taskId: str(d.taskId),
+    title: str(d.title),
+    amount: amount(d.amount),
+    earnedAt: msOrNull(d.earnedAt),
+    updatedAt: ms(d.updatedAt),
+  }
+}
+
+export function toMove(snap: Snap): MoneyMove {
+  const d = data(snap)
+  return { id: snap.id, kind: d.kind === 'spend' ? 'spend' : 'add', amount: amount(d.amount), note: str(d.note), at: ms(d.at) }
+}
+
+export function toGoal(snap: Snap): Goal {
+  const d = data(snap)
+  return { id: snap.id, name: str(d.name), cost: amount(d.cost), order: amount(d.order), createdAt: ms(d.createdAt) }
 }

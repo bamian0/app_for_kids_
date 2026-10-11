@@ -1,5 +1,5 @@
 // Weekly and monthly scoring. See docs/SPEC.md §1 for the rules.
-import type { Mark, MonthId, Review, Space, UID, WeekData, WeekId } from './types.ts'
+import type { Mark, MonthId, Review, Space, Task, UID, WeekData, WeekId } from './types.ts'
 import type { WeekBounds, WeekPhase } from './time.ts'
 import { monthCompleteAt, weekBounds, weekIdsInMonth, weekPhase } from './time.ts'
 
@@ -11,7 +11,14 @@ export interface TaskResult {
   /** Where `mark` came from: friends' reviews, or the member's own check-off (nobody reviewed). */
   source: 'reviews' | 'self'
   reviewerMarks: Record<UID, Mark>
+  /** Every step is ticked (a task without steps: its own check-off). */
   selfDone: boolean
+  /** The task's steps with their check-offs; [] for a task without steps. */
+  subtasks: { id: string; title: string; done: boolean }[]
+  /** 0..1, the self mark: share of steps ticked, or 1/0 for a task without steps. */
+  selfFraction: number
+  /** Copied from Task.addedAt: set on a task added after the lock. */
+  addedAt?: number
 }
 
 export interface MemberWeekResult {
@@ -57,6 +64,10 @@ export interface MemberMonthResult {
   /** finalScore ≥ threshold once complete; null until complete or if finalScore is null. */
   passed: boolean | null
 }
+
+/** Self marks add up in 840ths (every step count up to 8 divides it), so sums of step fractions stay
+ *  exact and a week without steps scores the very same float as before. */
+const SELF_UNITS = 840
 
 /** Keeps the ≥ threshold check from failing on float error in means of thirds, sevenths, etc. */
 const SCORE_EPSILON = 1e-9
@@ -106,6 +117,32 @@ export function membersAt(space: Pick<Space, 'memberIds' | 'leftAt'> & Partial<P
 export function joinedAfterLock(space: Pick<Space, 'joinedAt'>, uid: UID, lockAt: number): boolean {
   const joined = space.joinedAt[uid]
   return joined !== undefined && joined >= lockAt
+}
+
+/** How many of the task's check-offs are ticked: its steps, or the task itself when it has none. */
+function checkOffs(task: Task, done: Record<string, boolean>): { ticked: number; of: number } {
+  const steps = task.subtasks ?? []
+  if (steps.length === 0) return { ticked: done[task.id] === true ? 1 : 0, of: 1 }
+  return { ticked: steps.filter((step) => done[step.id] === true).length, of: steps.length }
+}
+
+/**
+ * The member's own check-off as a fraction: the share of steps ticked for a task with steps (its own
+ * `done` key is ignored then), else 1 if ticked and 0 if not.
+ */
+export function taskSelfFraction(task: Task, done: Record<string, boolean>): number {
+  const c = checkOffs(task, done)
+  return c.ticked / c.of
+}
+
+/** Done by the member's own check-off: ticked, or every step ticked. */
+export function isTaskDone(task: Task, done: Record<string, boolean>): boolean {
+  return taskSelfFraction(task, done) === 1
+}
+
+/** True for a task appended after the week locked (SPEC §6.2). Pass the week's stored lockAt. */
+export function addedAfterLock(task: Pick<Task, 'addedAt'>, lockAt: number): boolean {
+  return task.addedAt !== undefined && task.addedAt >= lockAt
 }
 
 function participantsOf(data: WeekData): UID[] {
@@ -179,10 +216,11 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
     const reviewedBy = received.map((r) => r.reviewerId)
     const fromReviews = received.length > 0
 
-    let selfSum = 0
-    let markSum = 0
+    let selfUnits = 0
+    let reviewMarkSum = 0
     const tasks: TaskResult[] = plan.map((task) => {
-      const selfDone = done[task.id] === true
+      const c = checkOffs(task, done)
+      const selfMark = c.ticked / c.of
       const reviewerMarks: Record<UID, Mark> = {}
       let reviewSum = 0
       for (const r of received) {
@@ -191,22 +229,26 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
         reviewerMarks[r.reviewerId] = mark
         reviewSum += mark
       }
-      const selfMark = selfDone ? 1 : 0
-      selfSum += selfMark
-      markSum += fromReviews ? reviewSum : selfMark
-      return {
+      selfUnits += (SELF_UNITS * c.ticked) / c.of
+      reviewMarkSum += reviewSum
+      const result: TaskResult = {
         taskId: task.id,
         title: task.title,
         mark: fromReviews ? reviewSum / received.length : selfMark,
         source: fromReviews ? 'reviews' : 'self',
         reviewerMarks,
-        selfDone,
+        selfDone: selfMark === 1,
+        subtasks: (task.subtasks ?? []).map((step) => ({ id: step.id, title: step.title, done: done[step.id] === true })),
+        selfFraction: selfMark,
       }
+      if (task.addedAt !== undefined) result.addedAt = task.addedAt
+      return result
     })
 
     const n = plan.length
-    // Divide once (sum over tasks and reviewers of half-point marks is exact) to keep float error minimal.
-    const score = n === 0 ? 0 : (100 * markSum) / (n * (fromReviews ? received.length : 1))
+    // Divide once (sums of half-point marks and of self units are exact) to keep float error minimal.
+    const provisional = n === 0 ? 0 : (100 * selfUnits) / (n * SELF_UNITS)
+    const score = n === 0 ? 0 : fromReviews ? (100 * reviewMarkSum) / (n * received.length) : provisional
     const missedReviewsOf = pastDeadline
       ? reviewTargets(data, uid, counted).filter((target) => !reviews.some((r) => r.reviewerId === uid && r.revieweeId === target))
       : []
@@ -216,7 +258,7 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
       participating: true,
       taskCount: n,
       tasks,
-      provisionalScore: n === 0 ? 0 : (100 * selfSum) / n,
+      provisionalScore: provisional,
       score: revealed ? score : null,
       reviewedBy,
       missedReviewsOf,

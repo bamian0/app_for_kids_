@@ -4,12 +4,17 @@ import {
   arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, Timestamp, updateDoc,
   writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
-import { allDenied, allowed, denied, spaceDoc, useRulesEnv, weekDoc, type Phase } from './helpers.ts'
+import { allDenied, allowed, denied, fullTask, spaceDoc, useRulesEnv, weekDoc, type Phase } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
 
 const tasks = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, title: `Task ${i + 1}` }))
 const plan = (extra: DocumentData = {}): DocumentData => ({ tasks: tasks(3), updatedAt: serverTimestamp(), ...extra })
+/** A task with `k` steps, stored as "<id>|<title>". */
+const withSteps = (k: number, i = 0): DocumentData => ({
+  id: `t${i}`, title: `Task ${i + 1}`, subs: Array.from({ length: k }, (_, j) => `s${i}-${j}|Step ${j + 1}`),
+})
+const stepsPlan = (subs: unknown): DocumentData => plan({ tasks: [{ id: 't1', title: 'Edit the reel', subs }] })
 const planRef = (fs: Firestore, uid: string, week = 'W') => doc(fs, `spaces/s1/weeks/${week}/plans/${uid}`)
 const progressRef = (fs: Firestore, uid: string, week = 'W') => doc(fs, `spaces/s1/weeks/${week}/progress/${uid}`)
 const tick = (fs: Firestore, uid: string, taskId: string, done: unknown, week = 'W') =>
@@ -72,13 +77,66 @@ describe('plans', () => {
   })
 
   test('joining the week and saving a full plan in one batch stays within rule limits', async () => {
+    // 25 tasks of 8 steps, every id and title at its longest: the most a plan write can ask of the
+    // 1000-expression limit (the emulator enforces it).
     await setup('planning')
     const carol = db('carol')
-    const full = Array.from({ length: 25 }, (_, i) => ({ id: `k${i}abcdefgh`, title: 'Ж'.repeat(120) }))
     const batch = writeBatch(carol)
     batch.update(doc(carol, 'spaces/s1/weeks/W'), { members: arrayUnion('carol') })
-    batch.set(planRef(carol, 'carol'), plan({ tasks: full }))
+    batch.set(planRef(carol, 'carol'), plan({ tasks: Array.from({ length: 25 }, (_, i) => fullTask(i)) }))
     await allowed(batch.commit())
+  })
+
+  test('tasks with steps are saved before lockAt', async () => {
+    await setup('planning')
+    const ref = planRef(db('alice'), 'alice')
+    await allowed(setDoc(ref, plan({ tasks: [withSteps(1)] })))
+    await allowed(setDoc(ref, plan({ tasks: [withSteps(8)] })))
+    await allowed(setDoc(ref, plan({ tasks: [withSteps(2, 0), { id: 't1', title: 'Plain' }, withSteps(8, 2)] })))
+    await allowed(setDoc(ref, plan({ tasks: [...tasks(24), withSteps(8, 24)] })))
+    // The title is everything after the first bar, so it may hold bars of its own.
+    await allowed(setDoc(ref, stepsPlan(['s1|Color | grade', 's2||'])))
+    await allowed(setDoc(ref, stepsPlan([`${'a'.repeat(64)}|${'Ж'.repeat(120)}`])))
+  })
+
+  test('invalid steps are rejected', async () => {
+    await setup('planning')
+    const ref = planRef(db('alice'), 'alice')
+    await allDenied({
+      '9 steps': () => setDoc(ref, plan({ tasks: [withSteps(9)] })),
+      '9 steps on the last task': () => setDoc(ref, plan({ tasks: [...tasks(24), withSteps(9, 24)] })),
+      'empty list': () => setDoc(ref, stepsPlan([])),
+      'no bar': () => setDoc(ref, stepsPlan(['s1 Edit'])),
+      'empty step': () => setDoc(ref, stepsPlan(['s1|Edit', '', 's2|Export'])),
+      'empty id': () => setDoc(ref, stepsPlan(['|Edit'])),
+      'id with a dot': () => setDoc(ref, stepsPlan(['s.1|Edit'])),
+      'id 65 chars': () => setDoc(ref, stepsPlan([`${'a'.repeat(65)}|Edit`])),
+      'empty title': () => setDoc(ref, stepsPlan(['s1|'])),
+      'title 121 chars': () => setDoc(ref, stepsPlan([`s1|${'x'.repeat(121)}`])),
+      'title with a newline': () => setDoc(ref, stepsPlan(['s1|Edit\nthe reel'])),
+      'step not a string': () => setDoc(ref, stepsPlan(['s1|Edit', 7])),
+      'step is a map': () => setDoc(ref, stepsPlan([{ id: 's1', title: 'Edit' }])),
+      'subs is a string': () => setDoc(ref, stepsPlan('s1|Edit')),
+      'subs is a map': () => setDoc(ref, stepsPlan({ s1: 'Edit' })),
+      'subs is null': () => setDoc(ref, stepsPlan(null)),
+      'task with steps and an extra key': () =>
+        setDoc(ref, plan({ tasks: [{ ...withSteps(2), done: true }] })),
+      'task with steps but no title': () => setDoc(ref, plan({ tasks: [{ id: 't1', subs: ['s1|Edit'], note: 'x' }] })),
+    })
+  })
+
+  test('before lockAt a plan has no added times', async () => {
+    await setup('planning')
+    await seed({ 'spaces/s1/weeks/W/plans/bob': { tasks: tasks(2), updatedAt: Timestamp.now() } })
+    await allDenied({
+      'added on create': () =>
+        setDoc(planRef(db('alice'), 'alice'), plan({ tasks: tasks(1), added: { t0: serverTimestamp() } })),
+      'empty added': () => setDoc(planRef(db('alice'), 'alice'), plan({ added: {} })),
+      'appending like after the lock': () =>
+        updateDoc(planRef(db('bob'), 'bob'), {
+          tasks: arrayUnion({ id: 'late', title: 'Late' }), 'added.late': serverTimestamp(), updatedAt: serverTimestamp(),
+        }),
+    })
   })
 
   test('space members read plans; others do not', async () => {

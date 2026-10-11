@@ -16,6 +16,7 @@ import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
 import { toProfile } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
+import { deleteAllMoney } from './money.ts'
 import { cleanText, duringSignUp, ensureProfile, newProfile, profileRef, requireUser, startAuth } from './session.ts'
 import { leaveAllSpaces } from './spaces.ts'
 import type { Start } from './store.ts'
@@ -109,7 +110,7 @@ export async function updateMyName(name: string): Promise<void> {
   }
 }
 
-/** Re-authenticates, leaves all spaces, deletes the user's docs and the auth user. */
+/** Re-authenticates, leaves all spaces, deletes the user's docs (money included) and the auth user. */
 export async function deleteMyAccount(password: string): Promise<void> {
   const user = requireUser()
   if (!user.email) throw new Error(MSG.signedOut)
@@ -126,6 +127,7 @@ export async function deleteMyAccount(password: string): Promise<void> {
   const { db } = getFirebase()
   try {
     await leaveAllSpaces(user.uid)
+    await deleteAllMoney(user.uid)
     const subs = await getDocs(collection(db, 'users', user.uid, 'push'))
     await Promise.all(subs.docs.map((sub) => deleteDoc(sub.ref)))
     await deleteDoc(profileRef(db, user.uid))

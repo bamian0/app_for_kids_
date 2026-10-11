@@ -39,7 +39,16 @@ export async function setupEmulators(): Promise<void> {
       firestore: { host: firestoreAt.host, port: firestoreAt.port, rules: readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8') },
     })
   }
-  await env.clearFirestore()
+  // Retried: right after another test file the emulator sometimes answers 500 once.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await env.clearFirestore()
+      break
+    } catch (e) {
+      if (attempt === 5) throw e
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
   const res = await fetch(`http://${authAt.host}:${authAt.port}/emulator/v1/projects/${PROJECT}/accounts`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Could not clear auth emulator: ${res.status}`)
 }
@@ -67,6 +76,11 @@ export function seed(docs: Record<string, DocumentData>): Promise<void> {
 
 export function adminGet(path: string): Promise<DocumentData | undefined> {
   return asAdmin(async (db) => (await getDoc(doc(db, path))).data())
+}
+
+/** Ids of the docs in a collection, read with rules disabled. */
+export function adminList(path: string): Promise<string[]> {
+  return asAdmin(async (db) => (await getDocs(collection(db, path))).docs.map((d) => d.id).sort())
 }
 
 export function adminDelete(path: string): Promise<void> {

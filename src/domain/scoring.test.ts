@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { computeMonth, computeWeek, isRevealed, joinedAfterLock, membersAt, reviewTargets } from './scoring.ts'
+import { addedAfterLock, computeMonth, computeWeek, isRevealed, isTaskDone, joinedAfterLock, membersAt, reviewTargets, taskSelfFraction } from './scoring.ts'
 import { monthCompleteAt, weekBounds } from './time.ts'
-import type { Mark, Review, Space, UID, WeekData, WeekId } from './types.ts'
+import type { Mark, Review, Space, Task, UID, WeekData, WeekId } from './types.ts'
 
 const TZ = 'Europe/Paris'
 const H = 3_600_000
@@ -655,5 +655,167 @@ describe('membersAt and joinedAfterLock', () => {
     expect(joinedAfterLock(sp, 'early', b.lockAt)).toBe(false)
     expect(joinedAfterLock(sp, 'late', b.lockAt)).toBe(true)
     expect(joinedAfterLock(sp, 'gone', b.lockAt)).toBe(false)
+  })
+})
+
+describe('tasks with steps', () => {
+  /** A task with `n` steps, ids `${id}s1`… */
+  const stepped = (id: string, n: number, extra: Partial<Task> = {}): Task => ({
+    id,
+    title: id,
+    subtasks: Array.from({ length: n }, (_, i) => ({ id: `${id}s${i + 1}`, title: `Step ${i + 1}` })),
+    ...extra,
+  })
+  const plain = (id: string, extra: Partial<Task> = {}): Task => ({ id, title: id, ...extra })
+  /** Ticks the given keys (task or step ids). */
+  const ticks = (...ids: string[]) => Object.fromEntries(ids.map((id) => [id, true]))
+
+  function weekWith(plans: Record<UID, Task[]>, done: Record<UID, Record<string, boolean>>, extra: Partial<WeekSetup> = {}): WeekData {
+    const members = extra.members ?? Object.keys(plans)
+    const data = weekData(W, { ...extra, members })
+    return {
+      ...data,
+      plans: Object.fromEntries(Object.entries(plans).map(([uid, tasks]) => [uid, { uid, tasks, updatedAt: 0 }])),
+      progress: Object.fromEntries(Object.entries(done).map(([uid, d]) => [uid, { uid, done: d, updatedAt: 0 }])),
+    }
+  }
+
+  it('taskSelfFraction: the share of steps ticked; without steps, the task\'s own check-off', () => {
+    expect(taskSelfFraction(plain('t'), ticks('t'))).toBe(1)
+    expect(taskSelfFraction(plain('t'), {})).toBe(0)
+    expect(taskSelfFraction(plain('t'), { t: false })).toBe(0)
+    expect(taskSelfFraction(stepped('t', 4), ticks('ts1', 'ts3'))).toBe(0.5)
+    expect(taskSelfFraction(stepped('t', 3), ticks('ts2'))).toBe(1 / 3)
+    expect(taskSelfFraction(stepped('t', 2), ticks('ts1', 'ts2'))).toBe(1)
+    // An empty list of steps is a task without steps.
+    expect(taskSelfFraction({ ...plain('t'), subtasks: [] }, ticks('t'))).toBe(1)
+  })
+
+  it('a task with steps ignores its own check-off', () => {
+    expect(taskSelfFraction(stepped('t', 3), ticks('t'))).toBe(0)
+    expect(taskSelfFraction(stepped('t', 2), ticks('t', 'ts1'))).toBe(0.5)
+    expect(isTaskDone(stepped('t', 2), ticks('t', 'ts1'))).toBe(false)
+    expect(isTaskDone(stepped('t', 2), ticks('ts1', 'ts2'))).toBe(true)
+    expect(isTaskDone(plain('t'), ticks('t'))).toBe(true)
+    expect(isTaskDone(plain('t'), ticks('ts1'))).toBe(false)
+  })
+
+  it('provisional score counts the share of steps ticked', () => {
+    const data = weekWith({ a: [stepped('a1', 4), plain('a2'), stepped('a3', 2)] }, { a: ticks('a1s1', 'a1s4', 'a2', 'a3', 'a3s2') })
+    const r = computeWeek(data, space(['a']), duringWeek)
+    // 0.5 + 1 + 0.5 of 3.
+    expect(r.members.a.provisionalScore).toBeCloseTo(200 / 3, 12)
+    expect(r.members.a.tasks.map((t) => [t.taskId, t.selfFraction, t.selfDone, t.mark, t.source])).toEqual([
+      ['a1', 0.5, false, 0.5, 'self'],
+      ['a2', 1, true, 1, 'self'],
+      ['a3', 0.5, false, 0.5, 'self'],
+    ])
+    expect(r.members.a.tasks[0].subtasks).toEqual([
+      { id: 'a1s1', title: 'Step 1', done: true },
+      { id: 'a1s2', title: 'Step 2', done: false },
+      { id: 'a1s3', title: 'Step 3', done: false },
+      { id: 'a1s4', title: 'Step 4', done: true },
+    ])
+    expect(r.members.a.tasks[1].subtasks).toEqual([])
+  })
+
+  it('every step ticked makes the task done', () => {
+    const data = weekWith({ a: [stepped('a1', 3)] }, { a: ticks('a1s1', 'a1s2', 'a1s3') })
+    const task = computeWeek(data, space(['a']), duringWeek).members.a.tasks[0]
+    expect(task).toMatchObject({ selfDone: true, selfFraction: 1, mark: 1 })
+    expect(task.subtasks.every((s) => s.done)).toBe(true)
+  })
+
+  it('nobody reviewed: the fallback score uses the step fractions', () => {
+    const data = weekWith(
+      { a: [stepped('a1', 4), plain('a2')], b: [plain('b1')] },
+      { a: ticks('a1s1', 'a1s2', 'a1s3', 'a2') },
+      { reviews: [['a', 'b', [1]]], submittedBy: ['a'] },
+    )
+    const r = computeWeek(data, space(['a', 'b']), afterDeadline)
+    // b missed a's review: a falls back to 0.75 + 1 of 2.
+    expect(r.members.a).toMatchObject({ score: 87.5, provisionalScore: 87.5, reviewedBy: [] })
+    expect(r.members.a.tasks.map((t) => [t.mark, t.source])).toEqual([
+      [0.75, 'self'],
+      [1, 'self'],
+    ])
+    expect(r.members.b.missedReviewsOf).toEqual(['a'])
+  })
+
+  it('reviews mark the task, not its steps: steps change only the provisional score', () => {
+    const data = weekWith(
+      { a: [stepped('a1', 4), plain('a2')], b: [plain('b1')] },
+      { a: ticks('a1s1', 'a2') },
+      { reviews: [['b', 'a', [1, 0.5]], ['a', 'b', [1]]], submittedBy: ['a', 'b'] },
+    )
+    const r = computeWeek(data, space(['a', 'b']), duringReview)
+    expect(r.revealed).toBe(true)
+    expect(r.members.a).toMatchObject({ score: 75, provisionalScore: 62.5 })
+    expect(r.members.a.tasks[0]).toMatchObject({ mark: 1, source: 'reviews', reviewerMarks: { b: 1 }, selfFraction: 0.25, selfDone: false })
+
+    // Marks keyed by step ids are not marks for the task.
+    const unmarked = weekWith({ a: [stepped('a1', 2)], b: [plain('b1')] }, { a: ticks('a1s1', 'a1s2') }, { submittedBy: ['a', 'b'] })
+    unmarked.reviews.push({ id: 'b_a', reviewerId: 'b', revieweeId: 'a', marks: { a1s1: 1, a1s2: 1 }, submittedAt: 0 })
+    expect(computeWeek(unmarked, space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 0, provisionalScore: 100 })
+  })
+
+  it('step fractions add up exactly, so 90% is exactly 90', () => {
+    // 1 + 1 + 0.8 + 0.8 of 4 = 90%, which a plain float sum puts at 89.99999999999999.
+    expect(1 + 1 + 0.8 + 0.8).not.toBe(3.6)
+    const data = weekWith(
+      { a: [plain('a1'), stepped('a2', 1), stepped('a3', 5), stepped('a4', 5)] },
+      { a: ticks('a1', 'a2s1', 'a3s1', 'a3s2', 'a3s3', 'a3s4', 'a4s2', 'a4s3', 'a4s4', 'a4s5') },
+    )
+    const r = computeWeek(data, space(['a']), afterDeadline)
+    expect(r.members.a.score).toBe(90)
+    expect(r.members.a.provisionalScore).toBe(90)
+    const thirds = weekWith({ a: [stepped('a1', 3), stepped('a2', 3), stepped('a3', 3)] }, { a: ticks('a1s1', 'a2s1', 'a2s2', 'a3s1', 'a3s2', 'a3s3') })
+    expect(computeWeek(thirds, space(['a']), afterDeadline).members.a.score).toBe(200 / 3)
+  })
+
+  it('a month of weeks with steps passes at exactly 90', () => {
+    const week = (weekId: WeekId) => ({
+      ...weekWith({ a: [stepped('a1', 5), plain('a2')] }, { a: ticks('a1s1', 'a1s2', 'a1s3', 'a1s4', 'a2') }),
+      weekId,
+      week: { id: weekId, spaceId: 's1', ...weekBounds(weekId, TZ), members: ['a'], submittedBy: [] },
+    })
+    const M = '2026-10'
+    const res = computeMonth(space(['a']), M, ['2026-09-28', '2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26'].map(week), monthCompleteAt(M, TZ))
+    expect(res.a).toMatchObject({ average: 90, finalScore: 90, passed: true })
+  })
+})
+
+describe('tasks added after the lock', () => {
+  const added = (id: string, addedAt?: number): Task => (addedAt === undefined ? { id, title: id } : { id, title: id, addedAt })
+
+  it('addedAfterLock: only a task appended at or after the lock', () => {
+    expect(addedAfterLock({}, b.lockAt)).toBe(false)
+    expect(addedAfterLock({ addedAt: b.lockAt - 1 }, b.lockAt)).toBe(false)
+    expect(addedAfterLock({ addedAt: b.lockAt }, b.lockAt)).toBe(true)
+    expect(addedAfterLock({ addedAt: b.reviewOpenAt - 1 }, b.lockAt)).toBe(true)
+    expect(addedAfterLock(added('t', 0), b.lockAt)).toBe(false)
+  })
+
+  it('score like any other task and carry addedAt into the result', () => {
+    const data = weekData(W, { members: ['a', 'b'], tasks: { b: 1 }, reviews: [['a', 'b', [1]]], submittedBy: ['a', 'b'] })
+    data.plans.a = { uid: 'a', tasks: [added('a1'), added('a2', b.lockAt + 30 * H)], updatedAt: 0 }
+    data.progress.a = { uid: 'a', done: { a2: true }, updatedAt: 0 }
+    data.reviews.push({ id: 'b_a', reviewerId: 'b', revieweeId: 'a', marks: { a1: 0, a2: 1 }, submittedAt: 0 })
+    const r = computeWeek(data, space(['a', 'b']), afterDeadline)
+    expect(r.members.a).toMatchObject({ taskCount: 2, provisionalScore: 50, score: 50 })
+    expect(r.members.a.tasks[1]).toMatchObject({ taskId: 'a2', mark: 1, addedAt: b.lockAt + 30 * H })
+    expect('addedAt' in r.members.a.tasks[0]).toBe(false)
+  })
+
+  it('a member with no tasks at the lock who adds one becomes a review target', () => {
+    const data = weekData(W, { members: ['a', 'b'], tasks: { a: 1 }, done: {}, reviews: [['b', 'a', [1]]], submittedBy: ['b'] })
+    expect(reviewTargets(data, 'a')).toEqual([])
+    data.plans.b = { uid: 'b', tasks: [added('b1', b.lockAt + H)], updatedAt: 0 }
+    data.progress.b = { uid: 'b', done: { b1: true }, updatedAt: 0 }
+    expect(reviewTargets(data, 'a')).toEqual(['b'])
+    const r = computeWeek(data, space(['a', 'b']), afterDeadline)
+    // a never reviewed b: a misses the review and b falls back to the self check-off.
+    expect(r.members.a.missedReviewsOf).toEqual(['b'])
+    expect(r.members.b).toMatchObject({ score: 100, taskCount: 1 })
   })
 })

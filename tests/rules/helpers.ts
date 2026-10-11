@@ -154,6 +154,17 @@ export function inviteDoc(spaceId: string, createdBy: string, extra: DocumentDat
   }
 }
 
+/** The largest task a plan can hold (SPEC §2 limits): 64-character ids, 120-character titles and 8
+ *  steps, stored as "<id>|<title>". Plans of these test the rules' expression budget. */
+export function fullTask(i: number): DocumentData {
+  const id = (prefix: string) => prefix.padEnd(64, 'x')
+  return {
+    id: id(`k${i}-`),
+    title: 'Ж'.repeat(120),
+    subs: Array.from({ length: 8 }, (_, j) => `${id(`s${i}-${j}-`)}|${'Ж'.repeat(120)}`),
+  }
+}
+
 export type Phase = 'planning' | 'active' | 'review' | 'closed'
 
 /** A week doc whose bounds put `now` in the given phase (request.time is real time). */

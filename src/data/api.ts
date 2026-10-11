@@ -97,7 +97,16 @@ export function useWeek(space: Space, weekId: WeekId): Live<WeekData> {
   return useLive(uid ? weekKey(uid, space.id, weekId) : null, (emit) => startWeek(space.id, weekId, uid as UID)(emit))
 }
 
-export { savePlan, setTaskDone, submitReviews, joinWeek, ensureWeek } from './weeks.ts'
+/**
+ * savePlan(space, weekId, tasks): replaces your list, only before lockAt. Tasks may carry `subtasks`
+ * (≤ 8); `addedAt` is ignored. Also, best effort: renames and deletes your earnings to match.
+ * addTaskAfterLock(space, weekId, { title, subtasks }): appends one task while lockAt ≤ now <
+ * reviewOpenAt (SPEC §6.2). Final: it can't be edited or removed. Resolves with the stored task.
+ * setTaskDone(space, weekId, id, done): `id` is a task id or a step (subtask) id. Also keeps your
+ * earning for that task in step (earnedAt set when the task becomes done, cleared when it isn't).
+ */
+export { savePlan, addTaskAfterLock, setTaskDone, submitReviews, joinWeek, ensureWeek } from './weeks.ts'
+export type { NewTaskInput } from './weeks.ts'
 export { ensureSpace } from './months.ts'
 
 // ---------- Months ----------
@@ -133,4 +142,19 @@ export function useSettlements(spaceId: string): Live<Settlement[]> {
 }
 
 export { setSettled } from './settlements.ts'
+
+// ---------- Money (private, SPEC §6.3) ----------
+// Hooks, all live and scoped to the signed-in user (data undefined while signed out):
+//   useMoneyState(): Live<MoneyState | null>   null until the user sets a currency or balance
+//   useEarnings():   Live<Earning[]>           every revenue task of the user, any space or week
+//   useMoves():      Live<MoneyMove[]>         newest first
+//   useGoals():      Live<Goal[]>              by order, lowest first
+//   useCurrency():   CurrencyCode              the state's currency, else defaultCurrency()
+// Writes (throw Error with a human-readable message):
+//   setCurrency(code), setBaseline(amount)
+//   setTaskRevenue(space, weekId, task, amount | null, done)   null switches revenue off (deletes)
+//   addMove('add' | 'spend', amount, note), deleteMove(id)
+//   saveGoal({ id?, name, cost }) → id, deleteGoal(id), reorderGoals(ids), markGoalBought(goal)
+export { useMoneyState, useEarnings, useMoves, useGoals, useCurrency } from './money.ts'
+export { setCurrency, setBaseline, setTaskRevenue, addMove, deleteMove, saveGoal, deleteGoal, reorderGoals, markGoalBought } from './money.ts'
 export { forget, forgetWhere } from './store.ts'

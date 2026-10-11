@@ -47,7 +47,8 @@ The UI shows **this week** and **next week**. Planning next week is allowed at a
   - Who counts for a week is `membersAt(space, lockAt)`: the current members plus anyone with `leftAt ≥ lockAt`, except a current member who left before `lockAt` and rejoined after it (rejoining never rewrites a locked week). A member who never left counts whatever their `joinedAt` says.
 
 ### During the week
-- Each participant can tick their own tasks as done ("self check-offs") until `deadlineAt`. Everyone in the space can see them.
+- Each participant can tick their own tasks as done ("self check-offs") until `deadlineAt`. Everyone in the space can see them. A task with steps (§6.1) is ticked step by step.
+- After the lock and before the review window opens (`lockAt ≤ now < reviewOpenAt`), a participant can **add** tasks to their list, one at a time (§6.2). Added tasks count like the rest and are reviewed on Friday. They can't be edited or removed, and everyone sees when they were added. Nothing already on the list can change after the lock.
 
 ### Friday review
 - Every participant reviews every other participant who has ≥1 task.
@@ -60,7 +61,7 @@ The UI shows **this week** and **next week**. Planning next week is allowed at a
 ### Weekly score (per participant M with n tasks)
 - If n = 0, the score is 0.
 - If at least one other participant submitted a review of M, each task's mark is the average of the submitted reviewers' marks for that task. A missing mark for a task counts as 0.
-- If nobody reviewed M (all reviewers missed the deadline, or M is alone in the space), each task's mark is M's self check-off: done = 1, else 0.
+- If nobody reviewed M (all reviewers missed the deadline, or M is alone in the space), each task's mark is M's self check-off: done = 1, else 0. For a task with steps it is the share of steps ticked (2 of 4 = 0.5).
 - `score = 100 × Σ marks / n`, a number from 0 to 100.
 - Before reveal, the UI may show a **provisional** score computed from self check-offs, clearly labelled.
 
@@ -83,12 +84,16 @@ Timestamps are Firestore `Timestamp` in storage and epoch milliseconds (`number`
 ```
 users/{uid}                                  { name, color, createdAt }
 users/{uid}/push/{subId}                     { endpoint, keys: { p256dh, auth }, createdAt, ua }
+users/{uid}/money/state                      { currency, baseline: number|null, baselineAt: ts|null, updatedAt }   # private (§6.3)
+users/{uid}/earnings/{spaceId}_{weekId}_{taskId}  { spaceId, weekId, taskId, title, amount, earnedAt: ts|null, updatedAt }  # private
+users/{uid}/moves/{moveId}                   { kind: 'add'|'spend', amount, note, at }                              # private
+users/{uid}/goals/{goalId}                   { name, cost, order, createdAt }                                       # private
 invites/{code}                               { spaceId, spaceName, reward, penalty, inviterName, createdBy, createdAt }
 spaces/{spaceId}                             { name, reward, penalty, ownerId, memberIds[], joinedAt{uid: ts}, leftAt?{uid: ts},
                                                timezone, utcOffsetMin, inviteCode, threshold: 90, latePenalty: 5, createdAt }
 spaces/{spaceId}/joins/{uid}                 { code, createdAt }            # proof of invite, written in the join batch
 spaces/{spaceId}/weeks/{weekId}              { startAt, lockAt, reviewOpenAt, deadlineAt, members[], submittedBy[] }
-spaces/{spaceId}/weeks/{weekId}/plans/{uid}     { tasks: [{ id, title }], updatedAt }
+spaces/{spaceId}/weeks/{weekId}/plans/{uid}     { tasks: [{ id, title, subs?: ["<subId>|<title>", …] }], added?: { [taskId]: ts }, updatedAt }
 spaces/{spaceId}/weeks/{weekId}/progress/{uid}  { done: { [taskId]: boolean }, updatedAt }
 spaces/{spaceId}/weeks/{weekId}/reviews/{reviewerId}_{revieweeId}
                                              { reviewerId, revieweeId, marks: { [taskId]: 0|0.5|1 }, submittedAt }
@@ -98,7 +103,7 @@ public/config                                { vapidPublicKey }              # w
 _private/*                                   admin only (VAPID private key, sent-notification log)
 ```
 
-Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space; profile color `#RRGGBB`.
+Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space; profile color `#RRGGBB`.
 
 ### Security rules (`firestore.rules`), what must hold
 - `users/{uid}`: any signed-in user can `get` a profile; `list` is denied, so nobody can enumerate users. Only the owner can write, with field validation; `color` must be `#RRGGBB` (it lands in CSS).
@@ -208,3 +213,56 @@ Known limits:
 - **Motion**: spring physics, iOS push/pop with parallax, sheets with a grabber, press-down scale on tappables. Respect `prefers-reduced-motion` and `prefers-reduced-transparency`.
 - **Iridescence**: a pastel prism (peach, rose, lilac, periwinkle, sky, a hint of gold; never green or olive), as a Siri-style edge glow and specular sheen, used **sparingly**: completing a task (brief shimmer), the Friday reveal, the month verdict, and the ≥90% score ring. Never as a constant background.
 - **Layout**: safe-area insets, `viewport-fit=cover`, 44pt minimum hit targets, light + dark mode. While the on-screen keyboard is up, the app shell ends at its top (bars stay on screen, the focused field is scrolled into view). No motion-permission prompts: the glass highlight is static on touch devices.
+
+## 6. Tasks with steps, tasks added mid-week, money, Overview and Goals
+
+This section is the contract for the second feature round. Where it and the sections above disagree, this one wins.
+
+### 6.1 Tasks with steps (subtasks)
+- A task can have up to **8 steps** (`Task.subtasks`, each `{ id, title }`; ids like task ids, from `newTaskId()`). Steps are planned with the task and follow its rules: editable until the lock (the whole task), frozen after it.
+- **Check-offs**: each step is ticked on its own (`progress.done[subId]`, one key per write as before). A task with steps has no checkbox of its own: it shows how many steps are done (e.g. a small ring and "2/4") and counts as done once every step is ticked. `progress.done[task.id]` is ignored for a task with steps.
+- **Scoring**: reviewers mark the task, not its steps (Done / Half / Not done); they see the steps and which were ticked, as evidence. In the self check-off fallback and the provisional score, a task with steps counts the share of steps ticked (`selfFraction`).
+- **Storage**: a task is stored as `{ id, title }` or `{ id, title, subs }` with `subs` a non-empty list of strings `"<subId>|<title>"` (split on the first `|`; titles have no newlines). The data layer converts to and from `Task.subtasks`; `subs` is omitted when there are no steps.
+- **Caps**: 25 tasks × 8 steps = 200 check-off keys, the existing cap of a progress doc. The UI stops at 8 steps per task.
+
+### 6.2 Tasks added after the lock
+- While `lockAt ≤ now < reviewOpenAt`, a participant who is still a space member can append **one task per write** (with its steps) to their plan, up to 25 in all. "Thursday at midnight" is the last moment: on Friday everyone reviews the same list.
+- The appended task's add time is the server time of the write, stored in the plan's `added` map (`added[taskId] = request.time`; arrays can't hold server timestamps). The data layer exposes it as `Task.addedAt`.
+- Nothing else in the plan changes in that write: the existing tasks are exactly as before (same order, same content), `added` gains exactly that one key, and the plan's `updatedAt` is the server time. A participant with no plan at the lock can create one this way (one task). Added tasks can never be edited or removed.
+- Before the lock, plans are written as before (`{ tasks, updatedAt }`, no `added`).
+- **Shown to everyone**: an added task carries a small "Added Wed" badge (weekday of `addedAt` in the space timezone) on every list and in the review sheet, so friends can judge padding (e.g. an easy task added Thursday night). The add sheet says plainly that the task becomes part of the week and can't be undone.
+- Reviews, reveal and missed reviews are unchanged: someone with no tasks at the lock who adds one becomes a review target like anyone with a task.
+
+### 6.3 Money (private)
+Everything here lives under `users/{uid}` and is readable and writable **only by that user**. Friends never see amounts, revenue switches, balances or goals.
+- **Currency**: `money/state.currency`, an ISO 4217 code (3 uppercase letters). Until set, the client uses a default from the device locale's region (e.g. en-US → USD, de-DE → EUR, hy-AM → AMD, en-GB → GBP), falling back to USD. All amounts of a user are in that one currency; changing it relabels, it doesn't convert.
+- **Revenue tasks**: any of your own tasks (in any week, before or after the lock) can be switched to "Generates revenue" with an amount (≥ 0, 2 decimals, ≤ 1,000,000,000). The switch is the existence of `earnings/{spaceId}_{weekId}_{taskId}`; switching off deletes it. The amount can be changed at any time (plan an estimate, correct it when paid). It is your own bookkeeping, so it is not tied to the lock.
+  - `earnedAt` is set (server time) when the task becomes done by your self check-off (a task with steps: its last step), and cleared when it is un-done. The data layer keeps it in step in `setTaskDone` and when the switch is turned on for a task that is already done. Friends' marks don't affect money.
+  - The data layer keeps `title` in step when a task is renamed before the lock and deletes the earning when the task is deleted before the lock. Leaving a space keeps your earnings.
+- **Moves**: money added (`add`) or spent (`spend`) by hand, with an optional note (≤ 80 chars). A move can be deleted (undo), not edited.
+- **Balance** = `baseline` (0 if unset) + Σ moves with `at > baselineAt` (add +, spend −) + Σ earnings with `earnedAt > baselineAt` (`amount`). With no baseline set, every move and earning counts. "Set balance" (I have X now) writes `baseline = X, baselineAt = now`; what was earned or moved before is assumed to be in X. The balance can go negative (shown in red).
+- **Goals**: `{ name, cost, order }`. The balance fills goals in order, top first (a waterfall): goal 1 gets `min(balance, cost₁)`, goal 2 gets what is left, and so on. Each goal shows funded / cost, what is left to go, and an estimate "≈ N weeks at your pace" where pace = net money in over the last 28 days (earnings + adds − spends) ÷ 4, only when pace > 0 and N ≤ 104. A funded goal can be marked **Bought**: one batch adds a `spend` move of its cost (note = goal name) and deletes the goal. Goals can be reordered, edited and deleted.
+- **Rules** (`firestore.rules`): owner only (`isUser(uid)`) for read and write on `money/state`, `earnings/*`, `moves/*`, `goals/*`, with exact keys and types: amounts are numbers within 0…1e9 (moves and costs > 0), strings within their limits, `currency` matches `^[A-Z]{3}$`, `updatedAt`/`at`/`createdAt` are `request.time` when written, `earnedAt` is null or `request.time` (or unchanged), the earnings doc id equals `spaceId + '_' + weekId + '_' + taskId`, and `weekId` matches `^\d{4}-\d{2}-\d{2}$`. Moves are create/delete only. `deleteMyAccount` deletes all of it.
+
+### 6.4 Navigation: tab bar
+- Signed in, the app is a **tab bar** with three tabs, each its own `NavigationStack` (state kept while switching): **Spaces** (`squareStack`), **Overview** (`chartBar`), **Goals** (`target`). The last tab is remembered on the device. Tapping the selected tab pops its stack to the root.
+- iOS 26 look: a floating glass capsule centered above the home indicator, icon over a small label, the selected item on a soft glass pill; it slides away while the keyboard is up and when a screen is pushed on top of a tab's root (like `hidesBottomBarWhenPushed`), so pushed screens keep their own floating toolbars. Sheets cover it. Root screens leave room for it at the bottom.
+- A notification or invite link that opens a space switches to the Spaces tab first.
+
+### 6.5 Overview
+A root screen, "Overview", across all of your spaces:
+- **This week**: one large ring with your tasks done across every space this week (steps count as fractions), "5 of 8 tasks done", then one row per space with its mini score ring (provisional, or the revealed score) and what's next ("Review due Fri", "Locks tonight").
+- **Money**: earned this month (large, in your currency) with this week, still pending (revenue tasks not done yet in this week and next week) and all time; a bar chart of earnings in the last 8 weeks (this week highlighted); the top earning tasks of the month. Tapping goes to Goals. With no revenue tasks yet, a short explanation of how to mark a task as revenue.
+- **This month**: per space, the month-to-date score against 90 ("On track", or "4 points short").
+- Weeks and months are the spaces' own (a week is identified by its Monday; money is grouped by the task's `weekId`, a month by `monthIdForWeek`).
+
+### 6.6 Goals
+A root screen, "Goals":
+- **Balance** card: the balance, large; under it "+ $X earned from tasks this month"; two clear buttons, **Add Money** and **Remove Money** (a spend, with an optional "What for?" note); a menu with **Set Balance** and **Currency**. With no baseline and nothing recorded yet, the card asks "How much do you have right now?".
+- **Goals** list (top first, the order money fills them): name, cost, a progress bar (iridescent sheen once funded), "$1,550 to go · ≈ 6 weeks at your pace" or "Funded". "+" adds a goal (name, cost); tapping a goal edits it (name, cost, move up/down, delete, **Mark as Bought** when funded).
+- **Activity**: recent money in and out, newest first: task earnings ("Client work · Film Crew"), adds and spends with their notes, and when the balance was set. Manual moves can be deleted with a swipe.
+
+### 6.7 Task editing UI
+- Before the lock, the inline list stays (type, Return, swipe to delete). Each row gets an info button that opens the **task sheet**: title, steps (add, rename, delete; up to 8), and "Generates revenue" with an amount field (currency symbol, decimal keypad). The section also gets a clear **Add Task with Steps** button that opens the same sheet empty. Before the lock the sheet hands the task back to the list editor, which saves it (one writer, so a pending autosave can't drop it).
+- After the lock and until Friday 00:00, your list ends with **Add Task**: the same sheet, which appends via `addTaskAfterLock` after saying it can't be undone. Steps show indented under their task with their own check circles until the deadline. Your revenue tasks show their amount (only to you); tapping a locked task opens the sheet read-only except for the revenue switch and amount.
+- Friends' lists and the review sheet show steps (with which are ticked) and the "Added Wed" badge.

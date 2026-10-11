@@ -10,3 +10,6 @@ playwright-report/
 .env*
 !.env.example
 .DS_Store
+
+# Per-agent emulator suites for local UI checks
+.emu-ui*.json

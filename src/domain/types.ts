@@ -73,9 +73,22 @@ export interface Week {
   submittedBy: UID[]
 }
 
+/** One step of a task. Its check-off lives in Progress.done under the subtask's own id. */
+export interface Subtask {
+  id: string
+  /** 1–120 characters, one line. */
+  title: string
+}
+
 export interface Task {
   id: string
   title: string
+  /** Steps that make up the task (max 8). When present, the task counts as done (self check-off) once
+   *  every step is ticked; the task's own `done` key is ignored. Reviewers still mark the task itself. */
+  subtasks?: Subtask[]
+  /** Set only on a task added after the lock (lockAt ≤ addedAt < reviewOpenAt): server time of the
+   *  append. Such a task can't be edited or removed; everyone sees when it was added. */
+  addedAt?: number
 }
 
 export interface Plan {
@@ -130,4 +143,58 @@ export interface MonthStakes {
   reward: string
   penalty: string
   frozen: boolean
+}
+
+// ---------- Money (private to each user: users/{uid}/...) ----------
+
+/** ISO 4217 code, e.g. 'USD'. */
+export type CurrencyCode = string
+
+/** users/{uid}/money/state. Missing until the user sets a currency or a balance. */
+export interface MoneyState {
+  currency: CurrencyCode
+  /** "I have this much now": the starting point of the balance. null until set. */
+  baseline: number | null
+  /** When the baseline was set. Earnings and moves at or before it are already in it. */
+  baselineAt: number | null
+  updatedAt: number
+}
+
+/** users/{uid}/earnings/{spaceId}_{weekId}_{taskId}: a task the user marked as generating revenue.
+ *  The doc existing is the "generates revenue" switch. Private: friends never see amounts. */
+export interface Earning {
+  /** `${spaceId}_${weekId}_${taskId}` */
+  id: string
+  spaceId: string
+  weekId: WeekId
+  taskId: string
+  /** Copy of the task title, kept in step by the data layer (so history survives leaving a space). */
+  title: string
+  /** ≥ 0, at most 2 decimals. 0 = revenue task without an amount yet. */
+  amount: number
+  /** When the task was completed (self check-off, or its last step ticked); null while not done. */
+  earnedAt: number | null
+  updatedAt: number
+}
+
+/** users/{uid}/moves/{id}: money added or spent by hand. */
+export interface MoneyMove {
+  id: string
+  kind: 'add' | 'spend'
+  /** > 0, at most 2 decimals. */
+  amount: number
+  /** 0–80 characters, e.g. "Rent". */
+  note: string
+  at: number
+}
+
+/** users/{uid}/goals/{id}: something to save for. The balance fills goals in `order` (lowest first). */
+export interface Goal {
+  id: string
+  /** 1–60 characters, e.g. "Sony FX3". */
+  name: string
+  /** > 0, at most 2 decimals. */
+  cost: number
+  order: number
+  createdAt: number
 }

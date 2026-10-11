@@ -270,6 +270,90 @@ const ICONS = {
       </>
     ),
   },
+  chevronUp: { weight: 2.4, body: <path d="M4.5 15.25 12 7.75l7.5 7.5" /> },
+  arrowUp: { weight: 2, body: <path d="M12 19.5V4.75M6 10.5l6-6 6 6" /> },
+  arrowDown: { weight: 2, body: <path d="M12 4.5v14.75M6 13.5l6 6 6-6" /> },
+  plusCircle: {
+    weight: 1.7,
+    body: (
+      <>
+        <circle cx="12" cy="12" r="8.75" />
+        <path d="M12 7.75v8.5M7.75 12h8.5" />
+      </>
+    ),
+  },
+  minusCircle: {
+    weight: 1.7,
+    body: (
+      <>
+        <circle cx="12" cy="12" r="8.75" />
+        <path d="M7.75 12h8.5" />
+      </>
+    ),
+  },
+  /** Spaces tab: stacked cards. */
+  squareStack: {
+    weight: 1.7,
+    body: (
+      <>
+        <rect x="3.75" y="8.25" width="16.5" height="12" rx="3" />
+        <path d="M6.25 5.25h11.5M8.5 2.75h7" />
+      </>
+    ),
+  },
+  /** Overview tab. */
+  chartBar: {
+    weight: 1.7,
+    body: (
+      <>
+        <rect x="3.75" y="12.5" width="4" height="7.75" rx="1.25" />
+        <rect x="10" y="7.5" width="4" height="12.75" rx="1.25" />
+        <rect x="16.25" y="3.75" width="4" height="16.5" rx="1.25" />
+      </>
+    ),
+  },
+  /** Goals tab. */
+  target: {
+    weight: 1.7,
+    body: (
+      <>
+        <circle cx="12" cy="12" r="8.75" />
+        <circle cx="12" cy="12" r="5.25" />
+        {dot(12, 12, 1.75)}
+      </>
+    ),
+  },
+  /** Money, revenue. */
+  banknote: {
+    weight: 1.7,
+    body: (
+      <>
+        <rect x="2.75" y="6.25" width="18.5" height="11.5" rx="2.5" />
+        <circle cx="12" cy="12" r="2.6" />
+        <path d="M6 9.25v5.5M18 9.25v5.5" />
+      </>
+    ),
+  },
+  /** A task with steps (list.bullet.indent). */
+  listIndent: {
+    weight: 1.8,
+    body: (
+      <>
+        {[dot(4.75, 6, 1.35), dot(9.25, 12, 1.35), dot(9.25, 18, 1.35)]}
+        <path d="M8.5 6h11.25M13 12h6.75M13 18h6.75" />
+      </>
+    ),
+  },
+  /** Spending (bag). */
+  bag: {
+    weight: 1.7,
+    body: (
+      <>
+        <path d="M5.25 8.25h13.5l-.9 10.6a2 2 0 0 1-2 1.85h-7.7a2 2 0 0 1-2-1.85Z" />
+        <path d="M8.75 10.5V7a3.25 3.25 0 0 1 6.5 0v3.5" />
+      </>
+    ),
+  },
 } satisfies Record<string, IconDef>
 
 export type IconName = keyof typeof ICONS

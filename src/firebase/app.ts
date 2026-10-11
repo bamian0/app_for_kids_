@@ -33,7 +33,9 @@ function emulatorTarget(): EmulatorTarget | null {
   if (!USE_EMULATORS) return null
   // The page's own host, so a phone on the LAN opening http://<laptop-ip>:5173 reaches the laptop's emulators.
   const host = typeof location !== 'undefined' && location.hostname ? location.hostname : '127.0.0.1'
-  return { host, authPort: 9099, firestorePort: 8080 }
+  // VITE_EMULATOR_PORTS="<auth>,<firestore>" points a dev server at a second emulator suite.
+  const [authPort, firestorePort] = (import.meta.env.VITE_EMULATOR_PORTS ?? '9099,8080').split(',').map(Number)
+  return { host, authPort, firestorePort }
 }
 
 /** Lazily initialized; throws if the app is not configured (see isConfigured in ./config.ts). */

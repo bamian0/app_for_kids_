@@ -13,9 +13,8 @@ import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'f
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
-import { utcOffsetMinutes } from '../src/domain/time.ts'
 import type { Mark, MonthId, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
+import { dueWindows, offsetToStore, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
 
 export const DEFAULT_APP_URL = 'https://bamian0.github.io/app_for_kids_/'
 const FOUR_WEEKS_S = 28 * 24 * 3600
@@ -346,7 +345,8 @@ export async function runReminders({
     const weeks = Object.fromEntries(await Promise.all([...weekIds].map(async (id) => [id, await loadWeek(db, space.id, id)] as const)))
     const stakes: NonNullable<SpaceInput['stakes']> = {}
     for (const window of windows) if (window.kind === 'verdict') Object.assign(stakes, await loadStakes(db, space.id, window.period))
-    await loadProfiles(space.memberIds)
+    // Week members too: someone who left after lock is still named as a friend to review.
+    await loadProfiles([...new Set([...space.memberIds, ...Object.values(weeks).flatMap((w) => w.week?.members ?? [])])])
     const plan = planSpace({ space, weeks, stakes }, profiles, sent, nowMs)
 
     if (!dryRun) {
@@ -396,12 +396,13 @@ async function loadStakes(db: Firestore, spaceId: string, monthId: MonthId): Pro
 }
 
 /**
- * Spaces from before utcOffsetMin get it from here, computed from their own zone (clients can't be
- * trusted to set it; the rules then anchor every new week to it).
+ * Spaces from before utcOffsetMin get it from here, computed from their own zone, and so do spaces
+ * created with an offset that doesn't fit their zone (clients can't be trusted to set it; the rules
+ * then anchor every new week to it).
  */
 async function backfillOffset(ref: DocumentReference, space: Space, nowMs: number): Promise<void> {
-  if (space.utcOffsetMin !== undefined) return
-  const offset = Math.round(utcOffsetMinutes(space.timezone, nowMs))
+  const offset = offsetToStore(space, nowMs)
+  if (offset === null) return
   await ref.update({ utcOffsetMin: offset })
   space.utcOffsetMin = offset
 }

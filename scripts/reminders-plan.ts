@@ -5,7 +5,7 @@
 // sure each one goes out once.
 import { DateTime } from 'luxon'
 import type { MonthId, Space, UID, UserProfile, WeekData, WeekId } from '../src/domain/types.ts'
-import { addMonths, addWeeks, monthIdFor, weekBounds, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
+import { addMonths, addWeeks, monthIdFor, utcOffsetMinutes, weekBounds, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
 import { computeMonth, computeWeek, membersAt, reviewTargets } from '../src/domain/scoring.ts'
 
 export type ReminderKind = 'plan' | 'review' | 'last-call' | 'results' | 'verdict'
@@ -65,6 +65,16 @@ const LOCALE = 'en-US'
 
 export function reminderKey(spaceId: string, period: string, kind: ReminderKind, uid: UID): string {
   return `${spaceId}_${period}_${kind}_${uid}`
+}
+
+/**
+ * The utcOffsetMin the job writes to a space, or null to leave it: spaces from before it existed get
+ * one, and so does a space whose offset is more than DST's hour off its own zone (whoever creates a
+ * space can write any offset, and one that doesn't fit the zone stops the app from starting weeks).
+ */
+export function offsetToStore(space: Pick<Space, 'timezone' | 'utcOffsetMin'>, nowMs: number): number | null {
+  const offset = Math.round(utcOffsetMinutes(space.timezone, nowMs))
+  return space.utcOffsetMin === undefined || Math.abs(space.utcOffsetMin - offset) > 60 ? offset : null
 }
 
 /** `hour`:00 local time, `days` calendar days after `date` ('YYYY-MM-DD') in `tz`. */
@@ -142,7 +152,9 @@ function decide(
   nowMs: number,
 ): Decision[] {
   const members = space.memberIds
-  const name = (uid: UID) => profiles[uid]?.name?.trim() || 'a friend'
+  // Someone who left after lock is still reviewed; with their profile gone (a deleted account) they
+  // are named as what they are.
+  const name = (uid: UID) => profiles[uid]?.name?.trim() || (members.includes(uid) ? 'a friend' : 'a former member')
 
   switch (window.kind) {
     case 'plan': {
@@ -164,6 +176,8 @@ function decide(
     case 'review':
     case 'last-call': {
       // After lock, members and plans are frozen and submitting is one-way: every decision is final.
+      // Only current members are asked (a leaver can't submit), but whoever they must rate includes
+      // anyone who left after lock: the week still counts them.
       const data = weeks[window.period]
       const week = data.week
       return members.map((uid): Decision => {
@@ -171,7 +185,7 @@ function decide(
         // The stored review window rules: never "due in" after it has closed.
         if (nowMs >= week.deadlineAt) return { uid, skip: 'final' }
         if (nowMs < week.reviewOpenAt) return { uid, skip: 'not-yet' }
-        const targets = reviewTargets(data, uid, membersAt(space, week.deadlineAt))
+        const targets = reviewTargets(data, uid, membersAt(space, week.lockAt))
         if (targets.length === 0) return { uid, skip: 'final' }
         const names = listNames(targets.map(name))
         if (window.kind === 'review') return { uid, title: 'Review day', body: `Rate ${names} in ${space.name}. Due in ${hoursFromNow(week.deadlineAt - nowMs)}.` }

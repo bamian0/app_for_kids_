@@ -66,25 +66,39 @@ function normalise(score: number): number {
   return Math.round(score * 1e9) / 1e9
 }
 
+type RevealWeek = { members: UID[]; submittedBy: UID[]; deadlineAt: number }
+
 /**
- * Revealed when every participant has submitted, or at deadlineAt. With `memberIds` (the space's
- * current members), only participants who are still members count, as in the rules: someone who
- * left can't hold the reveal back.
+ * Revealed when every week member has submitted, or at deadlineAt, as in the rules. Everyone in
+ * `members` counts, including anyone who left the space after lock: the lock is a commitment, so
+ * leaving can't reveal the week early, and since a leaver can't submit any more the deadline reveals
+ * it. Leaving before lock already took them out of `members`.
  */
-export function isRevealed(week: { members: UID[]; submittedBy: UID[]; deadlineAt: number }, nowMs: number, memberIds?: UID[]): boolean {
+export function isRevealed(week: RevealWeek, nowMs: number): boolean
+/** @deprecated The third argument is ignored: every week member counts (see above). Drop it. */
+export function isRevealed(week: RevealWeek, nowMs: number, memberIds: UID[]): boolean
+export function isRevealed(week: RevealWeek, nowMs: number): boolean {
   if (nowMs >= week.deadlineAt) return true
-  return week.members.every((uid) => week.submittedBy.includes(uid) || (memberIds !== undefined && !memberIds.includes(uid)))
+  return week.members.every((uid) => week.submittedBy.includes(uid))
 }
 
 /**
- * The participants who still count for a week whose deadline is `deadlineAt`: current space members,
- * plus anyone who left after the deadline (their week was already settled when they went). Someone
- * who left before it is nobody's review target, so they neither hold back the reveal nor cost anyone
- * points, and their leaving later never rewrites a closed month.
+ * The participants who count for a week that locks at `lockAt`: everyone who was in the space when
+ * the week locked, whether or not they have left since. That is the current members, except anyone
+ * who left before lockAt and rejoined after it, plus anyone who left at or after lockAt. Leaving or
+ * being removed after lock changes nothing: they stay a review target, their score counts toward the
+ * month, and others who skip reviewing them lose points. Someone who left before lock and came back
+ * after it is nobody's review target, so rejoining never rewrites a week that has locked. Pass the
+ * week's stored lockAt.
  */
-export function membersAt(space: Pick<Space, 'memberIds' | 'leftAt'>, deadlineAt: number): UID[] {
-  const leftLater = Object.entries(space.leftAt ?? {}).flatMap(([uid, at]) => (at >= deadlineAt && !space.memberIds.includes(uid) ? [uid] : []))
-  return [...space.memberIds, ...leftLater]
+export function membersAt(space: Pick<Space, 'memberIds' | 'leftAt'> & Partial<Pick<Space, 'joinedAt'>>, lockAt: number): UID[] {
+  const leftAt = space.leftAt ?? {}
+  const joinedAt = space.joinedAt ?? {}
+  // Only someone who left before the lock and came back after it doesn't count. A member who never
+  // left counts whatever their joinedAt says (being in the week means they were in when it locked).
+  const current = space.memberIds.filter((uid) => !(leftAt[uid] < lockAt && joinedAt[uid] >= lockAt))
+  const leftLater = Object.entries(leftAt).flatMap(([uid, at]) => (at >= lockAt && !space.memberIds.includes(uid) ? [uid] : []))
+  return [...current, ...leftLater]
 }
 
 /** True when `uid` joined the space at or after the week's lockAt, so the week started without them
@@ -103,7 +117,7 @@ function tasksOf(data: WeekData, uid: UID) {
 }
 
 /** Members `uid` must review this week: other participants with ≥1 task who, given `memberIds`
- *  (the space's current members), are still in the space. */
+ *  (`membersAt(space, week.lockAt)`), still count for the week. Someone who left after lock does. */
 export function reviewTargets(data: WeekData, uid: UID, memberIds?: UID[]): UID[] {
   const members = participantsOf(data)
   if (!members.includes(uid)) return []
@@ -143,14 +157,14 @@ function emptyResult(uid: UID): MemberWeekResult {
  * Results for every week participant (including any who have since left the space), plus a
  * non-participating entry for each space member who is not in the week (joined after lock, or the
  * week never started). Before reveal `score` is null; `tasks[].mark` always reflects the reviews
- * visible to the caller, falling back to self check-offs. Participants who left before the deadline
- * are nobody's review target (see membersAt).
+ * visible to the caller, falling back to self check-offs. Participants who left after lock still
+ * count: reviews are owed to them and they hold the reveal until the deadline (see membersAt).
  */
 export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekResult {
   const week = data.week
   const bounds: WeekBounds = week ?? weekBounds(data.weekId, space.timezone)
-  const counted = membersAt(space, bounds.deadlineAt)
-  const revealed = week ? isRevealed(week, nowMs, counted) : nowMs >= bounds.deadlineAt
+  const counted = membersAt(space, bounds.lockAt)
+  const revealed = week ? isRevealed(week, nowMs) : nowMs >= bounds.deadlineAt
   const pastDeadline = nowMs >= bounds.deadlineAt
   const members = participantsOf(data)
   const reviews = validReviews(data, members)

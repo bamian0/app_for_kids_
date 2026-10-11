@@ -75,6 +75,14 @@ describe('weeks: create', () => {
     await allowed(setDoc(weekRef(db('alice'), next, 's2'), newWeek(AB, next, zone)))
   })
 
+  test.each(ZONES)('a space from the other season can move a week by 2h at most in %s', async (zone) => {
+    // Its anchor is an hour early, so its hour of slack reaches 2h early; the bounds' own hour can't add a third.
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetNow(zone) + 60 }), 'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetNow(zone) + 60 }) })
+    const next = mondayId(zone, 1)
+    await allowed(setDoc(weekRef(db('alice'), next, 's1'), shifted(AB, next, zone, everyBound(-2 * HOUR))))
+    await denied(setDoc(weekRef(db('alice'), next, 's2'), shifted(AB, next, zone, { startAt: -2 * HOUR, lockAt: -3 * HOUR, reviewOpenAt: -3 * HOUR, deadlineAt: -3 * HOUR })))
+  })
+
   test('DST inside the week: later bounds may be 1h off whole days', async () => {
     const zone = 'Europe/Berlin'
     await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s2': spaceDoc(AB) })
@@ -95,6 +103,9 @@ describe('weeks: create', () => {
       'everything 23h early': create(shifted(AB, next, zone, everyBound(-23 * HOUR))),
       'lock 2h early': create(shifted(AB, next, zone, { lockAt: -2 * HOUR })),
       'deadline 2h early': create(shifted(AB, next, zone, { deadlineAt: -2 * HOUR })),
+      // Each hour of slack is fine alone; stacked they would move the lock and deadline by two.
+      'start 1h early, later bounds 1h earlier still': create(shifted(AB, next, zone, { startAt: -HOUR, lockAt: -2 * HOUR, reviewOpenAt: -2 * HOUR, deadlineAt: -2 * HOUR })),
+      'start 1h late, later bounds 1h later still': create(shifted(AB, next, zone, { startAt: HOUR, lockAt: 2 * HOUR, reviewOpenAt: 2 * HOUR, deadlineAt: 2 * HOUR })),
       'review window 2h late': create(shifted(AB, next, zone, { reviewOpenAt: 2 * HOUR, deadlineAt: 2 * HOUR })),
       // The old attack: Monday 00:00 UTC − 14h, every later bound − 2h.
       'UTC − 14h, bounds − 2h': create({
@@ -235,37 +246,75 @@ describe('weeks: leaving', () => {
     return batch.commit()
   }
 
-  test('someone leaving the space leaves its open weeks in the same batch', async () => {
+  test('someone leaving the space before lock leaves the unlocked weeks in the same batch', async () => {
     await seed({
       'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
       'spaces/s1/weeks/P': weekDoc('planning', ['alice', 'bob', 'carol']),
-      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'carol']),
+      'spaces/s1/weeks/N': weekDoc('planning', ['alice', 'bob', 'carol']),
     })
-    await allowed(leaveSpace(db('carol'), 'carol', ['P', 'R']))
-    expect((await getDoc(weekRef(db('alice'), 'R'))).data()?.members).toEqual(['alice', 'bob'])
+    await allowed(leaveSpace(db('carol'), 'carol', ['P', 'N']))
+    expect((await getDoc(weekRef(db('alice'), 'P'))).data()?.members).toEqual(['alice', 'bob'])
+    expect((await getDoc(weekRef(db('alice'), 'N'))).data()?.members).toEqual(['alice', 'bob'])
   })
 
-  test('the owner takes someone who already left out of an open week', async () => {
-    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'dave']) })
-    await denied(updateDoc(weekRef(db('bob'), 'R'), { members: arrayRemove('dave') }))
-    await allowed(updateDoc(weekRef(db('alice'), 'R'), { members: arrayRemove('dave') }))
+  test('after lock, leaving or being removed keeps you in the week', async () => {
+    // The lock is a commitment: slacking then leaving on Thursday, or the owner removing someone on
+    // Friday, must not erase that week.
+    await seed({
+      'spaces/s1': spaceDoc(['alice', 'bob', 'carol', 'dave']),
+      'spaces/s1/weeks/A': weekDoc('active', ['alice', 'bob', 'carol', 'dave']),
+      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'carol', 'dave']),
+      'spaces/s1/weeks/N': weekDoc('planning', ['alice', 'bob', 'carol', 'dave']),
+    })
+    await allDenied({
+      'leave a week in its active phase': () => leaveSpace(db('carol'), 'carol', ['A']),
+      'leave a week in its review window': () => leaveSpace(db('carol'), 'carol', ['R']),
+      'leave the locked week along with the unlocked one': () => leaveSpace(db('carol'), 'carol', ['N', 'A']),
+      'owner removes someone from the review week': () => leaveSpace(db('alice'), 'dave', ['R']),
+    })
+    // Leaving the space itself (and the week that hasn't locked) still works; the locked weeks keep them.
+    await allowed(leaveSpace(db('carol'), 'carol', ['N']))
+    await allowed(leaveSpace(db('alice'), 'dave', ['N']))
+    expect((await getDoc(weekRef(db('alice'), 'A'))).data()?.members).toEqual(['alice', 'bob', 'carol', 'dave'])
+    expect((await getDoc(weekRef(db('alice'), 'R'))).data()?.members).toEqual(['alice', 'bob', 'carol', 'dave'])
+    expect((await getDoc(weekRef(db('alice'), 'N'))).data()?.members).toEqual(['alice', 'bob'])
+    // And nobody can take them out afterwards either.
+    await allDenied({
+      'owner, later': () => updateDoc(weekRef(db('alice'), 'R'), { members: arrayRemove('carol') }),
+      'another member, later': () => updateDoc(weekRef(db('bob'), 'A'), { members: arrayRemove('dave') }),
+    })
   })
 
-  test('leaving a week is limited to leavers who have not submitted, before the deadline', async () => {
+  test('the owner takes someone who already left out of a week that has not locked', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(AB),
+      'spaces/s1/weeks/P': weekDoc('planning', ['alice', 'bob', 'dave']),
+      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'dave']),
+    })
+    await denied(updateDoc(weekRef(db('bob'), 'P'), { members: arrayRemove('dave') }))
+    await allowed(updateDoc(weekRef(db('alice'), 'P'), { members: arrayRemove('dave') }))
+    await denied(updateDoc(weekRef(db('alice'), 'R'), { members: arrayRemove('dave') }))
+  })
+
+  test('leaving a week is limited to one ex-member, before lockAt', async () => {
     await seed({
       'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
+      'spaces/s1/weeks/P': weekDoc('planning', ['alice', 'bob', 'carol', 'dave', 'erin']),
+      'spaces/s1/weeks/A': weekDoc('active', ['alice', 'bob', 'carol', 'dave']),
       'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'carol', 'dave', 'erin'], ['erin']),
       'spaces/s1/weeks/C': weekDoc('closed', ['alice', 'bob', 'carol', 'dave']),
     })
     const alice = db('alice')
     await allDenied({
-      'still a space member': () => updateDoc(weekRef(db('carol'), 'R'), { members: arrayRemove('carol') }),
-      'owner drops a current member': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('carol') }),
-      'after the deadline': () => updateDoc(weekRef(alice, 'C'), { members: arrayRemove('dave') }),
+      'still a space member': () => updateDoc(weekRef(db('carol'), 'P'), { members: arrayRemove('carol') }),
+      'owner drops a current member': () => updateDoc(weekRef(alice, 'P'), { members: arrayRemove('carol') }),
+      'after lockAt': () => updateDoc(weekRef(alice, 'A'), { members: arrayRemove('dave') }),
+      'in the review window': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('dave') }),
       'already submitted': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('erin') }),
-      'two at once': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('dave', 'erin') }),
-      'also edits submittedBy': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('dave'), submittedBy: [] }),
-      'a stranger': () => updateDoc(weekRef(db('zoe'), 'R'), { members: arrayRemove('dave') }),
+      'after the deadline': () => updateDoc(weekRef(alice, 'C'), { members: arrayRemove('dave') }),
+      'two at once': () => updateDoc(weekRef(alice, 'P'), { members: arrayRemove('dave', 'erin') }),
+      'also edits submittedBy': () => updateDoc(weekRef(alice, 'P'), { members: arrayRemove('dave'), submittedBy: ['alice'] }),
+      'a stranger': () => updateDoc(weekRef(db('zoe'), 'P'), { members: arrayRemove('dave') }),
     })
   })
 })

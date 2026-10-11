@@ -1,7 +1,7 @@
 // Data layer against the emulators, through the same functions the screens call.
 // One scenario, in order: accounts -> spaces -> weeks -> reviews -> months -> account deletion.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { disableNetwork, enableNetwork } from 'firebase/firestore'
+import { arrayRemove, collection, disableNetwork, doc, enableNetwork, getDocs, updateDoc } from 'firebase/firestore'
 import {
   createSpace,
   deleteMyAccount,
@@ -32,12 +32,15 @@ import { startMySpaces, startSpace } from '../../src/data/spaces.ts'
 import { combine, peek, watch } from '../../src/data/store.ts'
 import { mergeWeeks, startWeek, weekKey } from '../../src/data/weeks.ts'
 import { now } from '../../src/domain/clock.ts'
+import { computeMonth, computeWeek, membersAt, reviewTargets } from '../../src/domain/scoring.ts'
 import { colorForUid, formatInviteCode } from '../../src/domain/ids.ts'
 import { addWeeks, monthIdForWeek, utcOffsetMinutes, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import type { Space, WeekData } from '../../src/domain/types.ts'
 import { getFirebase } from '../../src/firebase/app.ts'
 import {
   adminGet,
+  adminSpace,
+  adminWeekData,
   as,
   createBareAccount,
   createUser,
@@ -500,7 +503,7 @@ describe('reviews', () => {
     seen.stop()
   })
 
-  it('someone who leaves mid-week leaves the open weeks: nobody reviews them, the reveal doesn\'t wait', async () => {
+  it('someone who leaves after lock stays in that week: still reviewed, and the reveal waits for them', async () => {
     const T = thisWeek()
     const next = addWeeks(T, 1)
     await seed({
@@ -510,22 +513,31 @@ describe('reviews', () => {
     })
     await as(lee)
     await leaveSpace(space.id)
-    expect((await adminGet(weekPath(T)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
+    // This week has locked: Lee stays in it. Next week hasn't: Lee is out of it.
+    expect((await adminGet(weekPath(T)))?.members).toEqual([alex.uid, sam.uid, kim.uid, lee.uid])
     expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
     expect((await adminGet(`spaces/${space.id}`))?.leftAt[lee.uid]).toBeDefined()
 
     await as(alex)
-    await submitReviews(space, T, [])
+    await submitReviews(space, T, [{ revieweeId: kim.uid, marks: { k1: 1 } }, { revieweeId: lee.uid, marks: { l1: 0 } }])
     await as(kim)
-    await submitReviews(space, T, [])
+    await submitReviews(space, T, [{ revieweeId: lee.uid, marks: { l1: 0.5 } }])
     await as(sam)
     await submitReviews(space, T, [{ revieweeId: kim.uid, marks: { k1: 1 } }])
-    // Revealed for the server too: Alex reads Sam's review of Kim.
+    // Everyone still in the space has submitted, but Lee is in the week and can't any more: blind
+    // until the deadline, for the data layer and the rules alike.
     await as(alex)
     const live = observe(startWeek(space.id, T, alex.uid))
-    const state = await live.until((l) => l.data?.reviews.length === 1)
-    expect(state.data?.reviews[0].reviewerId).toBe(sam.uid)
+    const state = await live.until((l) => l.data?.week?.submittedBy.length === 3 && l.data.reviews.length === 2)
+    expect(state.data?.reviews.every((r) => r.reviewerId === alex.uid)).toBe(true)
     live.stop()
+    await expect(getDocs(collection(getFirebase().db, `${weekPath(T)}/reviews`))).rejects.toMatchObject({ code: 'permission-denied' })
+    // After the deadline Sam owes Lee a review; Lee's score comes from Alex's and Kim's marks.
+    const data = await adminWeekData(space.id, T)
+    const result = computeWeek(data, await adminSpace(space.id), data.week!.deadlineAt)
+    expect(result.members[sam.uid].missedReviewsOf).toEqual([lee.uid])
+    expect(result.members[lee.uid]).toMatchObject({ participating: true, score: 25 })
+    expect([...result.members[lee.uid].reviewedBy].sort()).toEqual([alex.uid, kim.uid].sort())
   })
 
   it('refuses reviews outside the window before writing', async () => {
@@ -551,6 +563,103 @@ describe('reviews', () => {
     expect(Date.now()).toBeGreaterThanOrEqual(deadline)
     expect(after.data?.reviews[0].id).toBe(`${sam.uid}_${alex.uid}`)
     live.stop()
+  })
+})
+
+describe('the lock is a commitment: leaving after it never helps the leaver', () => {
+  let mia: TestUser
+  let noa: TestUser
+  let oli: TestUser
+
+  /** A fresh space owned by Alex with `others` in it; this week (locked, in `phase`) and next week (planning) seeded. */
+  async function crewWith(others: TestUser[], phase: 'active' | 'review', plans: Record<string, string[]>) {
+    await as(alex)
+    const crew = await createSpace({ name: 'Leavers', reward: 'r', penalty: 'p' })
+    for (const user of others) {
+      await as(user)
+      await joinSpace(crew.inviteCode)
+    }
+    const members = [alex.uid, ...others.map((u) => u.uid)]
+    const T = weekIdFor(now(), crew.timezone)
+    const N = addWeeks(T, 1)
+    const path = (weekId: string) => `spaces/${crew.id}/weeks/${weekId}`
+    await seed({
+      [path(T)]: weekDoc(phase, members),
+      [path(N)]: weekDoc('planning', members),
+      ...Object.fromEntries(
+        Object.entries(plans).map(([uid, ids]) => [`${path(T)}/plans/${uid}`, { tasks: ids.map((id) => ({ id, title: id })), updatedAt: ts(Date.now() - 3 * DAY) }]),
+      ),
+    })
+    return { crew: { ...crew, memberIds: members }, T, N, members, path }
+  }
+
+  it('cheat 1: slacking all week, then leaving on Thursday, still counts that week', async () => {
+    mia = await createUser('Mia')
+    const { crew, T, N, members, path } = await crewWith([mia], 'active', { [alex.uid]: ['a1'], [mia.uid]: ['m1', 'm2'] })
+    await as(mia)
+    await leaveSpace(crew.id)
+    expect((await adminGet(path(T)))?.members).toEqual(members)
+    expect((await adminGet(path(N)))?.members).toEqual([alex.uid])
+
+    // Mia ticked nothing and nobody can review her into a better week: 0%, and it stays in her month.
+    const data = await adminWeekData(crew.id, T)
+    const sp = await adminSpace(crew.id)
+    const after = data.week!.deadlineAt
+    expect(reviewTargets(data, alex.uid, membersAt(sp, data.week!.lockAt))).toEqual([mia.uid])
+    expect(computeWeek(data, sp, after).members[mia.uid]).toMatchObject({ participating: true, score: 0 })
+    const month = computeMonth(sp, monthIdForWeek(T), [data], after)
+    expect(month[mia.uid]).toMatchObject({ former: true, others: [alex.uid], weeks: [{ weekId: T, score: 0, closed: true }], average: 0 })
+    expect(month[alex.uid].others).toEqual([mia.uid])
+  })
+
+  it('cheat 2: the owner removing someone in the review window keeps their strong week', async () => {
+    noa = await createUser('Noa')
+    const { crew, T, N, members, path } = await crewWith([sam, noa], 'review', { [alex.uid]: ['a1'], [sam.uid]: ['s1'], [noa.uid]: ['n1', 'n2'] })
+    await as(alex)
+    await removeMember(crew.id, noa.uid)
+    expect((await adminGet(path(T)))?.members).toEqual(members)
+    expect((await adminGet(path(N)))?.members).toEqual([alex.uid, sam.uid])
+    // Nor can the owner take Noa out of the locked week directly.
+    await expect(updateDoc(doc(getFirebase().db, path(T)), { members: arrayRemove(noa.uid) })).rejects.toMatchObject({ code: 'permission-denied' })
+
+    // Noa is still reviewed, and her week scores what her friends say.
+    await submitReviews(crew, T, [{ revieweeId: sam.uid, marks: { s1: 1 } }, { revieweeId: noa.uid, marks: { n1: 1, n2: 1 } }])
+    await as(sam)
+    await submitReviews(crew, T, [{ revieweeId: alex.uid, marks: { a1: 1 } }, { revieweeId: noa.uid, marks: { n1: 1, n2: 1 } }])
+    const data = await adminWeekData(crew.id, T)
+    const sp = await adminSpace(crew.id)
+    const result = computeWeek(data, sp, data.week!.deadlineAt)
+    expect(result.members[noa.uid]).toMatchObject({ participating: true, score: 100 })
+    expect([...result.members[noa.uid].reviewedBy].sort()).toEqual([alex.uid, sam.uid].sort())
+    expect(computeMonth(sp, monthIdForWeek(T), [data], data.week!.deadlineAt)[noa.uid]).toMatchObject({ former: true, average: 100 })
+  })
+
+  it('cheat 3: harsh marks, every task ticked, then leaving: friends still review the leaver', async () => {
+    oli = await createUser('Oli')
+    const { crew, T, members, path } = await crewWith([sam, oli], 'review', { [alex.uid]: ['a1'], [sam.uid]: ['s1'], [oli.uid]: ['o1', 'o2'] })
+    await as(oli)
+    await setTaskDone(crew, T, 'o1', true)
+    await setTaskDone(crew, T, 'o2', true)
+    await submitReviews(crew, T, [{ revieweeId: alex.uid, marks: { a1: 0 } }, { revieweeId: sam.uid, marks: { s1: 0 } }])
+    await leaveSpace(crew.id)
+    expect((await adminGet(path(T)))?.members).toEqual(members)
+
+    // Oli is still on Alex's and Sam's list, and they review the week Oli actually had.
+    const sp = await adminSpace(crew.id)
+    const before = await adminWeekData(crew.id, T)
+    expect(reviewTargets(before, alex.uid, membersAt(sp, before.week!.lockAt))).toEqual([sam.uid, oli.uid])
+    await as(alex)
+    await submitReviews(crew, T, [{ revieweeId: sam.uid, marks: { s1: 1 } }, { revieweeId: oli.uid, marks: { o1: 0, o2: 0 } }])
+    await as(sam)
+    await submitReviews(crew, T, [{ revieweeId: alex.uid, marks: { a1: 1 } }, { revieweeId: oli.uid, marks: { o1: 0.5, o2: 0 } }])
+    // Everyone in the week has submitted (Oli before leaving): revealed, and Oli's own ticks don't decide.
+    const live = observe(startWeek(crew.id, T, sam.uid))
+    const state = await live.until((l) => l.data?.reviews.length === 6)
+    live.stop()
+    const result = computeWeek(state.data!, sp, now())
+    expect(result.revealed).toBe(true)
+    expect(result.members[oli.uid]).toMatchObject({ provisionalScore: 100, score: 12.5 })
+    expect([...result.members[oli.uid].reviewedBy].sort()).toEqual([alex.uid, sam.uid].sort())
   })
 })
 
@@ -630,8 +739,9 @@ describe('account deletion', () => {
     expect(await adminGet(`users/${kim.uid}`)).toBeUndefined()
     expect(await adminGet(`users/${kim.uid}/push/sub1`)).toBeUndefined()
     expect((await adminGet(`spaces/${space.id}`))?.memberIds).toEqual([alex.uid, sam.uid])
-    // Kim had not submitted for next week, so Kim is out of it too.
+    // Next week hasn't locked, so Kim is out of it too. This week has locked: Kim stays in it.
     expect((await adminGet(weekPath(addWeeks(thisWeek(), 1))))?.members).toEqual([alex.uid, sam.uid])
+    expect((await adminGet(weekPath(thisWeek())))?.members).toContain(kim.uid)
     await rejectsWith(signIn(kim.email, PASSWORD), 'Wrong email or password.')
   })
 })

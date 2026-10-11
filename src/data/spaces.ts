@@ -223,10 +223,11 @@ function forgetSpace(uid: UID, spaceId: string): void {
 }
 
 /**
- * Adds to `batch` the removal of `uid` from this week and next week while they are still open and
- * `uid` hasn't submitted: someone who is gone shouldn't need reviews or hold back the reveal.
+ * Adds to `batch` the removal of `uid` from the weeks that haven't locked yet: this week while it is
+ * still planning, and next week. A week that has locked is a commitment and is never touched: the
+ * leaver stays in it, is still reviewed, and their score counts toward the month (see SPEC §1).
  */
-async function leaveOpenWeeks(batch: WriteBatch, space: Space, uid: UID): Promise<void> {
+async function leaveUnlockedWeeks(batch: WriteBatch, space: Space, uid: UID): Promise<void> {
   let thisWeek: string
   try {
     thisWeek = weekIdFor(now(), space.timezone)
@@ -237,7 +238,8 @@ async function leaveOpenWeeks(batch: WriteBatch, space: Space, uid: UID): Promis
     const snap = await getDoc(weekRef(space.id, weekId)).catch(() => null)
     if (!snap?.exists()) continue
     const week = toWeek(snap, space.id)
-    if (!week.members.includes(uid) || week.submittedBy.includes(uid) || now() >= week.deadlineAt) continue
+    // The stored lockAt decides, as in the rules.
+    if (!week.members.includes(uid) || now() >= week.lockAt) continue
     batch.update(snap.ref, { members: arrayRemove(uid) })
   }
 }
@@ -248,13 +250,14 @@ function earliestJoined(space: Space, among: UID[]): UID {
 }
 
 /**
- * Takes `uid` out of the space (and its open weeks) in one batch. `patch` adds to the space update
- * (the new owner). If the weeks part is refused (a deadline just passed), the space part still goes.
+ * Takes `uid` out of the space (and the weeks that haven't locked) in one batch. `patch` adds to the
+ * space update (the new owner). If the weeks part is refused (a lock just passed), the space part
+ * still goes and the leaver stays in that week, as they should once it has locked.
  */
 async function removeFromSpace(ref: DocumentReference, space: Space, uid: UID, patch: Record<string, unknown> = {}): Promise<void> {
   const write = async (withWeeks: boolean) => {
     const batch = writeBatch(getFirebase().db)
-    if (withWeeks) await leaveOpenWeeks(batch, space, uid)
+    if (withWeeks) await leaveUnlockedWeeks(batch, space, uid)
     const extra = Object.entries(patch).flat()
     batch.update(ref, 'memberIds', arrayRemove(uid), new FieldPath('joinedAt', uid), deleteField(), new FieldPath('leftAt', uid), serverTimestamp(), ...extra)
     await batch.commit()
@@ -309,7 +312,10 @@ export async function claimOwnership(space: Space): Promise<void> {
   await updateDoc(spaceRef(space.id), { ownerId: me })
 }
 
-/** The owner takes someone out of the space (a leaked invite, a second account). */
+/**
+ * The owner takes someone out of the space (a leaked invite, a second account). Like leaving, it only
+ * takes them out of weeks that haven't locked: a locked week still reviews and scores them.
+ */
 export async function removeMember(spaceId: string, uid: UID): Promise<void> {
   const me = requireUser().uid
   try {

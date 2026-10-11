@@ -19,7 +19,7 @@ import {
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
 import { reviewDocId } from '../domain/ids.ts'
-import { isRevealed, joinedAfterLock, membersAt } from '../domain/scoring.ts'
+import { isRevealed, joinedAfterLock } from '../domain/scoring.ts'
 import { boundsDiffer, weekBounds, type WeekBounds } from '../domain/time.ts'
 import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
@@ -89,7 +89,7 @@ export function startWeek(spaceId: string, weekId: WeekId, uid: UID): Start<Week
 }
 
 /**
- * Listens to one week: the space (who still counts, its zone), the week doc, plans, progress and
+ * Listens to one week: the space (its zone), the week doc, plans, progress and
  * reviews. Reviews follow the blind rule: only the user's own until the week is revealed, then
  * everyone's. The switch happens live, both when the last member submits and (by timer) at
  * deadlineAt, and a revealed week is never published with only the user's own reviews.
@@ -114,8 +114,8 @@ export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<
   let timer: ReturnType<typeof setTimeout> | null = null
   let fullReadAllowedAt = 0
 
-  /** Revealed as scoring sees it: participants who left the space don't hold it back (as in the rules). */
-  const revealedHere = () => week != null && space !== undefined && isRevealed(week, now(), membersAt(space, week.deadlineAt))
+  /** Revealed as scoring and the rules see it: every week member has submitted, or the deadline passed. */
+  const revealedHere = () => week != null && space !== undefined && isRevealed(week, now())
 
   const publish = () => {
     if (stopped) return

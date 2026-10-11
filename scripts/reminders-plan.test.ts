@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Mark, Space, UID, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, formatPercent, hoursFromNow, listNames, planReminders, planSpace, reminderKey, type PlanResult } from './reminders-plan.ts'
+import { dueWindows, formatPercent, hoursFromNow, listNames, offsetToStore, planReminders, planSpace, reminderKey, type PlanResult } from './reminders-plan.ts'
 
 // Europe/Berlin is UTC+2 until Sun 2026-10-25, UTC+1 after. Bounds are written out explicitly.
 const at = (iso: string) => Date.parse(iso)
@@ -204,9 +204,27 @@ describe('review reminders', () => {
     expect(plan(makeSpace(), [late], at('2026-10-16T08:17Z')).send).toEqual([])
   })
 
-  it('does not ask anyone to review a participant who left the space', () => {
+  it('still asks everyone to review a participant who left after the week locked', () => {
+    // Chris left on Wednesday: the lock is a commitment, so his week still counts.
     const data = makeWeek(W, { members: ['a', 'b', 'c'], plans: { a: 1, b: 1, c: 1 } })
-    const result = plan(makeSpace({ memberIds: ['a', 'b'] }), [data], at('2026-10-16T08:17Z'))
+    const space = makeSpace({ memberIds: ['a', 'b'], leftAt: { c: at('2026-10-14T10:00Z') } })
+    const result = plan(space, [data], at('2026-10-16T08:17Z'))
+    expect(bodies(result)).toEqual({
+      a: 'Review day | Rate Ben and Chris in Film Club. Due in 14 hours.',
+      b: 'Review day | Rate Anna and Chris in Film Club. Due in 14 hours.',
+    })
+    // Chris can't submit any more, so he isn't asked; the last call counts him in the points at stake.
+    expect(bodies(plan(space, [data], at('2026-10-16T18:17Z'))).a).toBe('4 hours left | Miss the Film Club deadline and you lose 10 points.')
+    // A deleted account has no profile left: named as a former member.
+    const gone = planSpace({ space, weeks: { [W]: data } }, { a: { name: 'Anna' }, b: { name: 'Ben' } }, new Set(), at('2026-10-16T08:17Z'))
+    expect(gone.send.find((r) => r.uid === 'a')?.body).toBe('Rate Ben and a former member in Film Club. Due in 14 hours.')
+  })
+
+  it('does not ask anyone to review a participant who left before the week locked', () => {
+    // Normally leaving before lock takes them out of the week; here they are still listed.
+    const data = makeWeek(W, { members: ['a', 'b', 'c'], plans: { a: 1, b: 1, c: 1 } })
+    const space = makeSpace({ memberIds: ['a', 'b'], leftAt: { c: at('2026-10-12T10:00Z') } })
+    const result = plan(space, [data], at('2026-10-16T08:17Z'))
     expect(bodies(result)).toEqual({ a: 'Review day | Rate Ben in Film Club. Due in 14 hours.', b: 'Review day | Rate Anna in Film Club. Due in 14 hours.' })
   })
 
@@ -370,5 +388,20 @@ describe('copy helpers', () => {
     expect(formatPercent(90 - 1e-12)).toBe('90%')
     expect(formatPercent(100)).toBe('100%')
     expect(formatPercent(0)).toBe('0%')
+  })
+})
+
+describe('offsetToStore', () => {
+  const october = at('2026-10-11T12:00Z') // Berlin is UTC+2
+  it('backfills a missing offset and repairs one that does not fit the zone', () => {
+    expect(offsetToStore({ timezone: 'Europe/Berlin' }, october)).toBe(120)
+    expect(offsetToStore({ timezone: 'Europe/Berlin', utcOffsetMin: -600 }, october)).toBe(120)
+    expect(offsetToStore({ timezone: 'Europe/Berlin', utcOffsetMin: 0 }, october)).toBe(120)
+  })
+
+  it('keeps an offset from either DST season', () => {
+    expect(offsetToStore({ timezone: 'Europe/Berlin', utcOffsetMin: 120 }, october)).toBeNull()
+    expect(offsetToStore({ timezone: 'Europe/Berlin', utcOffsetMin: 60 }, october)).toBeNull()
+    expect(offsetToStore({ timezone: 'Europe/Berlin', utcOffsetMin: 120 }, at('2026-12-01T12:00Z'))).toBeNull()
   })
 })

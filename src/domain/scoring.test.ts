@@ -73,13 +73,14 @@ describe('isRevealed', () => {
     expect(isRevealed({ ...week, submittedBy: ['b', 'a'] }, duringReview)).toBe(true)
     expect(isRevealed({ ...week, submittedBy: ['a', 'x'] }, duringReview)).toBe(false)
   })
-  it('with the current members, someone who left does not hold the reveal back', () => {
+  it('every week member counts, including someone who left after lock: only the deadline reveals then', () => {
+    // c left the space on Wednesday and can't submit any more. Leaving can't reveal the week early.
     const three = { members: ['a', 'b', 'c'], submittedBy: ['a', 'b'], deadlineAt: b.deadlineAt }
     expect(isRevealed(three, duringReview)).toBe(false)
-    expect(isRevealed(three, duringReview, ['a', 'b', 'c'])).toBe(false)
-    expect(isRevealed(three, duringReview, ['a', 'b', 'd'])).toBe(true)
-    // Everyone left: nothing to wait for.
-    expect(isRevealed({ ...three, submittedBy: [] }, duringReview, ['z'])).toBe(true)
+    expect(isRevealed(three, b.deadlineAt - 1)).toBe(false)
+    expect(isRevealed(three, b.deadlineAt)).toBe(true)
+    // A leaver who had already submitted doesn't hold it.
+    expect(isRevealed({ ...three, submittedBy: ['c', 'a', 'b'] }, duringReview)).toBe(true)
   })
 })
 
@@ -94,9 +95,15 @@ describe('reviewTargets', () => {
     expect(reviewTargets(data, 'x')).toEqual([])
     expect(reviewTargets({ ...data, week: null }, 'a')).toEqual([])
   })
-  it('with the current members, skips participants who left the space', () => {
+  it('given the members who count, skips anyone else', () => {
     expect(reviewTargets(data, 'c', ['a', 'c', 'd'])).toEqual(['a'])
     expect(reviewTargets(data, 'd', ['c', 'd'])).toEqual([])
+  })
+  it('keeps someone who left after lock (membersAt the lock)', () => {
+    const sp = { memberIds: ['a', 'c', 'd'], leftAt: { b: b.lockAt + 2 * H } }
+    expect(reviewTargets(data, 'c', membersAt(sp, b.lockAt))).toEqual(['a', 'b'])
+    // Gone before lock: not a target (the data layer normally takes them out of the week as well).
+    expect(reviewTargets(data, 'c', membersAt({ ...sp, leftAt: { b: b.lockAt - H } }, b.lockAt))).toEqual(['a'])
   })
 })
 
@@ -261,8 +268,8 @@ describe('computeWeek', () => {
     expect(r.members.b.score).toBe(50)
   })
 
-  it('a participant who left mid-week: nobody must review them, the reveal and penalties ignore them', () => {
-    // c planned, then left the space on Wednesday; a and b reviewed each other only.
+  it('a participant who leaves after lock still counts: reviewed, scored, and waited for until the deadline', () => {
+    // c planned, ticked everything, then left the space on Wednesday; a and b reviewed each other only.
     const data = weekData(W, {
       members: ['a', 'b', 'c'],
       tasks: { a: 1, b: 1, c: 2 },
@@ -273,25 +280,80 @@ describe('computeWeek', () => {
       ],
       submittedBy: ['a', 'b'],
     })
-    const sp = space(['a', 'b'])
-    expect(reviewTargets(data, 'a', sp.memberIds)).toEqual(['b'])
-    expect(computeWeek(data, sp, duringReview).revealed).toBe(true)
+    const sp = { ...space(['a', 'b']), leftAt: { c: b.lockAt + 24 * H } }
+    expect(reviewTargets(data, 'a', membersAt(sp, b.lockAt))).toEqual(['b', 'c'])
+    // c can't submit any more, so only the deadline reveals the week.
+    expect(computeWeek(data, sp, duringReview).revealed).toBe(false)
+    const r = computeWeek(data, sp, afterDeadline)
+    expect(r.revealed).toBe(true)
+    expect(r.members.a.missedReviewsOf).toEqual(['c'])
+    expect(r.members.b.missedReviewsOf).toEqual(['c'])
+    // Nobody reviewed c: c's own check-offs count, as for anyone; and c is charged for the reviews
+    // c no longer can write.
+    expect(r.members.c).toMatchObject({ participating: true, score: 100, reviewedBy: [], missedReviewsOf: ['a', 'b'] })
+
+    // Reviewed as usual, c's score comes from the reviews.
+    const reviewed = { ...data, reviews: [...data.reviews, ...weekData(W, { members: [], reviews: [['a', 'c', [0, 0]], ['b', 'c', [1, 0]]] }).reviews] }
+    const r2 = computeWeek(reviewed, sp, afterDeadline)
+    expect(r2.members.c).toMatchObject({ score: 25, reviewedBy: ['a', 'b'] })
+    expect(r2.members.a.missedReviewsOf).toEqual([])
+  })
+
+  it('a participant still listed who left before lock is nobody\'s target (the reveal still waits for them, as in the rules)', () => {
+    // Normally leaving before lock takes them out of the week; this is a week where that didn't happen.
+    const data = weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 1 }, reviews: [['a', 'b', [1]], ['b', 'a', [1]]], submittedBy: ['a', 'b'] })
+    const sp = { ...space(['a', 'b']), leftAt: { c: b.lockAt - H } }
+    expect(computeWeek(data, sp, duringReview).revealed).toBe(false)
     const r = computeWeek(data, sp, afterDeadline)
     expect(r.members.a.missedReviewsOf).toEqual([])
     expect(r.members.b.missedReviewsOf).toEqual([])
-    // Still a participant of the week, scored on their own check-offs (nobody reviewed them), and
-    // charged for the reviews they no longer can write.
-    expect(r.members.c).toMatchObject({ participating: true, score: 100, reviewedBy: [], missedReviewsOf: ['a', 'b'] })
   })
 
-  it('someone who left after the deadline still counts for that week: their leaving never rewrites it', () => {
+  it('leaving at any time after lock never rewrites the week', () => {
     const data = weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 1 }, reviews: [['a', 'b', [1]], ['b', 'a', [1]]], submittedBy: ['a', 'b'] })
-    const leftLater = { ...space(['a', 'b']), leftAt: { c: b.deadlineAt + 2 * H } }
-    const leftEarly = { ...space(['a', 'b']), leftAt: { c: b.deadlineAt - 2 * H } }
-    expect(computeWeek(data, leftLater, afterDeadline).members.a.missedReviewsOf).toEqual(['c'])
-    expect(computeWeek(data, leftEarly, afterDeadline).members.a.missedReviewsOf).toEqual([])
-    // During the review window nobody has "left later" yet, so c doesn't hold the reveal back.
-    expect(computeWeek(data, { ...space(['a', 'b']), leftAt: { c: b.lockAt } }, duringReview).revealed).toBe(true)
+    const leftAt = (at: number) => ({ ...space(['a', 'b']), leftAt: { c: at } })
+    for (const at of [b.lockAt, b.reviewOpenAt + H, b.deadlineAt - 2 * H, b.deadlineAt + 2 * H]) {
+      expect(computeWeek(data, leftAt(at), afterDeadline + 3 * H).members.a.missedReviewsOf).toEqual(['c'])
+    }
+    expect(computeWeek(data, leftAt(b.lockAt - 1), afterDeadline).members.a.missedReviewsOf).toEqual([])
+    // Leaving during the review window doesn't reveal the week early either.
+    expect(computeWeek(data, leftAt(b.reviewOpenAt + H), duringReview).revealed).toBe(false)
+  })
+
+  it('rejoining never rewrites a week that has locked', () => {
+    // c submitted on Friday, left, then came back; a and b never reviewed c.
+    const data = weekData(W, {
+      members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 1 }, done: { c: 1 },
+      reviews: [['a', 'b', [1]], ['b', 'a', [1]], ['c', 'a', [0]], ['c', 'b', [0]]], submittedBy: ['a', 'b', 'c'],
+    })
+    const rejoined = (leftAt: number, joinedAt: number) => ({ ...space(['a', 'b', 'c']), joinedAt: { a: 0, b: 0, c: joinedAt }, leftAt: { c: leftAt } })
+    // Left after lock: c counted all along (a and b owed c a review), before and after coming back.
+    for (const sp of [rejoined(b.reviewOpenAt + H, b.deadlineAt - H), rejoined(b.deadlineAt - 2 * H, b.deadlineAt + 2 * H), rejoined(b.deadlineAt + H, b.deadlineAt + 2 * H)]) {
+      const r = computeWeek(data, sp, afterDeadline + 2 * H)
+      expect(r.members.a.missedReviewsOf).toEqual(['c'])
+      expect(r.members.b.missedReviewsOf).toEqual(['c'])
+    }
+    // Left before lock and back only after it: c wasn't in the space when the week locked, so coming
+    // back doesn't make c a target (here c is still listed in the week, which normally can't happen).
+    const r = computeWeek(data, rejoined(b.lockAt - H, b.lockAt + H), afterDeadline)
+    expect(r.members.a.missedReviewsOf).toEqual([])
+    expect(r.members.b.missedReviewsOf).toEqual([])
+  })
+
+  it('submitting harsh marks, ticking everything and leaving does not score the leaver on their own check-offs', () => {
+    // c rates a and b 0 early on Friday, ticks both tasks done, then leaves. a and b still review c.
+    const data = weekData(W, {
+      members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 2 }, done: { c: 2 },
+      reviews: [['c', 'a', [0]], ['c', 'b', [0]], ['a', 'b', [1]], ['a', 'c', [0, 0]], ['b', 'a', [1]], ['b', 'c', [0.5, 0]]],
+      submittedBy: ['c', 'a', 'b'],
+    })
+    const sp = { ...space(['a', 'b']), leftAt: { c: b.reviewOpenAt + H } }
+    expect(reviewTargets(data, 'a', membersAt(sp, b.lockAt))).toEqual(['b', 'c'])
+    // Everyone in the week submitted (c before leaving): revealed early, scored from reviews.
+    const r = computeWeek(data, sp, duringReview + H)
+    expect(r.revealed).toBe(true)
+    expect(r.members.c).toMatchObject({ score: 12.5, provisionalScore: 100, reviewedBy: ['a', 'b'] })
+    expect(r.members.c.tasks.every((t) => t.source === 'reviews')).toBe(true)
   })
 
   it('a week nobody opened has no participants', () => {
@@ -479,14 +541,55 @@ describe('computeMonth', () => {
       weekData('2026-11-02', { members: ['a', 'b'], tasks: { a: 1, b: 1 } }),
       weekData('2026-10-05', { members: ['a', 'z'], tasks: { a: 2, z: 1 }, done: { a: 1, z: 1 }, reviews: [['z', 'a', [1, 1]]], submittedBy: ['z'] }),
     ]
-    const res = computeMonth(space(['a', 'n']), M, weeks, complete)
+    // z left during that week, after it locked: z still counts in it.
+    const res = computeMonth({ ...space(['a', 'n']), leftAt: { z: weekBounds('2026-10-05', TZ).lockAt + 2 * 24 * H } }, M, weeks, complete)
     expect(Object.keys(res).sort()).toEqual(['a', 'n', 'z'])
     expect(res.a.weeks).toEqual([{ weekId: '2026-10-05', score: 100, closed: true }])
-    // z has left the space, so a not reviewing z costs nothing.
-    expect(res.a).toMatchObject({ former: false, others: ['z'], missedReviews: 0, finalScore: 100, passed: true })
+    // a still owed z a review.
+    expect(res.a).toMatchObject({ former: false, others: ['z'], missedReviews: 1, finalScore: 95, passed: true })
     expect(res.z).toMatchObject({ former: true, others: ['a'], weeks: [{ weekId: '2026-10-05', score: 100, closed: true }], finalScore: 100 })
     // n is a member who played no week of October: listed, but nobody owes n or is owed by n.
     expect(res.n).toMatchObject({ former: false, others: ['a', 'z'], weeks: [], finalScore: null, passed: null })
+  })
+
+  it('slacking in the last week and leaving on Thursday doesn\'t erase that week', () => {
+    // b scored 100% for three weeks, planned 2 tasks for Oct 19 and did neither, then left on
+    // Thursday Oct 22 (after the lock) without submitting. The month is 75% for b, not 100%.
+    const good = (weekId: WeekId) =>
+      weekData(weekId, { members: ['a', 'b'], tasks: { a: 1, b: 1 }, reviews: [['a', 'b', [1]], ['b', 'a', [1]]], submittedBy: ['a', 'b'] })
+    const weeks = [
+      good('2026-09-28'),
+      good('2026-10-05'),
+      good('2026-10-12'),
+      weekData('2026-10-19', { members: ['a', 'b'], tasks: { a: 1, b: 2 }, done: { a: 1 }, reviews: [['a', 'b', [0, 0]]], submittedBy: ['a'] }),
+      // Next week hadn't locked when b left, so b isn't in it.
+      weekData('2026-10-26', { members: ['a'], tasks: { a: 1 }, done: { a: 1 } }),
+    ]
+    const left = weekBounds('2026-10-19', TZ).lockAt + 2 * 24 * H
+    const res = computeMonth({ ...space(['a']), leftAt: { b: left } }, M, weeks, complete)
+    expect(res.b.weeks.map((w) => [w.weekId, w.score])).toEqual([['2026-09-28', 100], ['2026-10-05', 100], ['2026-10-12', 100], ['2026-10-19', 0]])
+    // −5 for the review of a that b never wrote.
+    expect(res.b).toMatchObject({ former: true, others: ['a'], average: 75, missedReviews: 1, finalScore: 70, passed: false })
+    expect(res.a).toMatchObject({ others: ['b'], average: 100, missedReviews: 0, passed: true })
+  })
+
+  it('being removed in the review window keeps a strong week: still reviewed and scored', () => {
+    // The owner a removes c on Friday, hoping to erase c's 100% week. b and a still review c.
+    const weeks = [
+      weekData('2026-10-05', { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 1 }, done: { c: 1 }, reviews: [['a', 'c', [1]], ['b', 'c', [1]], ['c', 'a', [1]], ['c', 'b', [1]]], submittedBy: ['c'] }),
+      weekData('2026-10-12', {
+        members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 2 }, done: { c: 2 },
+        reviews: [['a', 'b', [1]], ['a', 'c', [1, 1]], ['b', 'a', [1]], ['b', 'c', [1, 1]]], submittedBy: ['a', 'b'],
+      }),
+    ]
+    const removed = weekBounds('2026-10-12', TZ).reviewOpenAt + H
+    const sp = { ...space(['a', 'b']), leftAt: { c: removed } }
+    expect(computeWeek(weeks[1], sp, removed + H).revealed).toBe(false)
+    const res = computeMonth(sp, M, weeks, complete)
+    expect(res.c).toMatchObject({ former: true, average: 100, weeks: [{ weekId: '2026-10-05', score: 100, closed: true }, { weekId: '2026-10-12', score: 100, closed: true }] })
+    // c can't submit after being removed, so c misses a and b in that week.
+    expect(res.c.missedReviews).toBe(2)
+    expect(res.a.others).toEqual(['b', 'c'])
   })
 
   it('a member who left after a month keeps their verdict and stays in the others list', () => {
@@ -529,11 +632,22 @@ describe('computeMonth', () => {
 })
 
 describe('membersAt and joinedAfterLock', () => {
-  it('counts current members plus anyone who left at or after the instant', () => {
+  it('counts current members plus anyone who left at or after the lock', () => {
     const sp = { memberIds: ['a', 'b'], leftAt: { c: 100, d: 50, b: 10 } }
     expect(membersAt(sp, 100)).toEqual(['a', 'b', 'c'])
     expect(membersAt(sp, 101)).toEqual(['a', 'b'])
     expect(membersAt({ memberIds: ['a'] }, 0)).toEqual(['a'])
+  })
+
+  it('leaves out only a current member who left before the lock and came back after it', () => {
+    // b left at 50 and rejoined at 200.
+    const sp = { memberIds: ['a', 'b'], joinedAt: { a: 0, b: 200 }, leftAt: { b: 50 } }
+    expect(membersAt(sp, 100)).toEqual(['a'])
+    expect(membersAt(sp, 300)).toEqual(['a', 'b'])
+    // Left after the lock (150) and back at 200: in the space when it locked, so b counts.
+    expect(membersAt({ ...sp, leftAt: { b: 150 } }, 100)).toEqual(['a', 'b'])
+    // Never left: counts whatever joinedAt says (being in the week means being in when it locked).
+    expect(membersAt({ memberIds: ['a', 'b'], joinedAt: { a: 0, b: 200 } }, 100)).toEqual(['a', 'b'])
   })
 
   it('tells a late joiner from a member without tasks', () => {

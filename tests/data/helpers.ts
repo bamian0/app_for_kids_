@@ -2,12 +2,13 @@
 // npx firebase emulators:exec --config tests/data/firebase.data.json --only auth,firestore --project demo-stakes "npx vitest run --config vitest.data.config.ts"
 import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { deleteDoc, doc, getDoc, setDoc, setLogLevel, Timestamp, type DocumentData, type Firestore } from 'firebase/firestore'
+import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, setLogLevel, Timestamp, type DocumentData, type Firestore } from 'firebase/firestore'
 import { initClockFromUrl } from '../../src/domain/clock.ts'
 import { getFirebase, setEmulatorPorts } from '../../src/firebase/app.ts'
 import { signIn, signOut, signUp } from '../../src/data/api.ts'
 import type { Live } from '../../src/data/api.ts'
 import type { Start } from '../../src/data/store.ts'
+import type { Mark, Space, WeekData } from '../../src/domain/types.ts'
 
 // Listeners the tests open on purpose after access ends would otherwise log a warning each.
 setLogLevel('silent')
@@ -70,6 +71,46 @@ export function adminGet(path: string): Promise<DocumentData | undefined> {
 
 export function adminDelete(path: string): Promise<void> {
   return asAdmin((db) => deleteDoc(doc(db, path)))
+}
+
+const millis = (v: unknown): number => (v && typeof (v as Timestamp).toMillis === 'function' ? (v as Timestamp).toMillis() : 0)
+const millisById = (v: unknown): Record<string, number> => Object.fromEntries(Object.entries((v ?? {}) as Record<string, unknown>).map(([k, t]) => [k, millis(t)]))
+
+/** The space as the domain sees it, read with rules disabled (works after everyone has left). */
+export async function adminSpace(spaceId: string): Promise<Space> {
+  const d = await adminGet(`spaces/${spaceId}`)
+  if (!d) throw new Error(`No space ${spaceId}`)
+  const space: Space = {
+    id: spaceId, name: d.name, reward: d.reward, penalty: d.penalty, ownerId: d.ownerId, memberIds: d.memberIds,
+    joinedAt: millisById(d.joinedAt), timezone: d.timezone, inviteCode: d.inviteCode, threshold: d.threshold,
+    latePenalty: d.latePenalty, createdAt: millis(d.createdAt),
+  }
+  if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
+  if (d.leftAt) space.leftAt = millisById(d.leftAt)
+  return space
+}
+
+/** Everything stored for one week, every review included (revealed or not), read with rules disabled. */
+export function adminWeekData(spaceId: string, weekId: string): Promise<WeekData> {
+  return asAdmin(async (db) => {
+    const path = `spaces/${spaceId}/weeks/${weekId}`
+    const w = (await getDoc(doc(db, path))).data()
+    const docs = async (name: string) => (await getDocs(collection(db, `${path}/${name}`))).docs.map((d) => ({ id: d.id, d: d.data() }))
+    const [plans, progress, reviews] = await Promise.all([docs('plans'), docs('progress'), docs('reviews')])
+    return {
+      spaceId,
+      weekId,
+      week: w
+        ? {
+            id: weekId, spaceId, startAt: millis(w.startAt), lockAt: millis(w.lockAt), reviewOpenAt: millis(w.reviewOpenAt),
+            deadlineAt: millis(w.deadlineAt), members: w.members, submittedBy: w.submittedBy,
+          }
+        : null,
+      plans: Object.fromEntries(plans.map(({ id, d }) => [id, { uid: id, tasks: d.tasks, updatedAt: millis(d.updatedAt) }])),
+      progress: Object.fromEntries(progress.map(({ id, d }) => [id, { uid: id, done: d.done, updatedAt: millis(d.updatedAt) }])),
+      reviews: reviews.map(({ id, d }) => ({ id, reviewerId: d.reviewerId, revieweeId: d.revieweeId, marks: d.marks as Record<string, Mark>, submittedAt: millis(d.submittedAt) })),
+    }
+  })
 }
 
 /** Creates an auth user through the emulator's REST API, without a profile doc (an "older account"). */

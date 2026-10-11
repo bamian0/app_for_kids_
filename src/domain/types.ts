@@ -27,7 +27,7 @@ export interface Space {
   memberIds: UID[]
   joinedAt: Record<UID, number>
   /** When each former member left or was removed (the latest time, if they left more than once).
-   *  Missing on spaces nobody has left since it existed. */
+   *  Weeks that had locked by then still count them. Missing on spaces nobody has left since it existed. */
   leftAt?: Record<UID, number>
   /** IANA timezone, fixed at creation. All deadlines use it. */
   timezone: string
@@ -66,7 +66,8 @@ export interface Week {
   /** Saturday 00:00 local — reviews due ("Friday at midnight"). */
   deadlineAt: number
   /** Participants: everyone who was a space member before lockAt (added whenever any member opens the
-   *  app before then), minus anyone who left the space before submitting while the week was open. */
+   *  app before then), minus anyone who left the space before lockAt. Leaving or being removed after
+   *  lockAt keeps them in: the week still reviews and scores them. */
   members: UID[]
   /** Participants who submitted their Friday reviews. */
   submittedBy: UID[]

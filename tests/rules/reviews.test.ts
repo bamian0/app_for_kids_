@@ -39,6 +39,13 @@ describe('reviews: create', () => {
     expect((await getDocs(query(collection(u1, reviewsPath()), where('reviewerId', '==', 'u1')))).size).toBe(7)
   })
 
+  test('someone who left after lock is still reviewed by those who remain, and can no longer submit', async () => {
+    // carol is in the week (it locked before she left) but no longer in the space.
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin'], { leftAt: { carol: Timestamp.now() } }), 'spaces/s1/weeks/W': weekDoc('review', ['alice', 'bob', 'carol']) })
+    await allowed(submit(db('alice'), 'alice', { alice_bob: review('alice', 'bob'), alice_carol: review('alice', 'carol') }))
+    await denied(submit(db('carol'), 'carol', { carol_alice: review('carol', 'alice') }))
+  })
+
   test('submitting with nobody to review (only the week update) is allowed', async () => {
     await setup('review')
     await allowed(submit(db('alice'), 'alice', {}))
@@ -155,12 +162,28 @@ describe('reviews: blind reads', () => {
     await allowed(all(db('erin')))
   })
 
-  test('a participant who left the space does not hold the reveal back', async () => {
+  test('a participant who left after lock holds the reveal until the deadline: leaving reveals nothing', async () => {
+    // alice and bob submitted; carol hadn't, then left on Friday and can't submit any more.
     await seedReviews('review', ['alice', 'bob'])
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin']) })
+    await denied(all(db('bob')))
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin'], { leftAt: { carol: Timestamp.now() } }) })
+    await allDenied({
+      'list all': () => all(db('bob')),
+      'get a review about me': () => getDoc(doc(db('alice'), `${reviewsPath()}/bob_alice`)),
+      'the leaver': () => all(db('carol')),
+    })
+    // The deadline always reveals.
+    await seedReviews('closed', ['alice', 'bob'])
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin'], { leftAt: { carol: Timestamp.now() } }) })
     expect((await all(db('bob'))).size).toBe(4)
     await allowed(getDoc(doc(db('erin'), `${reviewsPath()}/bob_alice`)))
     await denied(all(db('carol')))
+  })
+
+  test('a leaver who had already submitted does not hold the reveal', async () => {
+    await seedReviews('review', ['alice', 'bob', 'carol'])
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin'], { leftAt: { carol: Timestamp.now() } }) })
+    expect((await all(db('alice'))).size).toBe(4)
   })
 
   test('after the deadline: members read everything even if someone missed it', async () => {

@@ -20,7 +20,14 @@ function join(fs: Firestore, uid: string, spaceId: string, code: string, spacePa
   return batch.commit()
 }
 
+/** leaveSpace/removeMember as the data layer does it: leftAt[uid] = now, unless the patch says otherwise. */
 function leave(fs: Firestore, uid: string, spaceId: string, spacePatch: DocumentData = {}) {
+  const ownLeftAt = Object.keys(spacePatch).some((k) => k === 'leftAt' || k.startsWith('leftAt.')) ? {} : { [`leftAt.${uid}`]: serverTimestamp() }
+  return updateDoc(doc(fs, `spaces/${spaceId}`), { memberIds: arrayRemove(uid), [`joinedAt.${uid}`]: deleteField(), ...ownLeftAt, ...spacePatch })
+}
+
+/** An older client's leave: memberIds and joinedAt only. */
+function leaveUnrecorded(fs: Firestore, uid: string, spaceId: string, spacePatch: DocumentData = {}) {
   return updateDoc(doc(fs, `spaces/${spaceId}`), { memberIds: arrayRemove(uid), [`joinedAt.${uid}`]: deleteField(), ...spacePatch })
 }
 
@@ -154,9 +161,21 @@ describe('spaces: update', () => {
     await twoSpaces()
     await allowed(leave(db('bob'), 'bob', 's1', { 'leftAt.bob': serverTimestamp() }))
     await denied(getDoc(doc(db('bob'), 'spaces/s1')))
-    // Older clients don't write leftAt.
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']) })
-    await allowed(leave(db('bob'), 'bob', 's1'))
+  })
+
+  test('leaving or being removed must record leftAt', async () => {
+    // Without it, closed weeks forget the leaver: whoever owed them a review stops being charged for it
+    // (the owner could erase their own penalty that way), and nobody can settle up with them.
+    await seed({ 'spaces/s1': staggered(['alice', 'bob', 'carol']) })
+    await allDenied({
+      'a member leaves': () => leaveUnrecorded(db('carol'), 'carol', 's1'),
+      'the owner removes someone': () => leaveUnrecorded(db('alice'), 'carol', 's1'),
+      'the owner leaves and hands over': () => leaveUnrecorded(db('alice'), 'alice', 's1', { ownerId: 'bob' }),
+      'leftAt deleted instead': () => leave(db('carol'), 'carol', 's1', { 'leftAt.carol': deleteField() }),
+    })
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'carol'], { leftAt: { carol: ts(Date.now() - DAY) } }) })
+    // A member who left before and rejoined records the new departure.
+    await allowed(leave(db('carol'), 'carol', 's1'))
   })
 
   test('an owner who leaves hands the space to the earliest-joined member', async () => {
@@ -227,8 +246,7 @@ describe('spaces: update', () => {
         updateDoc(doc(bob, 'spaces/s1'), {
           memberIds: arrayRemove('bob', 'alice'), 'joinedAt.bob': deleteField(), 'joinedAt.alice': deleteField(),
         }),
-      'leave and rename': () =>
-        updateDoc(doc(bob, 'spaces/s1'), { memberIds: arrayRemove('bob'), 'joinedAt.bob': deleteField(), name: 'Bye' }),
+      'leave and rename': () => leave(bob, 'bob', 's1', { name: 'Bye' }),
       'leftAt in the past': () => leave(bob, 'bob', 's1', { 'leftAt.bob': Timestamp.fromMillis(Date.now() - DAY) }),
       'leftAt for someone else': () => leave(bob, 'bob', 's1', { 'leftAt.alice': serverTimestamp() }),
       'leftAt not a map': () => leave(bob, 'bob', 's1', { leftAt: 'today' }),

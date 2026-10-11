@@ -138,13 +138,15 @@ service cloud.firestore {
         && (n <= 4 || o <= j[ms[4]]) && (n <= 5 || o <= j[ms[5]]) && (n <= 6 || o <= j[ms[6]]) && (n <= 7 || o <= j[ms[7]]);
     }
 
-    // leftAt (optional, so older clients can still leave): only `who` changes, and only to now.
-    // It tells a week that closed before someone left from one they walked out of.
+    // leftAt[who] becomes now, and nothing else in leftAt changes. It tells a week that locked before
+    // someone left (they still count in it) from one they left before it locked, so it is required:
+    // without it every locked week would forget them (and the reviews others owed them), and they
+    // couldn't be settled with.
     function recordsLeft(who) {
       let before = existing().get('leftAt', {});
       let after = incoming().get('leftAt', {});
       let changed = after.diff(before).affectedKeys();
-      return changed.hasOnly([who]) && (!changed.hasAny([who]) || after[who] == request.time);
+      return changed.hasOnly([who]) && changed.hasAll([who]) && after[who] == request.time;
     }
 
     // Leaving removes self from memberIds and joinedAt. An owner who leaves others behind hands the
@@ -230,7 +232,8 @@ service cloud.firestore {
       // weekId 'YYYY-MM-DD' must be a real Monday. timestamp.date() errors (= deny) on impossible dates.
       // The timeline is anchored to the space's offset at creation: Monday 00:00 local is within 1h of
       // Monday 00:00 UTC − utcOffsetMin (the 1h is DST), and each later bound within 1h of whole days
-      // after it. Spaces from before utcOffsetMin keep the old ±14h anchor until the reminders job
+      // after it and of the same whole days after the anchor, so the two hours of slack can't add up.
+      // Spaces from before utcOffsetMin keep the old ±14h anchor until the reminders job
       // backfills their offset (clients can't set it: they could pick any offset).
       // Created before lockAt only, with every current space member: taking part doesn't depend on
       // who opens the app.
@@ -239,13 +242,17 @@ service cloud.firestore {
         let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
         let tol = duration.value(1, 'h');
         let off = space.get('utcOffsetMin', null);
+        let anchor = off == null ? monday : monday - duration.value(off, 'm');
         return weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
           && monday.dayOfWeek() == 1
           && exactKeys(d, ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy'])
-          && (off == null ? near(d.startAt, monday, duration.value(14, 'h')) : near(d.startAt, monday - duration.value(off, 'm'), tol))
+          && near(d.startAt, anchor, off == null ? duration.value(14, 'h') : tol)
           && near(d.lockAt, d.startAt + duration.value(1, 'd'), tol)
           && near(d.reviewOpenAt, d.startAt + duration.value(4, 'd'), tol)
           && near(d.deadlineAt, d.startAt + duration.value(5, 'd'), tol)
+          && (off == null || (near(d.lockAt, anchor + duration.value(1, 'd'), tol)
+                              && near(d.reviewOpenAt, anchor + duration.value(4, 'd'), tol)
+                              && near(d.deadlineAt, anchor + duration.value(5, 'd'), tol)))
           && d.submittedBy == []
           && request.time < d.lockAt
           && d.startAt < request.time + duration.value(8, 'd')
@@ -268,17 +275,18 @@ service cloud.firestore {
           && space.memberIds.hasAll(added);
       }
 
-      // Someone leaving the space (themselves, or removed by the owner) leaves the week too, while it is
-      // still open and they haven't submitted. getAfter: it's in the same batch as the space update.
+      // Someone leaving the space (themselves, or removed by the owner) leaves the week too, but only
+      // before it locks. The lock is a commitment: from lockAt on, leaving or being removed keeps them in
+      // the week, so they are still reviewed, still scored and still waited for (until the deadline).
+      // Nobody can have submitted before lockAt. getAfter: it's in the same batch as the space update.
       function leavesWeek(spaceId) {
         let e = existing();
         let removed = e.members.removeAll(incoming().members);
         let space = getAfter(spacePath(spaceId)).data;
         return changedOnly(['members'])
-          && request.time < e.deadlineAt
+          && request.time < e.lockAt
           && removed.size() == 1
           && incoming().members == e.members.removeAll(removed)
-          && !removed.hasAny(e.submittedBy)
           && !removed.hasAny(space.memberIds)
           && (removed.hasOnly([request.auth.uid]) || request.auth.uid == space.ownerId);
       }
@@ -325,10 +333,11 @@ service cloud.firestore {
         return isUser(uid) && request.time < w.deadlineAt && uid in w.members && isMember(spaceId);
       }
 
-      // Participants who left the space don't hold the reveal back.
-      function revealed(spaceId, w) {
-        return request.time >= w.deadlineAt
-          || w.submittedBy.toSet().hasAll(w.members.toSet().intersection(get(spacePath(spaceId)).data.memberIds.toSet()));
+      // Every week member counts, including anyone who left after lock: leaving can't reveal early,
+      // and since they can't submit any more, the deadline reveals. Leaving before lock already took
+      // them out of members.
+      function revealed(w) {
+        return request.time >= w.deadlineAt || w.submittedBy.toSet().hasAll(w.members.toSet());
       }
 
       // Reviews are only written in the submit batch: the reviewer was not in submittedBy before
@@ -405,7 +414,7 @@ service cloud.firestore {
         match /reviews/{rid} {
           allow read: if signedIn()
             && (existing().reviewerId == request.auth.uid
-                || (isMember(spaceId) && revealed(spaceId, get(weekPath(spaceId, weekId)).data)));
+                || (isMember(spaceId) && revealed(get(weekPath(spaceId, weekId)).data)));
           allow create: if signedIn() && validReview(spaceId, weekId, rid);
         }
       }

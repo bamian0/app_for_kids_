@@ -81,6 +81,10 @@ service cloud.firestore {
     match /invites/{code} {
       allow get: if signedIn();
       allow create: if signedIn() && validInvite(code, incoming());
+      // Renaming a space renames its invite preview; nothing else about an invite ever changes.
+      allow update: if signedIn() && isMember(existing().spaceId)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['spaceName'])
+        && text(incoming().spaceName, 40);
       allow delete: if signedIn()
         && (existing().createdBy == request.auth.uid || isMember(existing().spaceId));
     }

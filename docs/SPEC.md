@@ -28,6 +28,8 @@ A week is identified by the date of its Monday: `WeekId = 'YYYY-MM-DD'`. All bou
 
 Phases: `planning` (now < lockAt) → `active` (lockAt ≤ now < reviewOpenAt) → `review` (reviewOpenAt ≤ now < deadlineAt) → `closed`.
 
+Once a week doc exists, its stored timestamps are the week's timeline: the rules judge every write by them, so the screens and the data layer's own checks use them too. The computed bounds are only used before the doc exists.
+
 The UI shows **this week** and **next week**. Planning next week is allowed at any time.
 
 ### Participation
@@ -87,9 +89,9 @@ _private/*                                   admin only (VAPID private key, sent
 Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 members per space.
 
 ### Security rules (`firestore.rules`), what must hold
-- `users/{uid}`: any signed-in user can read. Only the owner can write, with field validation.
+- `users/{uid}`: any signed-in user can `get` a profile; `list` is denied, so nobody can enumerate users. Only the owner can write, with field validation.
 - `users/{uid}/push/*`: only the owner can read and write.
-- `invites/{code}`: any signed-in user can `get`; `list` is denied. Only a member of `spaceId` can create, with `createdBy == auth.uid`. The creator or any space member can delete.
+- `invites/{code}`: any signed-in user can `get`; `list` is denied. Only a member of `spaceId` can create, with `createdBy == auth.uid`, and only under the space's own `inviteCode`. A member can update `spaceName` alone (renaming the space renames the join preview). The creator or any space member can delete.
 - `spaces/{id}`: only members can read. Create requires `ownerId == auth.uid`, `memberIds == [auth.uid]`, `joinedAt == {auth.uid: request.time}`, threshold 90, latePenalty 5, and validated fields. Allowed updates:
   - a member edits `name`/`reward`/`penalty`
   - a member leaves: removes self from `memberIds` and `joinedAt`
@@ -132,7 +134,18 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
 | `src/ui/**` | design system | iOS-native look, components, motion, iridescence |
 | `src/App.tsx`, `src/screens/**` | screens | All screens and navigation |
 | `public/sw.js`, `public/manifest.webmanifest`, `public/icons/**`, `src/push/**`, `scripts/**`, `.github/workflows/**` | platform | PWA, push, reminders job, deploy |
+| `tests/data/**`, `vitest.data.config.ts` | data | Data layer against the emulators |
 | `tests/e2e/**`, `playwright.config.ts` | integration | Emulator-backed end-to-end + screenshots |
+
+### Checks
+| What | Command |
+|---|---|
+| Types | `npx tsc -b` |
+| Unit (domain, push client, reminders planner) | `npm test` |
+| Security rules | `npm run test:rules` |
+| Data layer | `npx firebase emulators:exec --config tests/data/firebase.data.json --only auth,firestore --project demo-stakes "npx vitest run --config vitest.data.config.ts"` |
+| End to end (Chromium, iPhone viewport) | `npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test"`; set `E2E_SCREENSHOTS=<dir>` (and optionally `E2E_WIDTHS=375,430`) for light and dark screenshots of every step |
+| Build | `npm run build` (output in `dist/`, relative asset paths) |
 
 ## 4. Platform
 - **Hosting**: GitHub Pages from the `gh-pages` branch. `.github/workflows/deploy.yml` builds on push to `main` or `claude/**` and publishes `dist/`, including a `.nojekyll` file. The Vite base is `./`.

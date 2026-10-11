@@ -242,10 +242,18 @@ describe('invites/{code}', () => {
     await allowed(setDoc(doc(db('bob'), `invites/${CODE}`), invite('bob')))
   })
 
-  test('invites cannot be updated', async () => {
+  test('a member can only rename the space shown by the invite', async () => {
     await twoSpaces()
-    await denied(updateDoc(doc(db('alice'), `invites/${CODE}`), { spaceId: 's2' }))
-    await denied(setDoc(doc(db('alice'), `invites/${CODE}`), { ...inviteDoc('s1', 'alice'), createdAt: serverTimestamp() }))
+    await allowed(updateDoc(doc(db('bob'), `invites/${CODE}`), { spaceName: 'Film crew II' }))
+    await allDenied({
+      'other field': () => updateDoc(doc(db('alice'), `invites/${CODE}`), { spaceId: 's2' }),
+      'name and other field': () => updateDoc(doc(db('alice'), `invites/${CODE}`), { spaceName: 'X', inviterName: 'Y' }),
+      'replace with new createdAt': () => setDoc(doc(db('alice'), `invites/${CODE}`), { ...inviteDoc('s1', 'alice'), createdAt: serverTimestamp() }),
+      'non-member': () => updateDoc(doc(db('zoe'), `invites/${CODE}`), { spaceName: 'Mine now' }),
+      'signed out': () => updateDoc(doc(db(), `invites/${CODE}`), { spaceName: 'X' }),
+      'blank name': () => updateDoc(doc(db('alice'), `invites/${CODE}`), { spaceName: '  ' }),
+      'name 41 chars': () => updateDoc(doc(db('alice'), `invites/${CODE}`), { spaceName: 'x'.repeat(41) }),
+    })
   })
 
   test('the creator or a member can delete; others cannot', async () => {

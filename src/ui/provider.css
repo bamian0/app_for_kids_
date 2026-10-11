@@ -1,0 +1,32 @@
+.ui-app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  /* Seen only around the presenting view while a card sheet is up. */
+  background: #000;
+}
+
+.ui-app__safe-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: env(safe-area-inset-top, 0px);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ui-app__presenting {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--system-grouped-background);
+  transform-origin: 50% 0;
+}
+
+.ui-app__overlays {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}

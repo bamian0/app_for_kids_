@@ -1,0 +1,84 @@
+.ui-ring {
+  --ring-track: var(--tertiary-system-fill);
+  --ring-arc: var(--label);
+  /* Notch color should match whatever the ring sits on (cards by default). */
+  --ring-notch: var(--secondary-system-grouped-background);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  isolation: isolate;
+}
+
+.ui-ring__svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+  overflow: visible;
+}
+
+.ui-ring__track {
+  stroke: var(--ring-track);
+}
+.ui-ring__arc {
+  stroke: var(--ring-arc);
+}
+.ui-ring__notch {
+  stroke: var(--ring-notch);
+  stroke-width: 2.5;
+}
+.ui-ring__tick {
+  stroke: var(--tertiary-label);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ui-ring--met .ui-ring__tick {
+  stroke: var(--secondary-label);
+}
+
+.ui-ring__glow {
+  position: absolute;
+  z-index: 0;
+  border-radius: 50%;
+  filter: blur(9px);
+  pointer-events: none;
+}
+.ui-ring__glow-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(var(--iris-stops));
+  opacity: var(--iris-glow-opacity);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-stroke)), #000 calc(100% - var(--ring-stroke) + 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-stroke)), #000 calc(100% - var(--ring-stroke) + 1px));
+}
+
+.ui-ring__label {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.ui-ring__value {
+  display: inline-flex;
+  align-items: baseline;
+  font: 700 34px/1 var(--font-rounded);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--label);
+}
+.ui-ring__percent {
+  margin-left: 1px;
+  font-size: 0.55em;
+  font-weight: 600;
+  color: var(--secondary-label);
+}
+.ui-ring__value--empty {
+  color: var(--tertiary-label);
+}

@@ -1,0 +1,103 @@
+.ui-segmented {
+  --segment-thumb: #ffffff;
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  align-items: stretch;
+  height: 36px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--tertiary-system-fill);
+  isolation: isolate;
+  vertical-align: middle;
+}
+.ui-segmented--full {
+  display: grid;
+  width: 100%;
+}
+.ui-segmented--small {
+  height: 30px;
+}
+
+.ui-segmented__thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  z-index: 0;
+  border-radius: 999px;
+  background: var(--segment-thumb);
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.12),
+    0 3px 1px rgba(0, 0, 0, 0.04),
+    0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  transition: background-color 0.2s ease;
+}
+
+.ui-segmented__option {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 12px;
+  color: var(--label);
+  font: 500 14px/18px var(--font);
+  letter-spacing: -0.006em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    color 0.2s ease,
+    opacity 0.2s ease;
+}
+.ui-segmented__option.is-selected {
+  font-weight: 600;
+}
+.ui-segmented__option:active:not(.is-selected) {
+  opacity: 0.5;
+}
+.ui-segmented--small .ui-segmented__option {
+  font-size: 13px;
+}
+.ui-segmented__option:disabled {
+  opacity: 0.4;
+}
+
+/* ---------- MarkPicker ---------- */
+
+.ui-mark .ui-mark__option {
+  color: var(--secondary-label);
+  font-weight: 600;
+}
+.ui-mark .ui-mark__option.is-selected {
+  color: var(--label);
+}
+.ui-mark[data-mark="1"] .ui-mark__thumb {
+  background: var(--label);
+}
+.ui-mark[data-mark="1"] .ui-mark__option.is-selected {
+  color: var(--on-label);
+}
+.ui-mark[data-mark="0"] .ui-mark__option.is-selected {
+  color: var(--system-red);
+}
+
+.ui-mark--compact {
+  width: 132px;
+  height: 34px;
+}
+.ui-mark--compact .ui-mark__option {
+  padding: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-segmented {
+    --segment-thumb: #636366;
+  }
+}
+:root[data-theme="dark"] .ui-segmented {
+  --segment-thumb: #636366;
+}

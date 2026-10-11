@@ -1,0 +1,33 @@
+.ui-nav {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.ui-nav__page {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--system-grouped-background);
+  /* Soft leading-edge shadow, only visible while the page slides. */
+  box-shadow:
+    -1px 0 0 rgba(0, 0, 0, 0.03),
+    -8px 0 28px rgba(0, 0, 0, 0.1);
+  will-change: transform;
+}
+
+.ui-nav__dim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: var(--dim);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* While the finger drives a swipe-back, nothing inside should react to it. */
+.ui-nav[data-swiping] .ui-nav__page {
+  pointer-events: none;
+}

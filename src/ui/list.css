@@ -1,0 +1,198 @@
+.ui-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-section {
+  margin: 0 calc(var(--gutter) + var(--ui-safe-right)) 30px calc(var(--gutter) + var(--ui-safe-left));
+}
+
+.ui-section__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px 7px;
+}
+.ui-section__header-text {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+  min-width: 0;
+}
+.ui-section__header--prominent {
+  align-items: center;
+  padding: 0 4px 9px;
+}
+.ui-section__header--prominent .ui-section__header-text {
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.017em;
+  color: var(--label);
+}
+.ui-section__header-accessory {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.ui-section__group {
+  position: relative;
+  background: var(--secondary-system-grouped-background);
+  border-radius: var(--radius-group);
+  overflow: hidden;
+  isolation: isolate;
+}
+.ui-section__group--padded {
+  padding: 16px;
+}
+
+.ui-section__footer {
+  padding: 7px 16px 0;
+  font: 400 13px/18px var(--font);
+  letter-spacing: -0.003em;
+  color: var(--secondary-label);
+}
+
+/* ---------- Row ---------- */
+
+.ui-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--row-min);
+  padding: 0 0 0 16px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  text-align: left;
+  transition: background-color 0.4s ease;
+}
+button.ui-row {
+  cursor: pointer;
+}
+.ui-row[data-pressed] {
+  background: var(--row-highlight);
+  transition: none;
+}
+
+.ui-row__leading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 30px;
+  margin-right: 14px;
+}
+
+.ui-row__icon-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--system-gray);
+  color: #fff;
+}
+
+.ui-row__main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--row-min);
+  padding: 11px 16px 11px 0;
+}
+.ui-row__main::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: bottom;
+}
+/* No hairline under the last row of a group (also when the row is wrapped, e.g. in a Shimmer). */
+.ui-section__group > .ui-row:last-child > .ui-row__main::after,
+.ui-section__group > :last-child > .ui-row:last-child > .ui-row__main::after,
+.ui-row[data-pressed] > .ui-row__main::after {
+  display: none;
+}
+
+.ui-row__text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+}
+.ui-row__title {
+  overflow-wrap: anywhere;
+}
+.ui-row__title[data-clamp] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ui-row__subtitle {
+  margin-top: 1px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+  overflow-wrap: anywhere;
+}
+.ui-row--subtitle .ui-row__main {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  min-height: 52px;
+}
+
+.ui-row__detail {
+  flex-shrink: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--secondary-label);
+  font-variant-numeric: tabular-nums;
+}
+.ui-row__accessory {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.ui-row__chevron {
+  flex-shrink: 0;
+  margin: 0 -5px 0 -2px;
+  color: var(--tertiary-label);
+}
+.ui-row__check {
+  flex-shrink: 0;
+  color: var(--tint);
+}
+
+.ui-row--destructive .ui-row__title {
+  color: var(--system-red);
+}
+.ui-row--action .ui-row__title {
+  font-weight: 500;
+  color: var(--tint);
+}
+.ui-row--action .ui-row__leading {
+  color: var(--tint);
+}
+.ui-row--disabled .ui-row__leading,
+.ui-row--disabled .ui-row__text,
+.ui-row--disabled .ui-row__detail,
+.ui-row--disabled .ui-row__chevron {
+  opacity: 0.4;
+}

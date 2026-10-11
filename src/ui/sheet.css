@@ -1,0 +1,80 @@
+.ui-sheet-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ui-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: auto;
+}
+
+.ui-sheet {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: auto;
+  will-change: transform;
+  /* At the medium detent the bottom of the sheet is off screen; keep content above it. */
+  --ui-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sheet-hidden, 0px));
+}
+.ui-sheet--card {
+  --ui-safe-top: 6px;
+}
+
+.ui-sheet__panel {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  background: var(--system-grouped-background);
+  box-shadow: 0 -1px 24px rgba(0, 0, 0, 0.1);
+  transform-origin: 50% 0;
+  isolation: isolate;
+}
+.ui-sheet--full .ui-sheet__panel {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.ui-sheet__content {
+  position: absolute;
+  inset: 0;
+}
+
+.ui-sheet__grabber {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  z-index: 40;
+  width: 36px;
+  height: 5px;
+  margin-left: -18px;
+  border-radius: 3px;
+  background: var(--tertiary-label);
+  pointer-events: none;
+}
+
+/* Dark mode sheets sit on the elevated palette, like UIKit. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-sheet--card {
+    --system-background: #1c1c1e;
+    --secondary-system-background: #2c2c2e;
+    --system-grouped-background: #1c1c1e;
+    --secondary-system-grouped-background: #2c2c2e;
+    --tertiary-system-grouped-background: #3a3a3c;
+    --row-highlight: #48484a;
+  }
+}
+:root[data-theme="dark"] .ui-sheet--card {
+  --system-background: #1c1c1e;
+  --secondary-system-background: #2c2c2e;
+  --system-grouped-background: #1c1c1e;
+  --secondary-system-grouped-background: #2c2c2e;
+  --tertiary-system-grouped-background: #3a3a3c;
+  --row-highlight: #48484a;
+}

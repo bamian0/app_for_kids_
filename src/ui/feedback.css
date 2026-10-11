@@ -1,0 +1,161 @@
+/* Spinner */
+.ui-spinner {
+  display: inline-block;
+  color: var(--secondary-label);
+  animation: ui-spin 0.8s steps(8) infinite;
+}
+.ui-button .ui-spinner {
+  color: currentColor;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Pill */
+.ui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  font: 600 13px/18px var(--font);
+  letter-spacing: -0.003em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.ui-pill--small {
+  height: 22px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.ui-pill__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-pill--gray {
+  background: var(--tertiary-system-fill);
+  color: var(--secondary-label);
+}
+.ui-pill--filled {
+  background: var(--label);
+  color: var(--on-label);
+}
+.ui-pill--red {
+  background: color-mix(in srgb, var(--system-red) 13%, transparent);
+  color: var(--system-red);
+}
+.ui-pill--green {
+  background: color-mix(in srgb, var(--system-green) 15%, transparent);
+  color: color-mix(in srgb, var(--system-green) 80%, var(--label));
+}
+.ui-pill--iridescent {
+  position: relative;
+  background: var(--secondary-system-grouped-background);
+  color: var(--label);
+  isolation: isolate;
+}
+.ui-pill--iridescent::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: linear-gradient(100deg, var(--iris-stops));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* Badge */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font: 600 13px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.ui-badge--label {
+  background: var(--label);
+  color: var(--on-label);
+}
+.ui-badge--red {
+  background: var(--system-red);
+  color: #fff;
+}
+
+/* Progress */
+.ui-progress {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--system-fill);
+  overflow: hidden;
+}
+.ui-progress__fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transform-origin: left center;
+  transition: transform 0.6s var(--ease-out);
+}
+.ui-progress__fill--label {
+  background: var(--label);
+}
+.ui-progress__fill--green {
+  background: var(--system-green);
+}
+.ui-progress__fill--iridescent {
+  background: linear-gradient(90deg, var(--iris-stops));
+}
+
+/* Empty state */
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 48px 32px;
+}
+.ui-empty__icon {
+  color: var(--secondary-label);
+  margin-bottom: 14px;
+}
+.ui-empty__title {
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.017em;
+  color: var(--label);
+}
+.ui-empty__message {
+  margin-top: 6px;
+  max-width: 300px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.ui-empty__action {
+  margin-top: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-progress__fill {
+    transition: none;
+  }
+  .ui-spinner {
+    animation-duration: 1.6s;
+  }
+}

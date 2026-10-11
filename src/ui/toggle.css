@@ -1,0 +1,66 @@
+/* Native Safari switch: keep the platform rendering, tint it graphite. */
+.ui-native-switch .ui-toggle {
+  accent-color: var(--switch-on);
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* Drawn switch (Chrome, Firefox, Android): iOS 26 proportions with a capsule thumb. */
+html:not(.ui-native-switch) .ui-toggle {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 63px;
+  height: 28px;
+  margin: 0;
+  border-radius: 14px;
+  background: var(--system-fill);
+  cursor: pointer;
+  transition: background-color 0.25s ease;
+}
+
+html:not(.ui-native-switch) .ui-toggle::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 37px;
+  height: 24px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.12),
+    0 1px 1px rgba(0, 0, 0, 0.06),
+    0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  transition:
+    transform 0.42s cubic-bezier(0.3, 1.35, 0.5, 1),
+    width 0.22s var(--ease-out);
+}
+
+html:not(.ui-native-switch) .ui-toggle:checked {
+  background: var(--switch-on);
+}
+
+html:not(.ui-native-switch) .ui-toggle:checked::before {
+  transform: translateX(22px);
+}
+
+/* The thumb stretches toward the travel direction while held, like UISwitch. */
+html:not(.ui-native-switch) .ui-toggle:active::before {
+  width: 43px;
+}
+html:not(.ui-native-switch) .ui-toggle:checked:active::before {
+  transform: translateX(16px);
+}
+
+html:not(.ui-native-switch) .ui-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not(.ui-native-switch) .ui-toggle::before {
+    transition-duration: 0.01s;
+  }
+}

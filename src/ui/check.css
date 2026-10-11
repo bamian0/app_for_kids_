@@ -1,0 +1,126 @@
+.ui-check {
+  --check-size: 24px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: max(44px, var(--check-size));
+  height: max(44px, var(--check-size));
+  /* Keep the 44px hit target without inflating the row. */
+  margin: calc((var(--check-size) - max(44px, var(--check-size))) / 2);
+}
+
+.ui-check__circle {
+  position: relative;
+  display: block;
+  width: var(--check-size);
+  height: var(--check-size);
+}
+
+.ui-check__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ui-check__ring {
+  fill: none;
+  stroke: var(--tertiary-label);
+  stroke-width: 1.5;
+  transition: stroke 0.2s ease;
+}
+
+.ui-check__fill {
+  fill: var(--label);
+  transform-origin: 12px 12px;
+  transform: scale(0);
+  transition: transform 0.22s var(--ease-out);
+}
+
+.ui-check__tick {
+  fill: none;
+  stroke: var(--on-label);
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 0.12s ease;
+}
+
+.ui-check.is-checked .ui-check__fill {
+  transform: scale(1);
+  transition: transform 0.32s cubic-bezier(0.3, 1.25, 0.5, 1);
+}
+.ui-check.is-checked .ui-check__ring {
+  stroke: var(--label);
+}
+.ui-check.is-checked .ui-check__tick {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.3s cubic-bezier(0.55, 0, 0.35, 1) 0.1s;
+}
+
+/* Prism glint clipped to the circle. */
+.ui-check__clip {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ui-check__sweep {
+  position: absolute;
+  top: -40%;
+  bottom: -40%;
+  left: 0;
+  width: 100%;
+  opacity: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 18%,
+    color-mix(in srgb, var(--iris-2) 70%, transparent) 32%,
+    color-mix(in srgb, var(--iris-7) 75%, transparent) 42%,
+    rgba(255, 255, 255, 0.85) 50%,
+    color-mix(in srgb, var(--iris-6) 75%, transparent) 58%,
+    color-mix(in srgb, var(--iris-4) 70%, transparent) 68%,
+    transparent 82%
+  );
+}
+
+/* Expanding iridescent ring of light. */
+.ui-check__halo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--check-size);
+  height: var(--check-size);
+  margin: calc(var(--check-size) / -2) 0 0 calc(var(--check-size) / -2);
+  border-radius: 50%;
+  padding: 1.5px;
+  opacity: 0;
+  pointer-events: none;
+  background: conic-gradient(var(--iris-stops));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+.ui-check:disabled {
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-check__fill,
+  .ui-check__tick,
+  .ui-check.is-checked .ui-check__fill,
+  .ui-check.is-checked .ui-check__tick {
+    transition-duration: 0.01s;
+    transition-delay: 0s;
+  }
+}

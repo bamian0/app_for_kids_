@@ -1,0 +1,150 @@
+/* ---------- Edge glow ---------- */
+
+.ui-edge-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  overflow: hidden;
+  border-radius: var(--display-radius);
+  pointer-events: none;
+}
+
+.ui-edge-glow__bloom,
+.ui-edge-glow__rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(from 200deg at 50% 55%, var(--iris-stops));
+  /* Hue rotation runs on the compositor; the gradient itself is painted once. */
+  animation: ui-glow-hue 3.2s linear infinite;
+}
+
+/* Soft light pooling inward from every edge, deeper along the bottom like Siri. */
+.ui-edge-glow__bloom {
+  opacity: var(--iris-glow-opacity);
+  -webkit-mask:
+    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% 76px no-repeat,
+    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% 96px no-repeat,
+    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / 56px 100% no-repeat,
+    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / 56px 100% no-repeat;
+  mask:
+    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% 76px no-repeat,
+    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% 96px no-repeat,
+    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / 56px 100% no-repeat,
+    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / 56px 100% no-repeat;
+}
+
+/* A crisp bright line right on the display edge. */
+.ui-edge-glow__rim {
+  padding: 2.5px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* A white highlight that drifts along the bottom edge. */
+.ui-edge-glow__sheen {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -40px;
+  height: 120px;
+  background: radial-gradient(38% 50% at 50% 50%, rgba(255, 255, 255, 0.55), transparent 70%);
+  animation: ui-glow-sheen 2.6s ease-in-out infinite alternate;
+  opacity: 0.7;
+}
+
+@keyframes ui-glow-hue {
+  from {
+    filter: hue-rotate(0deg);
+  }
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+@keyframes ui-glow-sheen {
+  from {
+    transform: translateX(-34%);
+  }
+  to {
+    transform: translateX(34%);
+  }
+}
+
+.ui-edge-glow--still .ui-edge-glow__bloom,
+.ui-edge-glow--still .ui-edge-glow__rim,
+.ui-edge-glow--still .ui-edge-glow__sheen {
+  animation: none;
+}
+
+/* ---------- Shimmer ---------- */
+
+.ui-shimmer {
+  position: relative;
+  display: block;
+  isolation: isolate;
+  overflow: hidden;
+}
+.ui-shimmer--inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.ui-shimmer__sweep {
+  position: absolute;
+  top: -30%;
+  bottom: -30%;
+  left: 0;
+  z-index: 5;
+  width: 46%;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 8%,
+    color-mix(in srgb, var(--iris-2) 42%, transparent) 26%,
+    color-mix(in srgb, var(--iris-1) 42%, transparent) 35%,
+    color-mix(in srgb, var(--iris-7) 42%, transparent) 43%,
+    rgba(255, 255, 255, 0.55) 50%,
+    color-mix(in srgb, var(--iris-6) 42%, transparent) 57%,
+    color-mix(in srgb, var(--iris-5) 42%, transparent) 65%,
+    color-mix(in srgb, var(--iris-3) 42%, transparent) 74%,
+    transparent 92%
+  );
+  transform: translateX(-110%) skewX(-14deg);
+  animation: ui-shimmer-sweep 1.05s cubic-bezier(0.45, 0.05, 0.3, 1) forwards;
+}
+
+/* On dark surfaces the prism adds light instead of tinting; warm hues go muddy there, so it uses the cool end. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-shimmer__sweep {
+    background: var(--shimmer-dark);
+    mix-blend-mode: plus-lighter;
+  }
+}
+:root[data-theme="dark"] .ui-shimmer__sweep {
+  background: var(--shimmer-dark);
+  mix-blend-mode: plus-lighter;
+}
+.ui-shimmer__sweep {
+  --shimmer-dark: linear-gradient(
+    100deg,
+    transparent 10%,
+    color-mix(in srgb, var(--iris-2) 46%, transparent) 28%,
+    color-mix(in srgb, var(--iris-3) 52%, transparent) 39%,
+    rgba(255, 255, 255, 0.26) 50%,
+    color-mix(in srgb, var(--iris-5) 52%, transparent) 61%,
+    color-mix(in srgb, var(--iris-4) 46%, transparent) 72%,
+    transparent 90%
+  );
+}
+
+@keyframes ui-shimmer-sweep {
+  to {
+    transform: translateX(240%) skewX(-14deg);
+  }
+}

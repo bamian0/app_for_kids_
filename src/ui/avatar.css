@@ -1,0 +1,41 @@
+.ui-avatar {
+  --avatar-color: var(--system-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 62%),
+    var(--avatar-color);
+  color: #fff;
+  font-family: var(--font-rounded);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ui-avatar-stack {
+  --stack-ring: var(--secondary-system-grouped-background);
+  display: inline-flex;
+  align-items: center;
+  padding-left: calc(var(--stack-size) * 0.26);
+}
+.ui-avatar-stack__item,
+.ui-avatar-stack__more {
+  margin-left: calc(var(--stack-size) * -0.26);
+  box-shadow: 0 0 0 2px var(--stack-ring);
+}
+.ui-avatar-stack__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--system-gray5);
+  color: var(--secondary-label);
+  font-family: var(--font-rounded);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

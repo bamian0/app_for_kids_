@@ -1,0 +1,103 @@
+.ui-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-field__input,
+.ui-textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--label);
+  /* 17px keeps iOS from zooming the page on focus. */
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  caret-color: var(--label);
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+
+.ui-field__input::placeholder,
+.ui-textarea::placeholder {
+  color: var(--tertiary-label);
+  opacity: 1;
+}
+
+.ui-field__input:disabled,
+.ui-textarea:disabled {
+  color: var(--secondary-label);
+  -webkit-text-fill-color: var(--secondary-label);
+  opacity: 1;
+}
+
+.ui-field__input::-webkit-search-cancel-button,
+.ui-field__input::-webkit-search-decoration {
+  -webkit-appearance: none;
+}
+.ui-field__input::-webkit-inner-spin-button,
+.ui-field__input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.ui-field--plain .ui-field__input {
+  height: 22px;
+  padding: 0;
+}
+
+.ui-field--filled {
+  min-height: 44px;
+  padding: 0 12px 0 14px;
+  border-radius: var(--radius-field);
+  background: var(--tertiary-system-fill);
+}
+.ui-field--filled .ui-field__input {
+  height: 44px;
+  padding: 0;
+}
+
+.ui-field__clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin: -6px -6px -6px 2px;
+  color: var(--tertiary-label);
+  --icon-knockout: var(--secondary-system-grouped-background);
+}
+.ui-field--filled .ui-field__clear {
+  --icon-knockout: var(--system-background);
+}
+
+/* Field as a list row */
+.ui-row--field .ui-row__main {
+  gap: 12px;
+}
+.ui-row__field-label {
+  flex-shrink: 0;
+  color: var(--label);
+}
+
+/* Text area */
+.ui-textarea {
+  resize: none;
+  overflow-y: hidden;
+}
+.ui-textarea--plain {
+  padding: 11px 16px;
+}
+.ui-textarea--filled {
+  padding: 11px 14px;
+  border-radius: var(--radius-field);
+  background: var(--tertiary-system-fill);
+}

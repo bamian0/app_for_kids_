@@ -1,1 +1,396 @@
-/* Placeholder — the design-system agent owns this file (tokens, base styles). */
+/* Stakes design tokens and base styles: iOS 26 semantic colors, SF type scale, materials. */
+
+:root {
+  color-scheme: light dark;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  --font-rounded: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  /* Backgrounds */
+  --system-background: #ffffff;
+  --secondary-system-background: #f2f2f7;
+  --tertiary-system-background: #ffffff;
+  --system-grouped-background: #f2f2f7;
+  --secondary-system-grouped-background: #ffffff;
+  --tertiary-system-grouped-background: #f2f2f7;
+
+  /* Labels */
+  --label: #000000;
+  --secondary-label: rgba(60, 60, 67, 0.6);
+  --tertiary-label: rgba(60, 60, 67, 0.3);
+  --quaternary-label: rgba(60, 60, 67, 0.18);
+  /* Text and glyphs drawn on a label-colored fill (primary buttons, checked circles). */
+  --on-label: #ffffff;
+
+  --separator: rgba(60, 60, 67, 0.29);
+  --opaque-separator: #c6c6c8;
+
+  --system-gray: #8e8e93;
+  --system-gray2: #aeaeb2;
+  --system-gray3: #c7c7cc;
+  --system-gray4: #d1d1d6;
+  --system-gray5: #e5e5ea;
+  --system-gray6: #f2f2f7;
+
+  --system-fill: rgba(120, 120, 128, 0.2);
+  --secondary-system-fill: rgba(120, 120, 128, 0.16);
+  --tertiary-system-fill: rgba(120, 120, 128, 0.12);
+  --quaternary-system-fill: rgba(120, 120, 128, 0.08);
+
+  --system-red: #ff3b30;
+  --system-green: #34c759;
+
+  /* Graphite accent: the app's tint is a deep neutral, never blue. */
+  --tint: #1c1c1e;
+  --row-highlight: #d1d1d6;
+  --switch-on: #2c2c2e;
+  --dim: rgba(0, 0, 0, 0.1);
+  --scrim: rgba(0, 0, 0, 0.22);
+
+  /* Materials */
+  --bar-material: rgba(246, 246, 248, 0.8);
+  --bar-solid: #f9f9f9;
+  --thick-material: rgba(244, 244, 247, 0.86);
+  --glass-tint: rgba(255, 255, 255, 0.58);
+  --glass-rim: rgba(255, 255, 255, 0.9);
+  --glass-edge: rgba(0, 0, 0, 0.07);
+  --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --glass-solid: #f9f9fb;
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  /* Iridescence: soft prism spectrum, used sparingly for moments. */
+  --iris-1: #ff8f5e;
+  --iris-2: #ff5d9e;
+  --iris-3: #b86cff;
+  --iris-4: #6a7dff;
+  --iris-5: #2fb4ff;
+  --iris-6: #3fd3ad;
+  --iris-7: #ffc845;
+  --iris-stops: var(--iris-1), var(--iris-2), var(--iris-3), var(--iris-4), var(--iris-5), var(--iris-6), var(--iris-7), var(--iris-1);
+  --iris-glow-opacity: 0.55;
+
+  /* Geometry */
+  --gutter: 16px;
+  --radius-group: 24px;
+  --radius-alert: 34px;
+  --radius-sheet: 38px;
+  --radius-field: 12px;
+  --display-radius: 0px;
+  --row-min: 44px;
+  --nav-bar-height: 52px;
+
+  --ui-safe-top: env(safe-area-inset-top, 0px);
+  --ui-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --ui-safe-left: env(safe-area-inset-left, 0px);
+  --ui-safe-right: env(safe-area-inset-right, 0px);
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-ios: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Touch devices draw the edge glow along the rounded display corners. */
+@media (pointer: coarse) {
+  :root {
+    --display-radius: 55px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --system-background: #000000;
+    --secondary-system-background: #1c1c1e;
+    --tertiary-system-background: #2c2c2e;
+    --system-grouped-background: #000000;
+    --secondary-system-grouped-background: #1c1c1e;
+    --tertiary-system-grouped-background: #2c2c2e;
+    --label: #ffffff;
+    --secondary-label: rgba(235, 235, 245, 0.6);
+    --tertiary-label: rgba(235, 235, 245, 0.3);
+    --quaternary-label: rgba(235, 235, 245, 0.16);
+    --on-label: #000000;
+    --separator: rgba(84, 84, 88, 0.6);
+    --opaque-separator: #38383a;
+    --system-gray2: #636366;
+    --system-gray3: #48484a;
+    --system-gray4: #3a3a3c;
+    --system-gray5: #2c2c2e;
+    --system-gray6: #1c1c1e;
+    --system-fill: rgba(120, 120, 128, 0.36);
+    --secondary-system-fill: rgba(120, 120, 128, 0.32);
+    --tertiary-system-fill: rgba(120, 120, 128, 0.24);
+    --quaternary-system-fill: rgba(120, 120, 128, 0.18);
+    --system-red: #ff453a;
+    --system-green: #30d158;
+    --tint: #f2f2f7;
+    --row-highlight: #3a3a3c;
+    --switch-on: #a1a1a6;
+    --dim: rgba(0, 0, 0, 0.35);
+    --scrim: rgba(0, 0, 0, 0.48);
+    --bar-material: rgba(18, 18, 20, 0.74);
+    --bar-solid: #161618;
+    --thick-material: rgba(37, 37, 40, 0.86);
+    --glass-tint: rgba(44, 44, 48, 0.56);
+    --glass-rim: rgba(255, 255, 255, 0.3);
+    --glass-edge: rgba(255, 255, 255, 0.1);
+    --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --glass-solid: #2c2c2e;
+    --card-shadow: none;
+    --iris-1: #ff9a62;
+    --iris-2: #ff5fa2;
+    --iris-3: #c46bff;
+    --iris-4: #7488ff;
+    --iris-5: #3dbcff;
+    --iris-6: #4fe0b8;
+    --iris-7: #ffd25e;
+    --iris-glow-opacity: 0.75;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --system-background: #000000;
+  --secondary-system-background: #1c1c1e;
+  --tertiary-system-background: #2c2c2e;
+  --system-grouped-background: #000000;
+  --secondary-system-grouped-background: #1c1c1e;
+  --tertiary-system-grouped-background: #2c2c2e;
+  --label: #ffffff;
+  --secondary-label: rgba(235, 235, 245, 0.6);
+  --tertiary-label: rgba(235, 235, 245, 0.3);
+  --quaternary-label: rgba(235, 235, 245, 0.16);
+  --on-label: #000000;
+  --separator: rgba(84, 84, 88, 0.6);
+  --opaque-separator: #38383a;
+  --system-gray2: #636366;
+  --system-gray3: #48484a;
+  --system-gray4: #3a3a3c;
+  --system-gray5: #2c2c2e;
+  --system-gray6: #1c1c1e;
+  --system-fill: rgba(120, 120, 128, 0.36);
+  --secondary-system-fill: rgba(120, 120, 128, 0.32);
+  --tertiary-system-fill: rgba(120, 120, 128, 0.24);
+  --quaternary-system-fill: rgba(120, 120, 128, 0.18);
+  --system-red: #ff453a;
+  --system-green: #30d158;
+  --tint: #f2f2f7;
+  --row-highlight: #3a3a3c;
+  --switch-on: #a1a1a6;
+  --dim: rgba(0, 0, 0, 0.35);
+  --scrim: rgba(0, 0, 0, 0.48);
+  --bar-material: rgba(18, 18, 20, 0.74);
+    --bar-solid: #161618;
+  --thick-material: rgba(37, 37, 40, 0.86);
+  --glass-tint: rgba(44, 44, 48, 0.56);
+  --glass-rim: rgba(255, 255, 255, 0.3);
+  --glass-edge: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --glass-solid: #2c2c2e;
+  --card-shadow: none;
+  --iris-1: #ff9a62;
+  --iris-2: #ff5fa2;
+  --iris-3: #c46bff;
+  --iris-4: #7488ff;
+  --iris-5: #3dbcff;
+  --iris-6: #4fe0b8;
+  --iris-7: #ffd25e;
+  --iris-glow-opacity: 0.75;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* ---------- Base ---------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--system-grouped-background);
+  color: var(--label);
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#root {
+  height: 100%;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+button {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+svg {
+  flex-shrink: 0;
+}
+
+::selection {
+  background: rgba(120, 120, 128, 0.32);
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--label);
+  outline-offset: 2px;
+}
+
+/* ---------- Type scale (SF Pro, Dynamic Type "Large") ---------- */
+
+.t-large-title {
+  font: 700 34px/41px var(--font);
+  letter-spacing: -0.022em;
+}
+.t-title1 {
+  font: 700 28px/34px var(--font);
+  letter-spacing: -0.02em;
+}
+.t-title2 {
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.017em;
+}
+.t-title3 {
+  font: 600 20px/25px var(--font);
+  letter-spacing: -0.015em;
+}
+.t-headline {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+}
+.t-body {
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+}
+.t-callout {
+  font: 400 16px/21px var(--font);
+  letter-spacing: -0.009em;
+}
+.t-subheadline {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+}
+.t-footnote {
+  font: 400 13px/18px var(--font);
+  letter-spacing: -0.003em;
+}
+.t-caption1 {
+  font: 400 12px/16px var(--font);
+  letter-spacing: 0;
+}
+.t-caption2 {
+  font: 400 11px/13px var(--font);
+  letter-spacing: 0.005em;
+}
+
+.t-regular { font-weight: 400; }
+.t-medium { font-weight: 500; }
+.t-semibold { font-weight: 600; }
+.t-bold { font-weight: 700; }
+
+.t-tabular {
+  font-variant-numeric: tabular-nums;
+}
+.t-rounded {
+  font-family: var(--font-rounded);
+}
+
+.c-label { color: var(--label); }
+.c-secondary { color: var(--secondary-label); }
+.c-tertiary { color: var(--tertiary-label); }
+.c-red { color: var(--system-red); }
+.c-green { color: var(--system-green); }
+
+.ui-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Hairlines: 0.5px where the display can draw it. */
+.ui-hairline-top,
+.ui-hairline-bottom {
+  position: relative;
+}
+.ui-hairline-bottom::after,
+.ui-hairline-top::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  pointer-events: none;
+}
+.ui-hairline-bottom::after {
+  bottom: 0;
+  transform-origin: bottom;
+}
+.ui-hairline-top::before {
+  top: 0;
+  transform-origin: top;
+}
+@media (max-resolution: 1dppx) {
+  .ui-hairline-bottom::after,
+  .ui-hairline-top::before {
+    transform: none;
+  }
+}

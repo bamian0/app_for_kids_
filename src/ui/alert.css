@@ -1,0 +1,207 @@
+.ui-dialog-portal {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.ui-dialog-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--ui-safe-top) + 20px) 24px calc(var(--ui-safe-bottom) + 20px);
+  pointer-events: auto;
+}
+.ui-dialog-layer--sheet {
+  align-items: flex-end;
+  padding: 0 calc(8px + var(--ui-safe-right)) max(8px, var(--ui-safe-bottom)) calc(8px + var(--ui-safe-left));
+}
+
+.ui-dialog-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+}
+
+/* ---------- Alert ---------- */
+
+.ui-alert {
+  position: relative;
+  width: min(320px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 22px 18px 18px;
+  border-radius: var(--radius-alert);
+  background: var(--thick-material);
+  -webkit-backdrop-filter: blur(36px) saturate(190%);
+  backdrop-filter: blur(36px) saturate(190%);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.2),
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    inset 0 0 0 0.5px var(--glass-edge);
+}
+
+.ui-alert__text {
+  padding: 0 6px 18px;
+}
+.ui-alert__title {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  color: var(--label);
+}
+.ui-alert__message {
+  margin-top: 6px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--label);
+}
+.ui-alert__title:empty + .ui-alert__message {
+  margin-top: 0;
+}
+
+.ui-alert__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ui-alert__actions--row {
+  flex-direction: row;
+}
+.ui-alert__actions--row .ui-alert__button {
+  flex: 1 1 0;
+}
+
+.ui-alert__button {
+  min-width: 0;
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--secondary-system-fill);
+  color: var(--label);
+  font: 500 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    transform 0.25s var(--ease-out),
+    background-color 0.15s ease;
+}
+.ui-alert__button:active {
+  transform: scale(0.97);
+  background: var(--system-fill);
+}
+.ui-alert__button.is-preferred {
+  background: var(--label);
+  color: var(--on-label);
+  font-weight: 600;
+}
+.ui-alert__button.is-preferred:active {
+  opacity: 0.85;
+  background: var(--label);
+}
+.ui-alert__button.is-destructive {
+  color: var(--system-red);
+  font-weight: 600;
+}
+
+/* ---------- Action sheet ---------- */
+
+.ui-actionsheet {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ui-actionsheet__group,
+.ui-actionsheet__cancel {
+  border-radius: 28px;
+  background: var(--thick-material);
+  -webkit-backdrop-filter: blur(36px) saturate(190%);
+  backdrop-filter: blur(36px) saturate(190%);
+  box-shadow: inset 0 0 0 0.5px var(--glass-edge);
+  overflow: hidden;
+}
+
+.ui-actionsheet__header {
+  padding: 14px 20px 13px;
+  text-align: center;
+}
+.ui-actionsheet__title {
+  font: 600 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.ui-actionsheet__message {
+  margin-top: 2px;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+.ui-actionsheet__button,
+.ui-actionsheet__cancel {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 57px;
+  padding: 0 16px;
+  font: 400 20px/25px var(--font);
+  letter-spacing: -0.015em;
+  color: var(--tint);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.2s ease;
+}
+.ui-actionsheet__header + .ui-actionsheet__button::before,
+.ui-actionsheet__button + .ui-actionsheet__button::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.ui-actionsheet__button:active,
+.ui-actionsheet__cancel:active {
+  background-color: var(--tertiary-system-fill);
+  transition: none;
+}
+.ui-actionsheet__button.is-destructive {
+  color: var(--system-red);
+}
+.ui-actionsheet__cancel {
+  font-weight: 600;
+  /* Cancel sits on an opaque bubble so nothing behind competes with it. */
+  background: var(--glass-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ui-alert,
+  .ui-actionsheet__group,
+  .ui-actionsheet__cancel {
+    background: var(--glass-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-alert__button:not(.is-preferred) {
+    background: rgba(120, 120, 128, 0.28);
+  }
+}
+:root[data-theme="dark"] .ui-alert__button:not(.is-preferred) {
+  background: rgba(120, 120, 128, 0.28);
+}

@@ -1,0 +1,196 @@
+.ui-screen {
+  --screen-bg: var(--system-grouped-background);
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--screen-bg);
+}
+.ui-screen--plain {
+  --screen-bg: var(--system-background);
+}
+
+/* ---------- Navigation bar ---------- */
+
+.ui-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding-top: var(--ui-safe-top);
+}
+
+.ui-bar__material {
+  position: absolute;
+  inset: 0;
+  background: var(--bar-material);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.ui-bar__material::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: bottom;
+}
+.ui-screen[data-scrolled] .ui-bar__material {
+  opacity: 1;
+}
+
+.ui-bar__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  height: var(--nav-bar-height);
+  padding: 0 calc(16px + var(--ui-safe-right)) 0 calc(16px + var(--ui-safe-left));
+}
+
+.ui-bar__leading,
+.ui-bar__trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ui-bar__trailing {
+  justify-content: flex-end;
+}
+
+.ui-bar__title {
+  max-width: 62vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  color: var(--label);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.ui-screen[data-collapsed] .ui-bar__title {
+  opacity: 1;
+}
+
+.ui-bar__back {
+  gap: 1px;
+  padding: 0 15px 0 9px;
+}
+.ui-bar__back.ui-bar__back--round {
+  width: 44px;
+  padding: 0;
+}
+.ui-bar__back--round .ui-bar__back-label {
+  display: none;
+}
+.ui-bar__back-label {
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+/* ---------- Scroll content ---------- */
+
+.ui-screen__scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* Vertical scrolling stays native; horizontal drags reach the swipe-back gesture. */
+  touch-action: pan-y;
+  overscroll-behavior-x: none;
+}
+
+.ui-screen__content {
+  /* Always a pixel taller than the viewport so it rubber-bands like a UIScrollView. */
+  min-height: calc(100% + 1px);
+  padding-top: calc(var(--ui-safe-top) + var(--nav-bar-height));
+  padding-bottom: calc(var(--ui-safe-bottom) + 28px);
+}
+.ui-screen__content--toolbar {
+  padding-bottom: calc(var(--ui-safe-bottom) + 104px);
+}
+
+.ui-screen__large {
+  padding: 0 calc(16px + var(--ui-safe-right)) 14px calc(16px + var(--ui-safe-left));
+  transform-origin: 0 50%;
+}
+.ui-screen__large-title {
+  font: 700 34px/41px var(--font);
+  letter-spacing: -0.022em;
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+.ui-screen__subtitle {
+  margin-top: 1px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+
+.ui-screen--inline .ui-screen__content {
+  padding-top: calc(var(--ui-safe-top) + var(--nav-bar-height) + 12px);
+}
+
+/* ---------- Floating toolbar ---------- */
+
+.ui-screen__toolbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  padding: 0 calc(16px + var(--ui-safe-right)) max(14px, calc(var(--ui-safe-bottom) - 4px)) calc(16px + var(--ui-safe-left));
+  pointer-events: none;
+}
+/* Scroll edge effect: content softly fades out under the floating toolbar. */
+.ui-screen__toolbar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--ui-safe-bottom) + 96px);
+  background: linear-gradient(to top, var(--screen-bg) 18%, color-mix(in srgb, var(--screen-bg) 0%, transparent));
+  pointer-events: none;
+}
+
+.ui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px;
+  pointer-events: auto;
+}
+.ui-screen__toolbar--full .ui-toolbar {
+  flex: 1;
+}
+.ui-toolbar > .ui-button--full {
+  flex: 1;
+}
+.ui-toolbar > .ui-button {
+  position: relative;
+  z-index: 2;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ui-bar__material {
+    background: var(--bar-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

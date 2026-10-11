@@ -1,0 +1,120 @@
+.ui-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  max-width: 100%;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    transform 0.32s var(--ease-out),
+    opacity 0.2s ease,
+    background-color 0.2s ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ui-button__content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ui-button__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ui-button__spinner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ui-button[data-loading] .ui-button__content {
+  visibility: hidden;
+}
+
+.ui-button[data-pressed] {
+  transform: scale(0.965);
+  transition-duration: 0.12s;
+}
+
+.ui-button:disabled {
+  opacity: 0.35;
+}
+
+/* Sizes */
+.ui-button--small {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 15px;
+  line-height: 20px;
+  letter-spacing: -0.006em;
+}
+.ui-button--medium {
+  height: 44px;
+  padding: 0 20px;
+  font-size: 17px;
+  line-height: 22px;
+  letter-spacing: -0.012em;
+}
+.ui-button--large {
+  height: 52px;
+  padding: 0 24px;
+  font-size: 17px;
+  line-height: 22px;
+  letter-spacing: -0.012em;
+}
+.ui-button--icon-only.ui-button--small {
+  width: 32px;
+  padding: 0;
+}
+.ui-button--icon-only.ui-button--medium {
+  width: 44px;
+  padding: 0;
+}
+.ui-button--icon-only.ui-button--large {
+  width: 52px;
+  padding: 0;
+}
+.ui-button--full {
+  display: flex;
+  width: 100%;
+}
+
+/* Variants */
+.ui-button--filled {
+  background: var(--label);
+  color: var(--on-label);
+}
+.ui-button--filled[data-pressed] {
+  opacity: 0.82;
+}
+.ui-button--gray {
+  background: var(--secondary-system-fill);
+  color: var(--label);
+}
+.ui-button--gray[data-pressed],
+.ui-button--destructive[data-pressed] {
+  background: var(--system-fill);
+}
+.ui-button--plain {
+  color: var(--tint);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.ui-button--plain[data-pressed] {
+  opacity: 0.45;
+  transform: none;
+}
+.ui-button--destructive {
+  background: var(--secondary-system-fill);
+  color: var(--system-red);
+}

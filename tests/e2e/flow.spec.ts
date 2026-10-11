@@ -37,10 +37,9 @@ const LENA_NOW: SeedTask[] = [
   { id: 'lb3', title: 'Call the bank about the loan' },
 ]
 
-/** Same rounding as the app: floored to one decimal, so 89.96 never reads as 90%. */
+/** Same rounding as the app: a floored whole percent, so 89.96 never reads as 90%. */
 function pct(score: number): string {
-  const tenths = Math.floor(score * 10 + 1e-6) / 10
-  return `${Number.isInteger(tenths) ? tenths.toFixed(0) : tenths.toFixed(1)}%`
+  return `${Math.floor(score + 1e-6)}%`
 }
 
 async function phone(browser: Browser): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
@@ -139,7 +138,9 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await form.getByLabel('Reward').fill(SPACE.reward)
     await form.getByLabel('Penalty').fill(SPACE.penalty)
     await snap(marco, '04-create-space')
-    await form.getByRole('button', { name: 'Create Space', exact: true }).click()
+    // One confirm action, the checkmark in the bar.
+    await expect(form.getByRole('button', { name: 'Create Space', exact: true })).toHaveCount(0)
+    await form.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(shown(form, `${SPACE.name} is live.`)).toBeVisible()
     await snap(marco, '05-invite-sheet')
   })
@@ -164,20 +165,34 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await expect.poll(() => planOf(spaceId, nextWeek, marcoUid)).toEqual(MARCO_NEXT)
   })
 
-  await test.step('Lena signs up and joins with the code', async () => {
-    await lena.goto('/')
+  await test.step('Lena opens the invite link, signs up and joins', async () => {
+    await lena.goto(`/?join=${code.replace('-', '')}`)
+    // Signed out, the invite already shows who, what and for which stakes, plus the code to type in the app.
+    await expect(shown(lena, `${MARCO.name} invited you to ${SPACE.name}`)).toBeVisible()
+    await expect(shown(lena, SPACE.reward)).toBeVisible()
+    await expect(shown(lena, SPACE.penalty)).toBeVisible()
+    await expect(lena.locator('.s-invite__code')).toHaveText(code)
+    await expect(lena.getByRole('button', { name: 'I Have an Account' })).toBeInViewport()
+    await snap(lena, '05b-welcome-invited', 1200)
     await signUp(lena, LENA)
     await lena.getByRole('button', { name: 'Create Account', exact: true }).click()
-    await lena.getByRole('button', { name: 'Join with Code', exact: true }).click()
     const join = sheet(lena)
+    await expect(join.getByLabel('Invite code')).toHaveValue(code)
     // Typed the way a friend reads it out: lower case, no dash.
     await join.getByLabel('Invite code').fill(code.replace('-', '').toLowerCase())
     await expect(join.getByLabel('Invite code')).toHaveValue(code)
     await expect(join.locator('.s-join-preview__title')).toHaveText(`Join ${SPACE.name}`)
-    await expect(shown(join, `with ${MARCO.name}`)).toBeVisible()
+    await expect(shown(join, `Invited by ${MARCO.name}`)).toBeVisible()
+    await expect(shown(join, SPACE.penalty)).toBeVisible()
     await snap(lena, '06-join-sheet')
     await join.getByRole('button', { name: `Join ${SPACE.name}`, exact: true }).click()
     await expect(lena.getByRole('heading', { name: SPACE.name })).toBeVisible()
+    // In a Safari tab, joining leads straight to installing the app (reminders need it).
+    const guide = lena.getByRole('dialog').filter({ hasText: `You’re in ${SPACE.name}.` })
+    await expect(guide).toBeVisible()
+    await snap(lena, '06b-install-after-join')
+    await guide.getByRole('button', { name: 'Done', exact: true }).click()
+    await expect(guide).toHaveCount(0)
   })
 
   const lenaUid = await uidOf(LENA.email)
@@ -287,7 +302,7 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
   await test.step('Scores follow the marks', async () => {
     const marcoScore = marcoScoreThisWeek
     const lenaScore = pct((100 * 2.5) / 3)
-    expect([marcoScore, lenaScore]).toEqual(['62.5%', '83.3%'])
+    expect([marcoScore, lenaScore]).toEqual(['62%', '83%'])
     for (const page of [marco, lena]) {
       await expect(score(page, marcoScore)).toBeVisible()
       await expect(score(page, lenaScore)).toBeVisible()
@@ -353,12 +368,19 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await expect
       .poll(async () => (await db.doc(`spaces/${spaceId}/settlements/${lastMonth}_${marcoUid}`).get()).data())
       .toMatchObject({ monthId: lastMonth, uid: marcoUid, settled: true, settledBy: marcoUid })
+    await expect(shown(marco, 'Marked by you')).toBeVisible()
     await snap(marco, '18-month-verdict')
-    // Lena sees the switch flip live.
+    // Lena sees the switch flip live, and who flipped it. She missed: no glow, and she can't mark her own debt.
+    const lenaGlows = await edgeGlows(lena)
     await lena.getByRole('radio', { name: 'Month' }).click()
     await lena.getByRole('button', { name: 'Previous month' }).click()
     await expect(shown(lena, `You owe Marco: ${SPACE.penalty}`)).toBeVisible()
-    await expect(lena.getByRole('switch', { name: 'Settled' }).last()).toBeChecked()
+    await expect(shown(lena, 'Marked by Marco')).toBeVisible()
+    await expect(shown(lena, 'Only the people you owe can mark this.')).toBeVisible()
+    // Neither row is hers to mark: Marco is owed his reward, and she can't settle her own debt.
+    await expect(lena.getByRole('switch', { name: 'Settled' })).toHaveCount(0)
+    await lena.waitForTimeout(1000)
+    expect(await edgeGlows(lena)).toBe(lenaGlows)
     await snap(lena, '18b-month-verdict-lena')
   })
 
@@ -366,6 +388,15 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await marco.getByRole('button', { name: 'Space settings' }).click()
     await expect(shown(marco, 'Members · 2 of 8')).toBeVisible()
     await snap(marco, '19-space-settings')
+    // The owner resets the invite code: the old one stops working.
+    await marco.getByRole('button', { name: 'Reset Invite Code' }).click()
+    await marco.getByRole('alertdialog').getByRole('button', { name: 'Reset', exact: true }).click()
+    await expect(marco.locator('.s-invite__code').filter({ visible: true })).not.toHaveText(code)
+    // The screen updates before the server has the write.
+    await expect.poll(async () => (await db.doc(`invites/${code.replace('-', '')}`).get()).exists).toBe(false)
+    const newCode = (await db.doc(`spaces/${spaceId}`).get()).get('inviteCode') as string
+    expect(newCode).not.toBe(code.replace('-', ''))
+    expect((await db.doc(`invites/${newCode}`).get()).get('spaceId')).toBe(spaceId)
     await marco.getByRole('button', { name: 'How Stakes Works' }).click()
     await expect(marco.getByRole('heading', { name: 'How Stakes Works' })).toBeVisible()
     await snap(marco, '20-rules')
@@ -377,6 +408,25 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await marco.getByRole('button', { name: 'Profile' }).click()
     await expect(shown(sheet(marco), MARCO.email)).toBeVisible()
     await snap(marco, '22-profile')
+    await sheet(marco).getByRole('button', { name: 'Done', exact: true }).click()
+  })
+
+  await test.step('The verdict notification opens last month', async () => {
+    await marco.goto(`/?space=${spaceId}&month=${lastMonth}`)
+    await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
+    await expect(shown(marco, `Lena owes you: ${SPACE.reward}`)).toBeVisible()
+    expect(new URL(marco.url()).searchParams.has('space')).toBe(false)
+  })
+
+  await test.step('The owner removes a member', async () => {
+    await marco.getByRole('button', { name: 'Space settings' }).click()
+    await marco.getByRole('button', { name: new RegExp(LENA.name) }).filter({ visible: true }).click()
+    await snap(marco, '23-remove-member', 500)
+    await marco.getByRole('button', { name: 'Remove from Space', exact: true }).click()
+    await expect(shown(marco, 'Members · 1 of 8')).toBeVisible()
+    await expect.poll(async () => (await db.doc(`spaces/${spaceId}`).get()).get('memberIds')).toEqual([marcoUid])
+    // Lena's open space turns into the "not in this space" state.
+    await expect(shown(lena, 'You’re not in this space')).toBeVisible()
   })
 
   expect(a.errors).toEqual([])

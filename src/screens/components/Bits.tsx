@@ -1,13 +1,10 @@
 // Small presentational pieces shared by several screens.
 import type { ReactNode } from 'react'
-import type { Mark } from '../../domain/types.ts'
 import { ActivityIndicator, Icon, ScoreRing, cx } from '../../ui/index.ts'
+import { formatScore } from './format.ts'
 
-/** "92%", "87.5%". Floors to one decimal so a score shown as 90% never fails the 90% bar. */
-export function formatScore(score: number): string {
-  const tenths = Math.floor(score * 10 + 1e-6) / 10
-  return `${Number.isInteger(tenths) ? tenths.toFixed(0) : tenths.toFixed(1)}%`
-}
+export { formatScore } from './format.ts'
+export { markLabel } from './marks.ts'
 
 export function ErrorText({ children }: { children: ReactNode }) {
   return (
@@ -35,12 +32,6 @@ export function CheckDot({ done, label }: { done: boolean; label?: string }) {
   )
 }
 
-const MARK_LABEL: Record<string, string> = { '1': 'Done', '0.5': 'Half', '0': 'Not done' }
-
-export function markLabel(mark: Mark): string {
-  return MARK_LABEL[String(mark)]
-}
-
 /** A task's final mark: full, half or none (averages round to the nearest of the three). */
 export function MarkGlyph({ mark }: { mark: number }) {
   const kind = mark >= 0.75 ? 'done' : mark >= 0.25 ? 'half' : 'none'
@@ -51,15 +42,15 @@ export function MarkGlyph({ mark }: { mark: number }) {
   )
 }
 
-/** Small score ring with the number beside it, for list rows. */
-export function MiniScore({ value, threshold = 90, caption }: { value: number | null; threshold?: number; caption?: string }) {
+/** Small score ring with the number beside it, for list rows. A provisional value stays graphite. */
+export function MiniScore({ value, threshold = 90, caption, iridescent = true }: { value: number | null; threshold?: number; caption?: string; iridescent?: boolean }) {
   return (
     <span className="s-mini-score">
       <span className="s-mini-score__text">
         <span className="s-mini-score__value t-tabular">{value == null ? '—' : formatScore(value)}</span>
         {caption && <span className="s-mini-score__caption">{caption}</span>}
       </span>
-      <ScoreRing value={value} threshold={threshold} size={40} stroke={5} aria-label={value == null ? 'No score' : formatScore(value)} />
+      <ScoreRing key={value == null ? 'empty' : 'score'} value={value} threshold={threshold} iridescent={iridescent} size={40} stroke={5} aria-label={value == null ? 'No score' : formatScore(value)} />
     </span>
   )
 }

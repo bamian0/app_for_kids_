@@ -26,8 +26,14 @@ export interface Space {
   ownerId: UID
   memberIds: UID[]
   joinedAt: Record<UID, number>
+  /** When each former member left or was removed (the latest time, if they left more than once).
+   *  Missing on spaces nobody has left since it existed. */
+  leftAt?: Record<UID, number>
   /** IANA timezone, fixed at creation. All deadlines use it. */
   timezone: string
+  /** The zone's UTC offset in minutes when the space was created. Immutable; the rules anchor every
+   *  week's timeline to it (±1h covers DST). Missing on spaces created before it existed. */
+  utcOffsetMin?: number
   inviteCode: string
   /** Percent, always 90. */
   threshold: number
@@ -40,6 +46,9 @@ export interface Invite {
   code: string
   spaceId: string
   spaceName: string
+  /** The space's stakes, mirrored so the join preview can show them before joining. Empty on old invites. */
+  reward: string
+  penalty: string
   inviterName: string
   createdBy: UID
   createdAt: number
@@ -56,7 +65,8 @@ export interface Week {
   reviewOpenAt: number
   /** Saturday 00:00 local — reviews due ("Friday at midnight"). */
   deadlineAt: number
-  /** Participants: space members who joined the week before lockAt. */
+  /** Participants: everyone who was a space member before lockAt (added whenever any member opens the
+   *  app before then), minus anyone who left the space before submitting while the week was open. */
   members: UID[]
   /** Participants who submitted their Friday reviews. */
   submittedBy: UID[]
@@ -102,10 +112,21 @@ export interface Settlement {
 export interface WeekData {
   spaceId: string
   weekId: WeekId
-  /** null until someone opens the week (the doc is created lazily). */
+  /** null until a member opens the app before the week locks (the doc is created lazily). */
   week: Week | null
   plans: Record<UID, Plan>
   progress: Record<UID, Progress>
   /** Only the reviews the current user is allowed to read (own reviews before reveal, all after). */
   reviews: Review[]
+  /** The stored timeline differs from the space timezone's by more than an hour: someone created
+   *  the week with skewed bounds. Screens should warn; the stored times still rule. */
+  boundsMismatch?: boolean
+}
+
+/** The stakes that apply to one month: frozen in spaces/{id}/months/{monthId} once the month's first
+ *  task lists have locked, else the space's current text (frozen = false). */
+export interface MonthStakes {
+  reward: string
+  penalty: string
+  frozen: boolean
 }

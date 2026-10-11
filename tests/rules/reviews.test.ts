@@ -100,11 +100,16 @@ describe('reviews: create', () => {
       'mark true': one('alice_bob', review('alice', 'bob', { marks: { t1: true } })),
       'marks a list': one('alice_bob', review('alice', 'bob', { marks: [1, 1] })),
       '26 marks': one('alice_bob', review('alice', 'bob', { marks: marks(26) })),
+      'mark key not a task id': one('alice_bob', review('alice', 'bob', { marks: { 'not a task id!': 1 } })),
+      'mark key 65 chars': one('alice_bob', review('alice', 'bob', { marks: { ['k'.repeat(65)]: 1 } })),
+      'last of 25 keys oversized': one('alice_bob', review('alice', 'bob', { marks: { ...marks(24), ['z'.repeat(1400)]: 1 } })),
       'client submittedAt': one('alice_bob', review('alice', 'bob', { submittedAt: Timestamp.now() })),
       'extra key': one('alice_bob', review('alice', 'bob', { comment: 'lazy' })),
       'missing marks': one('alice_bob', { reviewerId: 'alice', revieweeId: 'bob', submittedAt: serverTimestamp() }),
     })
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin']) })
     await allDenied({
+      'reviewer left the space': () => submit(db('carol'), 'carol', { carol_bob: review('carol', 'bob') }),
       'reviewer not a participant': () => submit(db('erin'), 'erin', { erin_bob: review('erin', 'bob') }),
       'signed out': () => submit(db(), 'alice', { alice_bob: review('alice', 'bob') }),
     })
@@ -148,6 +153,14 @@ describe('reviews: blind reads', () => {
     await allowed(getDoc(doc(db('carol'), `${reviewsPath()}/alice_bob`)))
     await allowed(byReviewee(db('alice'), 'alice'))
     await allowed(all(db('erin')))
+  })
+
+  test('a participant who left the space does not hold the reveal back', async () => {
+    await seedReviews('review', ['alice', 'bob'])
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'erin']) })
+    expect((await all(db('bob'))).size).toBe(4)
+    await allowed(getDoc(doc(db('erin'), `${reviewsPath()}/bob_alice`)))
+    await denied(all(db('carol')))
   })
 
   test('after the deadline: members read everything even if someone missed it', async () => {

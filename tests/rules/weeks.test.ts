@@ -1,167 +1,212 @@
-// spaces/{id}/weeks/{weekId}: create (real Monday ids and bounds near now), join, submit, read.
+// spaces/{id}/weeks/{weekId}: create (real Monday ids, bounds anchored to the space's offset, every
+// member), adding members, leaving, submitting, read.
 import { describe, expect, test } from 'vitest'
 import { DateTime } from 'luxon'
 import {
-  arrayUnion, deleteDoc, doc, getDoc, runTransaction, setDoc, updateDoc, type DocumentData, type Firestore,
+  arrayRemove, arrayUnion, deleteDoc, deleteField, doc, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc,
+  writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
-import { allDenied, allowed, DAY, denied, HOUR, spaceDoc, ts, useRulesEnv, weekDoc } from './helpers.ts'
+import { allDenied, allowed, DAY, denied, HOUR, legacySpaceDoc, offsetNow, spaceDoc, ts, useRulesEnv, weekDoc } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
+
+type Bound = 'startAt' | 'lockAt' | 'reviewOpenAt' | 'deadlineAt'
+const BOUNDS: Bound[] = ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt']
 
 /** Monday (ISO week start) of the week containing now in `zone`, shifted by `weeks`. */
 function mondayId(zone: string, weeks = 0): string {
   return DateTime.now().setZone(zone).startOf('week').plus({ weeks }).toISODate()!
 }
 
-/** The week doc a client creates: DST-correct local midnights, members per the lock rule. */
-function newWeek(uid: string, weekId: string, zone: string, extra: DocumentData = {}): DocumentData {
+/** The week doc the data layer creates: DST-correct local midnights, every current member. */
+function newWeek(members: string[], weekId: string, zone: string, extra: DocumentData = {}): DocumentData {
   const start = DateTime.fromISO(weekId, { zone })
-  const lockAt = start.plus({ days: 1 }).toMillis()
   return {
     startAt: ts(start.toMillis()),
-    lockAt: ts(lockAt),
+    lockAt: ts(start.plus({ days: 1 }).toMillis()),
     reviewOpenAt: ts(start.plus({ days: 4 }).toMillis()),
     deadlineAt: ts(start.plus({ days: 5 }).toMillis()),
-    members: Date.now() < lockAt ? [uid] : [],
+    members,
     submittedBy: [],
     ...extra,
   }
 }
 
-/** Same as newWeek but with every bound shifted from the correct start by the given offsets. */
-function shifted(uid: string, weekId: string, zone: string, offsets: Partial<Record<'startAt' | 'lockAt' | 'reviewOpenAt' | 'deadlineAt', number>>) {
-  const base = newWeek(uid, weekId, zone)
-  const out: DocumentData = { ...base }
-  for (const [key, ms] of Object.entries(offsets)) out[key] = ts(base[key].toMillis() + ms)
+/** newWeek with bounds shifted from the correct ones by the given offsets. */
+function shifted(members: string[], weekId: string, zone: string, offsets: Partial<Record<Bound, number>>): DocumentData {
+  const out = newWeek(members, weekId, zone)
+  for (const [key, ms] of Object.entries(offsets)) out[key] = ts(out[key].toMillis() + ms)
   return out
 }
 
+const everyBound = (ms: number): Record<Bound, number> => Object.fromEntries(BOUNDS.map((b) => [b, ms])) as Record<Bound, number>
+
 /** Bounds at exact whole days from an arbitrary start instant. */
-function fromStart(uid: string, startMs: number): DocumentData {
-  return {
-    startAt: ts(startMs),
-    lockAt: ts(startMs + DAY),
-    reviewOpenAt: ts(startMs + 4 * DAY),
-    deadlineAt: ts(startMs + 5 * DAY),
-    members: [uid],
-    submittedBy: [],
-  }
+function fromStart(members: string[], startMs: number): DocumentData {
+  return { startAt: ts(startMs), lockAt: ts(startMs + DAY), reviewOpenAt: ts(startMs + 4 * DAY), deadlineAt: ts(startMs + 5 * DAY), members, submittedBy: [] }
 }
 
 const weekRef = (fs: Firestore, weekId: string, space = 's1') => doc(fs, `spaces/${space}/weeks/${weekId}`)
+const isLocked = (weekId: string, zone: string) => Date.now() >= DateTime.fromISO(weekId, { zone }).plus({ days: 1 }).toMillis()
+
+// Zones on both sides of UTC, a half-hour offset, both extremes and a southern-hemisphere DST.
+const ZONES = ['Europe/Berlin', 'America/Los_Angeles', 'Australia/Sydney', 'Asia/Kolkata', 'Pacific/Kiritimati', 'Pacific/Pago_Pago']
+const AB = ['alice', 'bob']
 
 describe('weeks: create', () => {
-  const zones = ['Europe/Berlin', 'America/Los_Angeles', 'Pacific/Kiritimati', 'Pacific/Pago_Pago', 'Asia/Kolkata', 'Australia/Lord_Howe']
-
-  test.each(zones)('this week and next week in %s', async (zone) => {
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob'], { timezone: zone }) })
+  test.each(ZONES)('this week (until it locks) and next week in %s', async (zone) => {
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone }) })
     const alice = db('alice')
     const thisWeek = mondayId(zone)
     const nextWeek = mondayId(zone, 1)
-    await allowed(setDoc(weekRef(alice, thisWeek), newWeek('alice', thisWeek, zone)))
-    await allowed(setDoc(weekRef(alice, nextWeek), newWeek('alice', nextWeek, zone)))
-    expect((await getDoc(weekRef(alice, nextWeek))).data()?.members).toEqual(['alice'])
+    await (isLocked(thisWeek, zone) ? denied : allowed)(setDoc(weekRef(alice, thisWeek), newWeek(AB, thisWeek, zone)))
+    await allowed(setDoc(weekRef(alice, nextWeek), newWeek(AB, nextWeek, zone)))
+    expect((await getDoc(weekRef(alice, nextWeek))).data()?.members).toEqual(AB)
   })
 
-  test('members must be [self] before lockAt and [] after', async () => {
-    const zone = 'Europe/Berlin'
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']) })
-    const alice = db('alice')
-    const thisWeek = mondayId(zone)
-    const nextWeek = mondayId(zone, 1)
-    const thisLocked = Date.now() >= DateTime.fromISO(thisWeek, { zone }).plus({ days: 1 }).toMillis()
-    await allDenied({
-      'this week, members flipped': () =>
-        setDoc(weekRef(alice, thisWeek), newWeek('alice', thisWeek, zone, { members: thisLocked ? ['alice'] : [] })),
-      'next week, no members': () => setDoc(weekRef(alice, nextWeek), newWeek('alice', nextWeek, zone, { members: [] })),
-      'next week, someone else': () => setDoc(weekRef(alice, nextWeek), newWeek('alice', nextWeek, zone, { members: ['bob'] })),
-      'next week, self and another': () =>
-        setDoc(weekRef(alice, nextWeek), newWeek('alice', nextWeek, zone, { members: ['alice', 'bob'] })),
+  test.each(ZONES)('DST: a space created in the other season (offset ±1h) still creates real weeks in %s', async (zone) => {
+    const now = offsetNow(zone)
+    await seed({
+      'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: now - 60 }),
+      'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: now + 60 }),
     })
+    const next = mondayId(zone, 1)
+    await allowed(setDoc(weekRef(db('alice'), next, 's1'), newWeek(AB, next, zone)))
+    await allowed(setDoc(weekRef(db('alice'), next, 's2'), newWeek(AB, next, zone)))
   })
 
-  test('DST: bounds may differ from whole days by up to 2h', async () => {
+  test('DST inside the week: later bounds may be 1h off whole days', async () => {
     const zone = 'Europe/Berlin'
-    await seed({ 'spaces/s1': spaceDoc(['alice']) })
-    const nextWeek = mondayId(zone, 1)
-    await allowed(
-      setDoc(weekRef(db('alice'), nextWeek), shifted('alice', nextWeek, zone, { reviewOpenAt: HOUR, deadlineAt: HOUR })),
-    )
+    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s2': spaceDoc(AB) })
+    const next = mondayId(zone, 1)
+    await allowed(setDoc(weekRef(db('alice'), next, 's1'), shifted(AB, next, zone, { reviewOpenAt: HOUR, deadlineAt: HOUR })))
+    await allowed(setDoc(weekRef(db('alice'), next, 's2'), shifted(AB, next, zone, { reviewOpenAt: -HOUR, deadlineAt: -HOUR })))
   })
 
-  test('startAt must be within 14h of the Monday at 00:00 UTC', async () => {
-    await seed({ 'spaces/s1': spaceDoc(['alice']), 'spaces/s2': spaceDoc(['alice']), 'spaces/s3': spaceDoc(['alice']) })
+  test.each(ZONES)('skewed timelines are refused in %s', async (zone) => {
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone }) })
+    const alice = db('alice')
+    const next = mondayId(zone, 1)
+    const utcMidnight = Date.parse(`${next}T00:00:00Z`)
+    const create = (data: DocumentData) => () => setDoc(weekRef(alice, next), data)
+    const cases: Record<string, () => Promise<unknown>> = {
+      'everything 2h early': create(shifted(AB, next, zone, everyBound(-2 * HOUR))),
+      'everything 2h late': create(shifted(AB, next, zone, everyBound(2 * HOUR))),
+      'everything 23h early': create(shifted(AB, next, zone, everyBound(-23 * HOUR))),
+      'lock 2h early': create(shifted(AB, next, zone, { lockAt: -2 * HOUR })),
+      'deadline 2h early': create(shifted(AB, next, zone, { deadlineAt: -2 * HOUR })),
+      'review window 2h late': create(shifted(AB, next, zone, { reviewOpenAt: 2 * HOUR, deadlineAt: 2 * HOUR })),
+      // The old attack: Monday 00:00 UTC − 14h, every later bound − 2h.
+      'UTC − 14h, bounds − 2h': create({
+        ...fromStart(AB, utcMidnight - 14 * HOUR),
+        lockAt: ts(utcMidnight - 14 * HOUR + DAY - 2 * HOUR),
+        reviewOpenAt: ts(utcMidnight - 14 * HOUR + 4 * DAY - 2 * HOUR),
+        deadlineAt: ts(utcMidnight - 14 * HOUR + 5 * DAY - 2 * HOUR),
+      }),
+    }
+    // A UTC-midnight timeline is a skew wherever local midnight is more than an hour away from it.
+    if (Math.abs(offsetNow(zone)) > 60) cases['UTC midnight'] = create(fromStart(AB, utcMidnight))
+    await allDenied(cases)
+  })
+
+  test('spaces from before utcOffsetMin keep the ±14h anchor, with 1h slack per bound', async () => {
+    await seed({ 'spaces/s1': legacySpaceDoc(AB), 'spaces/s2': legacySpaceDoc(AB), 'spaces/s3': legacySpaceDoc(AB) })
     const alice = db('alice')
     const next = mondayId('UTC', 1)
     const utcMidnight = Date.parse(`${next}T00:00:00Z`)
-    await allowed(setDoc(weekRef(alice, next, 's1'), fromStart('alice', utcMidnight + 14 * HOUR)))
-    await allowed(setDoc(weekRef(alice, next, 's2'), fromStart('alice', utcMidnight - 14 * HOUR)))
+    await allowed(setDoc(weekRef(alice, next, 's1'), fromStart(AB, utcMidnight + 14 * HOUR)))
+    await allowed(setDoc(weekRef(alice, next, 's2'), fromStart(AB, utcMidnight - 14 * HOUR)))
     await allDenied({
-      '+15h': () => setDoc(weekRef(alice, next, 's3'), fromStart('alice', utcMidnight + 15 * HOUR)),
-      '-15h': () => setDoc(weekRef(alice, next, 's3'), fromStart('alice', utcMidnight - 15 * HOUR)),
+      '+15h': () => setDoc(weekRef(alice, next, 's3'), fromStart(AB, utcMidnight + 15 * HOUR)),
+      '-15h': () => setDoc(weekRef(alice, next, 's3'), fromStart(AB, utcMidnight - 15 * HOUR)),
+      'lock 2h early': () => setDoc(weekRef(alice, next, 's3'), { ...fromStart(AB, utcMidnight), lockAt: ts(utcMidnight + DAY - 2 * HOUR) }),
+    })
+  })
+
+  test('every current space member takes part, whoever creates the week', async () => {
+    const zone = 'Europe/Berlin'
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'carol']), 'spaces/s2': spaceDoc(['alice', 'bob', 'carol']) })
+    const next = mondayId(zone, 1)
+    const create = (members: string[]) => () => setDoc(weekRef(db('alice'), next), newWeek(members, next, zone))
+    await allDenied({
+      'only self': create(['alice']),
+      'missing a member': create(['alice', 'bob']),
+      'nobody': create([]),
+      'a non-member': create(['alice', 'bob', 'carol', 'zoe']),
+      'a duplicate instead of a member': create(['alice', 'bob', 'bob']),
+    })
+    await allowed(setDoc(weekRef(db('bob'), next), newWeek(['carol', 'alice', 'bob'], next, zone)))
+    await allowed(setDoc(weekRef(db('carol'), next, 's2'), newWeek(['alice', 'bob', 'carol'], next, zone)))
+  })
+
+  test('a week can only be created before it locks', async () => {
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: 'UTC' }) })
+    const last = mondayId('UTC', -1)
+    await allDenied({
+      'last week with everyone': () => setDoc(weekRef(db('alice'), last), newWeek(AB, last, 'UTC')),
+      'last week with nobody': () => setDoc(weekRef(db('alice'), last), newWeek([], last, 'UTC')),
     })
   })
 
   test('inconsistent or out-of-range weeks are rejected', async () => {
     const zone = 'Europe/Berlin'
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']) })
+    await seed({ 'spaces/s1': spaceDoc(AB) })
     const alice = db('alice')
     const next = mondayId(zone, 1)
     const nextTuesday = DateTime.fromISO(next).plus({ days: 1 }).toISODate()!
     const tooFar = mondayId(zone, 3)
-    const tooOld = mondayId(zone, -2)
     const create = (weekId: string, data: DocumentData) => () => setDoc(weekRef(alice, weekId), data)
     await allDenied({
-      'weekId is a Tuesday': create(nextTuesday, newWeek('alice', nextTuesday, zone)),
-      'weekId has a suffix': create(`${next}x`, newWeek('alice', next, zone)),
-      'weekId not a date': create('next-week', newWeek('alice', next, zone)),
-      'impossible date': create('2026-02-30', newWeek('alice', next, zone)),
-      'startAt a day early': create(next, shifted('alice', next, zone, { startAt: -DAY, lockAt: -DAY, reviewOpenAt: -DAY, deadlineAt: -DAY })),
-      'lockAt +3h': create(next, shifted('alice', next, zone, { lockAt: 3 * HOUR })),
-      'lockAt a day late': create(next, shifted('alice', next, zone, { lockAt: DAY })),
-      'reviewOpenAt -3h': create(next, shifted('alice', next, zone, { reviewOpenAt: -3 * HOUR })),
-      'deadlineAt a day late': create(next, shifted('alice', next, zone, { deadlineAt: DAY })),
-      'startAt is a number': create(next, newWeek('alice', next, zone, { startAt: Date.now() })),
-      'submittedBy not empty': create(next, newWeek('alice', next, zone, { submittedBy: ['alice'] })),
-      'extra key': create(next, newWeek('alice', next, zone, { bonus: 1 })),
-      'missing deadlineAt': create(next, (({ deadlineAt: _, ...rest }) => rest)(newWeek('alice', next, zone))),
-      'three weeks ahead': create(tooFar, newWeek('alice', tooFar, zone)),
-      'two weeks ago': create(tooOld, newWeek('alice', tooOld, zone)),
-      'non-member': () => setDoc(weekRef(db('zoe'), next), newWeek('zoe', next, zone)),
-      'signed out': () => setDoc(weekRef(db(), next), newWeek('alice', next, zone, { members: [] })),
+      'weekId is a Tuesday': create(nextTuesday, newWeek(AB, nextTuesday, zone)),
+      'weekId has a suffix': create(`${next}x`, newWeek(AB, next, zone)),
+      'weekId not a date': create('next-week', newWeek(AB, next, zone)),
+      'impossible date': create('2026-02-30', newWeek(AB, next, zone)),
+      'startAt a day early': create(next, shifted(AB, next, zone, everyBound(-DAY))),
+      'lockAt a day late': create(next, shifted(AB, next, zone, { lockAt: DAY })),
+      'deadlineAt a day late': create(next, shifted(AB, next, zone, { deadlineAt: DAY })),
+      'startAt is a number': create(next, newWeek(AB, next, zone, { startAt: Date.now() })),
+      'submittedBy not empty': create(next, newWeek(AB, next, zone, { submittedBy: ['alice'] })),
+      'members not a list': create(next, newWeek(AB, next, zone, { members: { alice: true, bob: true } })),
+      'extra key': create(next, newWeek(AB, next, zone, { bonus: 1 })),
+      'missing deadlineAt': create(next, (({ deadlineAt: _, ...rest }) => rest)(newWeek(AB, next, zone))),
+      'three weeks ahead': create(tooFar, newWeek(AB, tooFar, zone)),
+      'non-member': () => setDoc(weekRef(db('zoe'), next), newWeek(AB, next, zone)),
+      'signed out': () => setDoc(weekRef(db(), next), newWeek(AB, next, zone)),
     })
   })
 
   test('create inside a transaction (read, then create)', async () => {
     const zone = 'Europe/Berlin'
-    await seed({ 'spaces/s1': spaceDoc(['alice']) })
+    await seed({ 'spaces/s1': spaceDoc(AB) })
     const alice = db('alice')
     const next = mondayId(zone, 1)
     await allowed(
       runTransaction(alice, async (tx) => {
+        const space = await tx.get(doc(alice, 'spaces/s1'))
         const snap = await tx.get(weekRef(alice, next))
-        if (!snap.exists()) tx.set(weekRef(alice, next), newWeek('alice', next, zone))
+        if (!snap.exists()) tx.set(weekRef(alice, next), newWeek(space.data()?.memberIds, next, zone))
       }),
     )
   })
 })
 
-describe('weeks: update', () => {
-  test('a space member joins the week before lockAt', async () => {
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'carol']), 'spaces/s1/weeks/W': weekDoc('planning', ['alice']) })
-    await allowed(updateDoc(weekRef(db('bob'), 'W'), { members: arrayUnion('bob') }))
-    const carol = db('carol')
+describe('weeks: adding members', () => {
+  test('before lockAt any member adds current space members who are missing', async () => {
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'carol', 'dave']), 'spaces/s1/weeks/W': weekDoc('planning', ['alice']) })
+    await allowed(updateDoc(weekRef(db('alice'), 'W'), { members: arrayUnion('bob', 'carol') }))
+    const dave = db('dave')
     await allowed(
-      runTransaction(carol, async (tx) => {
-        const snap = await tx.get(weekRef(carol, 'W'))
-        if (!snap.data()?.members.includes('carol')) tx.update(weekRef(carol, 'W'), { members: arrayUnion('carol') })
+      runTransaction(dave, async (tx) => {
+        const snap = await tx.get(weekRef(dave, 'W'))
+        if (!snap.data()?.members.includes('dave')) tx.update(weekRef(dave, 'W'), { members: arrayUnion('dave') })
       }),
     )
+    expect((await getDoc(weekRef(dave, 'W'))).data()?.members).toEqual(['alice', 'bob', 'carol', 'dave'])
   })
 
-  test('joining the week is limited to self, members, before lockAt', async () => {
+  test('adding is limited to space members, before lockAt, append only', async () => {
     await seed({
-      'spaces/s1': spaceDoc(['alice', 'bob']),
+      'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
       'spaces/s1/weeks/W': weekDoc('planning', ['alice']),
       'spaces/s1/weeks/L': weekDoc('active', ['alice']),
     })
@@ -169,31 +214,81 @@ describe('weeks: update', () => {
     await allDenied({
       'after lockAt': () => updateDoc(weekRef(bob, 'L'), { members: arrayUnion('bob') }),
       'not a space member': () => updateDoc(weekRef(db('zoe'), 'W'), { members: arrayUnion('zoe') }),
-      'adds someone else': () => updateDoc(weekRef(db('alice'), 'W'), { members: arrayUnion('bob') }),
+      'adds a non-member': () => updateDoc(weekRef(bob, 'W'), { members: arrayUnion('bob', 'zoe') }),
       'replaces members': () => updateDoc(weekRef(bob, 'W'), { members: ['bob'] }),
-      'already a member': () => updateDoc(weekRef(db('alice'), 'W'), { members: arrayUnion('alice') }),
+      'reorders and adds': () => updateDoc(weekRef(bob, 'W'), { members: ['bob', 'alice'] }),
+      'adds twice': () => updateDoc(weekRef(bob, 'W'), { members: ['alice', 'bob', 'bob'] }),
+      'nothing new': () => updateDoc(weekRef(db('alice'), 'W'), { members: arrayUnion('alice') }),
       'also moves lockAt': () => updateDoc(weekRef(bob, 'W'), { members: arrayUnion('bob'), lockAt: ts(Date.now() + 9 * DAY) }),
       'also submits': () => updateDoc(weekRef(bob, 'W'), { members: arrayUnion('bob'), submittedBy: arrayUnion('bob') }),
     })
   })
+})
 
+describe('weeks: leaving', () => {
+  const leaveSpace = (fs: Firestore, uid: string, weeks: string[], spacePatch: DocumentData = {}) => {
+    const batch = writeBatch(fs)
+    for (const w of weeks) batch.update(weekRef(fs, w), { members: arrayRemove(uid) })
+    batch.update(doc(fs, 'spaces/s1'), {
+      memberIds: arrayRemove(uid), [`joinedAt.${uid}`]: deleteField(), [`leftAt.${uid}`]: serverTimestamp(), ...spacePatch,
+    })
+    return batch.commit()
+  }
+
+  test('someone leaving the space leaves its open weeks in the same batch', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
+      'spaces/s1/weeks/P': weekDoc('planning', ['alice', 'bob', 'carol']),
+      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'carol']),
+    })
+    await allowed(leaveSpace(db('carol'), 'carol', ['P', 'R']))
+    expect((await getDoc(weekRef(db('alice'), 'R'))).data()?.members).toEqual(['alice', 'bob'])
+  })
+
+  test('the owner takes someone who already left out of an open week', async () => {
+    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'dave']) })
+    await denied(updateDoc(weekRef(db('bob'), 'R'), { members: arrayRemove('dave') }))
+    await allowed(updateDoc(weekRef(db('alice'), 'R'), { members: arrayRemove('dave') }))
+  })
+
+  test('leaving a week is limited to leavers who have not submitted, before the deadline', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
+      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'carol', 'dave', 'erin'], ['erin']),
+      'spaces/s1/weeks/C': weekDoc('closed', ['alice', 'bob', 'carol', 'dave']),
+    })
+    const alice = db('alice')
+    await allDenied({
+      'still a space member': () => updateDoc(weekRef(db('carol'), 'R'), { members: arrayRemove('carol') }),
+      'owner drops a current member': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('carol') }),
+      'after the deadline': () => updateDoc(weekRef(alice, 'C'), { members: arrayRemove('dave') }),
+      'already submitted': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('erin') }),
+      'two at once': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('dave', 'erin') }),
+      'also edits submittedBy': () => updateDoc(weekRef(alice, 'R'), { members: arrayRemove('dave'), submittedBy: [] }),
+      'a stranger': () => updateDoc(weekRef(db('zoe'), 'R'), { members: arrayRemove('dave') }),
+    })
+  })
+})
+
+describe('weeks: submitting', () => {
   test('a participant marks self submitted inside the review window', async () => {
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']), 'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob']) })
+    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s1/weeks/R': weekDoc('review', AB) })
     await allowed(updateDoc(weekRef(db('alice'), 'R'), { submittedBy: arrayUnion('alice') }))
   })
 
-  test('submittedBy is limited to self, participants, inside the window, once', async () => {
+  test('submittedBy is limited to self, participants still in the space, inside the window, once', async () => {
     await seed({
       'spaces/s1': spaceDoc(['alice', 'bob', 'carol']),
-      'spaces/s1/weeks/A': weekDoc('active', ['alice', 'bob']),
-      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob'], ['bob']),
-      'spaces/s1/weeks/C': weekDoc('closed', ['alice', 'bob']),
+      'spaces/s1/weeks/A': weekDoc('active', AB),
+      'spaces/s1/weeks/R': weekDoc('review', ['alice', 'bob', 'dave'], ['bob']),
+      'spaces/s1/weeks/C': weekDoc('closed', AB),
     })
     const alice = db('alice')
     await allDenied({
       'before reviewOpenAt': () => updateDoc(weekRef(alice, 'A'), { submittedBy: arrayUnion('alice') }),
       'after deadlineAt': () => updateDoc(weekRef(alice, 'C'), { submittedBy: arrayUnion('alice') }),
       'not a participant': () => updateDoc(weekRef(db('carol'), 'R'), { submittedBy: arrayUnion('carol') }),
+      'left the space': () => updateDoc(weekRef(db('dave'), 'R'), { submittedBy: arrayUnion('dave') }),
       'for someone else': () => updateDoc(weekRef(db('bob'), 'R'), { submittedBy: arrayUnion('alice') }),
       'twice': () => updateDoc(weekRef(db('bob'), 'R'), { submittedBy: ['bob', 'bob'] }),
       'removes others': () => updateDoc(weekRef(alice, 'R'), { submittedBy: ['alice'] }),
@@ -212,7 +307,7 @@ describe('weeks: update', () => {
 
 describe('weeks: read', () => {
   test('space members read; others do not', async () => {
-    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']), 'spaces/s1/weeks/W': weekDoc('active', ['alice']) })
+    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s1/weeks/W': weekDoc('active', ['alice']) })
     await allowed(getDoc(weekRef(db('bob'), 'W')))
     await allowed(getDoc(weekRef(db('bob'), 'missing')))
     await denied(getDoc(weekRef(db('zoe'), 'W')))

@@ -57,6 +57,8 @@ export interface ToastOptions {
 export interface UIContextValue {
   host: HTMLElement | null
   safeTop: number
+  /** Height of the app shell in px: the window, minus the on-screen keyboard while it is up. */
+  appHeight: number
   sheets: SheetRecord[]
   registerSheet: (cover: MotionValue<number>) => { id: number; unregister: () => void }
   presentSheet: (content: ReactNode | ((close: () => void) => ReactNode), options?: SheetOptions) => () => void

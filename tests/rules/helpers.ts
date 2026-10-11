@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, beforeEach, expect } from 'vitest'
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
+import { DateTime } from 'luxon'
 import { doc, serverTimestamp, setDoc, setLogLevel, Timestamp, type DocumentData, type Firestore } from 'firebase/firestore'
 
 // Denied listeners and writes would otherwise log a warning per test.
@@ -96,9 +97,14 @@ export async function allDenied(cases: Record<string, () => Promise<unknown>>): 
 export const CODE = 'ABCD2345'
 export const OTHER_CODE = 'WXYZ6789'
 
-/** A space as stored after creation (seeded with rules disabled). */
+/** The zone's UTC offset in minutes right now, as createSpace stores it. */
+export const offsetNow = (zone: string): number => DateTime.now().setZone(zone).offset
+
+/** A space as stored after creation (seeded with rules disabled). utcOffsetMin follows the timezone
+ *  unless given; use legacySpaceDoc for a space from before it existed. */
 export function spaceDoc(memberIds: string[], extra: DocumentData = {}): DocumentData {
   const at = ts(Date.now() - 30 * DAY)
+  const timezone: string = extra.timezone ?? 'Europe/Berlin'
   return {
     name: 'Film crew',
     reward: 'Dinner on me',
@@ -106,13 +112,19 @@ export function spaceDoc(memberIds: string[], extra: DocumentData = {}): Documen
     ownerId: memberIds[0] ?? 'owner',
     memberIds,
     joinedAt: Object.fromEntries(memberIds.map((uid) => [uid, at])),
-    timezone: 'Europe/Berlin',
+    timezone,
+    utcOffsetMin: offsetNow(timezone),
     inviteCode: CODE,
     threshold: 90,
     latePenalty: 5,
     createdAt: at,
     ...extra,
   }
+}
+
+export function legacySpaceDoc(memberIds: string[], extra: DocumentData = {}): DocumentData {
+  const { utcOffsetMin: _, ...rest } = spaceDoc(memberIds, extra)
+  return rest
 }
 
 /** What createSpace writes. */
@@ -125,6 +137,7 @@ export function newSpace(uid: string, extra: DocumentData = {}): DocumentData {
     memberIds: [uid],
     joinedAt: { [uid]: serverTimestamp() },
     timezone: 'America/Los_Angeles',
+    utcOffsetMin: offsetNow('America/Los_Angeles'),
     inviteCode: CODE,
     threshold: 90,
     latePenalty: 5,
@@ -133,8 +146,12 @@ export function newSpace(uid: string, extra: DocumentData = {}): DocumentData {
   }
 }
 
-export function inviteDoc(spaceId: string, createdBy: string): DocumentData {
-  return { spaceId, spaceName: 'Film crew', inviterName: 'Alex', createdBy, createdAt: ts(Date.now() - 30 * DAY) }
+/** An invite as stored, mirroring spaceDoc's name and stakes. */
+export function inviteDoc(spaceId: string, createdBy: string, extra: DocumentData = {}): DocumentData {
+  return {
+    spaceId, spaceName: 'Film crew', reward: 'Dinner on me', penalty: 'You buy coffee for a week',
+    inviterName: 'Alex', createdBy, createdAt: ts(Date.now() - 30 * DAY), ...extra,
+  }
 }
 
 export type Phase = 'planning' | 'active' | 'review' | 'closed'

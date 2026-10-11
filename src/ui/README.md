@@ -6,7 +6,7 @@ Everything is exported from `src/ui/index.ts`. Import from there:
 import { UIProvider, NavigationStack, Screen, Section, Row, Button } from '../ui/index.ts'
 ```
 
-The look is iOS 26: SF typography, inset grouped lists, frosted bars, Liquid Glass bar buttons, and spring motion. The accent is **graphite** (never blue). The rainbow "light" effects are reserved for four moments: completing a task, the Friday reveal, the month verdict, and a score ring at or above 90%.
+The look is iOS 26: SF typography, inset grouped lists, floating Liquid Glass bar buttons over a soft scroll edge, and spring motion. The accent is **graphite** (never blue). The rainbow "light" effects are reserved for four moments: completing a task, the Friday reveal, the month verdict, and a score ring at or above 90%.
 
 Live gallery (dev only): run `npx vite`, then open `/gallery.html`. Its source, `src/ui/Gallery.tsx`, is a working reference for every component below.
 
@@ -31,13 +31,16 @@ Wrap the whole app **once**. It hosts sheets, alerts, banners and the edge glow 
 - Put data or session providers **outside** `UIProvider` if content opened with `useSheet().present()` needs them. Declarative `<Sheet>` is a portal, so React context reaches it either way.
 - `setTheme(theme)` does the same as the prop, imperatively.
 - The body never scrolls. Every screen scrolls inside `<Screen>`. Render full-page content (loading, "Not configured yet", sign-in) inside a `Screen` too, so safe areas and scrolling stay correct.
+- **On-screen keyboard.** iOS never resizes the page for the keyboard; it slides the whole app up instead, pushing the nav bar off screen. `UIProvider` follows the visual viewport and undoes that: the app shell ends at the keyboard's top, so screens, the floating toolbar and sheets sit above it, and the focused field is scrolled into view inside its own scroller (clear of the bar and the toolbar). CSS can read `--keyboard-inset` (px, `0px` when hidden) and `:root[data-keyboard]`; `--ui-safe-bottom` is `0px` while the keyboard is up.
+- Code outside React can reach the mounted provider through `bridge.ts` (not exported from `index.ts`, so it pulls in no components): `presentToast(options)` shows a banner and returns `false` when no provider is mounted, and `isUIBusy()` is true while a text field is focused or a sheet or alert is up. The service worker updater in `src/push` uses both.
+- Edge swipe-back and sheet drags end editing first (they blur the focused field), so a field that saves in `onBlur` still saves when a gesture takes the view away. `blurFocusedField()` from `keyboard.ts` does the same for custom gestures.
 
 ### `NavigationStack` + `useNav()`
 An in-memory stack, like UINavigationController, with no URL routes:
 - Every screen in the stack stays mounted, so scroll positions and state survive.
 - Push slides the new screen in from the right while the previous one moves 30% left and dims.
 - Pop reverses it.
-- An interactive swipe-back from the left 24px follows the finger and settles with a spring.
+- An interactive swipe-back from the left 24px follows the finger and settles with a spring. It works along the whole edge, including the nav bar strip.
 - With Reduce Motion on, transitions become a crossfade.
 
 | prop | type | notes |
@@ -54,7 +57,7 @@ nav.popToRoot()
 `push(element, { title })`: `title` is used for the *next* screen's back button. A `<Screen title>` inside the pushed element overrides it automatically. `useNav()` throws outside a stack. Sheets start a fresh navigation context, so put a `NavigationStack` inside a sheet if the flow has steps.
 
 ### `Screen`
-The scroll view plus nav bar. The large title collapses into a centered inline title in a frosted bar on scroll (it is clipped under the bar, not overlapped). Pulling down stretches the large title slightly. Tapping the bar scrolls to top.
+The scroll view plus nav bar. iOS 26 style: there is no opaque bar and no hairline. From the first pixels of scroll, content passing under the floating bar buttons softens into a blurred fade of the page color (the "soft scroll edge"), and the large title slides under it while the centered inline title fades in. Pulling down stretches the large title slightly. Tapping the bar scrolls to top.
 
 | prop | type | notes |
 |---|---|---|
@@ -62,11 +65,11 @@ The scroll view plus nav bar. The large title collapses into a centered inline t
 | `titleDisplay?` | `'large' \| 'inline'` | Default `large`. Use `inline` in sheets and detail screens. |
 | `subtitle?` | ReactNode | Line under the large title, e.g. "Week of Oct 13" |
 | `trailing?` | ReactNode | Bar items: use `GlassButton`s |
-| `leading?` | ReactNode | Replaces the back button, e.g. a Cancel `GlassButton` in a sheet |
+| `leading?` | ReactNode | Replaces the back button, e.g. the xmark `GlassButton` in a sheet |
 | `backTitle?` | string \| false | Override the back label. `false` shows the chevron only. |
 | `hideBack?`, `onBack?` | | The back button appears automatically when depth > 0 |
-| `toolbar?` | ReactNode | Floating glass capsule above the home indicator. Content scrolls under it with a soft fade. |
-| `toolbarFullWidth?` | boolean | Stretches the capsule. Pair it with `<Button fullWidth>`. |
+| `toolbar?` | ReactNode | Floating glass capsule above the home indicator (above the keyboard while typing). Content scrolls under it with a soft fade. |
+| `toolbarFullWidth?` | boolean | Full-width buttons that float on their own, with no glass capsule around them; filled buttons get a soft shadow. Pair it with `<Button size="large" fullWidth>` (one or more, 8px apart). |
 | `background?` | `'grouped' \| 'plain'` | Default grouped (`#F2F2F7` / black) |
 | `scrollRef?` | Ref<HTMLDivElement> | |
 
@@ -107,8 +110,8 @@ An iOS page sheet:
 ```tsx
 <Sheet open={editing} onClose={() => setEditing(false)} detents={['medium', 'large']}>
   <Screen title="Edit Stakes" titleDisplay="inline"
-    leading={<GlassButton onClick={() => setEditing(false)}>Cancel</GlassButton>}
-    trailing={<GlassButton prominent onClick={save}>Save</GlassButton>}>
+    leading={<GlassButton icon="xmark" aria-label="Cancel" onClick={() => setEditing(false)} />}
+    trailing={<GlassButton prominent icon="checkmark" aria-label="Save" onClick={save} disabled={!changed} />}>
     <Section><TextArea value={reward} onChange={setReward} /></Section>
   </Screen>
 </Sheet>
@@ -118,6 +121,8 @@ const close = sheet.present((close) => <InviteSheet onDone={close} />, { detents
 // inside a sheet: useSheet().dismiss(), .detent, .setDetent('large'), .inSheet
 ```
 Children fill the sheet. Use `<Screen titleDisplay="inline">`, or a `<NavigationStack>` for steps. Add `data-sheet-nodrag` to an element that must never start a sheet drag.
+- iOS 26 sheet bar buttons are round glass icons: an `xmark` on the left to cancel or close, and a `prominent` `checkmark` on the right to confirm (Create, Save, Done). Give both an `aria-label`. A disabled prominent button turns into a gray circle with a gray glyph. Keep one confirm action per sheet: no second "Create" button in the content.
+- Sheets size to the app shell, so while the keyboard is up they end at its top.
 
 ### Alerts: `useAlert()`, `Alert`, `ActionSheet`
 These are iOS 26 alerts: a centered glass card, left-aligned text, and capsule buttons. Two actions sit side by side with Cancel on the left; three or more stack. The action sheet is the classic bottom group with a separate Cancel.
@@ -132,7 +137,7 @@ const choice = await actionSheet({ title: 'Invite', actions: [{ label: 'Share Li
 `DialogAction = { label, style?: 'default' | 'cancel' | 'destructive', preferred?: boolean, onPress?() }`. A `preferred` action gets a filled (label-colored) button. The declarative `<Alert open onClose title message actions />` and `<ActionSheet …/>` exist too.
 
 ### Banner: `useToast()`
-A top notification banner. It slides down with a spring, auto-dismisses after 3.2s, and can be swiped up.
+A top notification banner. It slides down and settles without a bounce, like an iOS notification (`springs.banner`), auto-dismisses after 3.2s, and can be swiped up.
 ```tsx
 const toast = useToast()
 toast('Copied')
@@ -206,8 +211,8 @@ Buttons press down to 0.965.
 ```
 
 ### `GlassButton` / `GlassSurface`
-Liquid Glass material: backdrop blur and saturation, a rim light, and a specular highlight. The highlight follows the mouse on desktop and device tilt on iPhone once `requestMotionPermission()` has been called **from a tap** (it fails silently and returns `Promise<boolean>`). Under Reduce Transparency the material is solid.
-- `GlassButton`: a bar or toolbar button. Without children it is a 44px circle (pass `aria-label`). Props: `icon`, `size: 'small' | 'regular' | 'large'`, `prominent` (label-tinted, for Done/Save). It swells slightly when pressed.
+Liquid Glass material: backdrop blur and saturation, a rim light, and a static specular highlight. On desktop the highlight follows the mouse within the element (set per element, so it never restyles the page). There is no device tilt: it cost an iOS motion-permission prompt and a full-page restyle per sensor event. `requestMotionPermission()` is deprecated, does nothing and resolves `false`; delete calls to it. Under Reduce Transparency the material is solid.
+- `GlassButton`: a bar or toolbar button. Without children it is a 44px circle (pass `aria-label`). Props: `icon`, `size: 'small' | 'regular' | 'large'`, `prominent` (label-tinted, for Done/Save; gray with a gray glyph when `disabled`). It swells slightly when pressed.
 - `GlassSurface`: a floating panel. Props: `radius`, `interactive`, `as`. Keep only a few per screen.
 
 ### `SegmentedControl`
@@ -231,10 +236,11 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 ## Status and data
 
 - **`ScoreRing`**: an Activity-style ring that sweeps in from 0.
-  - Props: `value` (0..100 or `null`), `threshold` (default 90), `size` (default 140), `stroke` (default 14), `animate`, `delay`, `showValue` (animated "95%"), `children` (custom center label).
-  - The 90% mark is a notch in the track plus a tick outside it.
-  - At or above the threshold the arc turns into an iridescent conic gradient with a soft glow. Below it, the arc is graphite.
-  - Set `--ring-notch` if the ring sits on something other than a card background.
+  - Props: `value` (0..100 or `null`), `threshold` (default 90), `iridescent` (default `true`; `false` keeps the arc graphite even at or above the threshold, e.g. for a provisional score), `size` (default 140), `stroke` (default 14), `animate`, `delay`, `showValue` (animated "95%"), `children` (custom center label).
+  - With a score, the threshold is a small gap in the gray track (it shows through to whatever the ring sits on, so no color to set). With `value={null}` the track is a plain full circle: no marker, nothing that reads as a spinner.
+  - At or above the threshold (compared with a 1e-9 slack, so an average of exactly 90 counts) the arc turns into a smooth prism (one color step per degree) with a soft glow. Below it, the arc is graphite.
+  - The ends are round. Near 100% the end cap passes over the start and shades it with a soft shadow, like Activity rings.
+  - The percentage (and the default `aria-label`) is floored to a whole number, so 89.9 never shows as 90.
 - **`Pill`**: `tone: 'gray' | 'filled' | 'red' | 'green' | 'iridescent'`, `icon`, `size: 'small' | 'regular'`. Tabular numbers, e.g. `<Pill icon="clock">Locks in 5h 12m</Pill>`.
 - **`Badge`**: `count`, `tone: 'label' | 'red'`, `hideZero`.
 - **`ActivityIndicator`**: the iOS 8-spoke spinner. `size: 'medium' | 'large' | px`, `color`.
@@ -244,7 +250,7 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 - **`AvatarStack`**: `people: { id?, name, color }[]`, `max`, `size`. Overlapping, with a "+N" chip.
 
 ## Light moments (use sparingly)
-- **`useEdgeGlow().play(ms?)`**: a Siri-style rainbow glow hugging the rounded display edges, then a fade-out. Use it for the Friday reveal and the month verdict. A standalone `<IridescentEdgeGlow trigger={revealedWeekId} />` replays whenever `trigger` changes to a new truthy value; it also takes `ref.play()`.
+- **`useEdgeGlow().play(ms?)`**: a Siri-style prism glow hugging the rounded display edges, then a fade-out. The colors drift gently rather than spinning. In light mode the bands are thin and faint, so white cards near the edges stay white. Use it for the Friday reveal and the month verdict. A standalone `<IridescentEdgeGlow trigger={revealedWeekId} />` replays whenever `trigger` changes to a new truthy value; it also takes `ref.play()`.
 - **`<Shimmer trigger={…} radius? inline?>`**: a one-shot diagonal prism sweep over its child. Use it when a task is completed. It also takes `ref.play()`.
 
 ## Typography and tokens
@@ -256,7 +262,8 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
   - Separators and grays: `--separator`, `--system-gray` … `--system-gray6`.
   - Fills: `--system-fill` … `--quaternary-system-fill`.
   - Accents: `--system-red`, `--system-green`, `--tint` (graphite).
-  - Iridescence: `--iris-1` … `--iris-7`, `--iris-stops`.
+  - Iridescence: `--iris-1` … `--iris-7`, `--iris-stops`, `--iris-glow-opacity`. A pastel prism (peach, rose, lilac, periwinkle, sky, orchid, a hint of gold), with separate light and dark values. No stop sits next to one that would mix into green or olive.
+  - Keyboard: `--keyboard-inset`, plus `:root[data-keyboard]` while it is up.
   - Geometry: `--gutter` (16px), `--radius-group`, `--ui-safe-top`, `--ui-safe-bottom` (inside sheets these account for the sheet). `--font` is the font stack.
 
 ## Icons
@@ -265,7 +272,7 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 Names: chevronLeft, chevronRight, chevronDown, plus, minus, xmark, checkmark, person, person2, gear, bell, bellSlash, lock, lockOpen, share, ellipsis, link, calendar, trophy, flame, clock, arrowUpRight, trash, info, addToHomeScreen, copy, envelope, signOut, listBullet, pencil, sparkles, halfCircle, xmarkCircleFill, checkmarkCircleFill. `iconNames` lists them; `IconName` is the type.
 
 ## Motion, haptics, accessibility
-- `springs.navigation | sheet | snappy | bouncy` are motion spring options: `<motion.div transition={springs.snappy} />`. `transitionFor(name)` returns a short fade instead when the user prefers reduced motion.
+- `springs.navigation | sheet | snappy | banner | bouncy` are motion spring options (`banner` settles with no visible bounce; `bouncy` is only for check-offs and badges): `<motion.div transition={springs.snappy} />`. `transitionFor(name)` returns a short fade instead when the user prefers reduced motion.
 - `usePrefersReducedMotion()` and `usePrefersReducedTransparency()` are live hooks; `prefersReducedMotion()` is the one-shot version. All components already respect both preferences: crossfades instead of slides, no sweeps, solid materials.
 - `haptic()` plays a light tap: iOS 18+ through a hidden native switch, Android through vibrate. Call it from a tap handler. `CheckCircle`, `MarkPicker` and `SegmentedControl` already call it.
 - Only transform and opacity animate. Backdrop blurs are limited to bars, glass buttons and modals.

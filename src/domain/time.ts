@@ -57,6 +57,16 @@ export function weekBounds(weekId: WeekId, tz: string): WeekBounds {
   return { startAt: dayStart(0), lockAt: dayStart(1), reviewOpenAt: dayStart(4), deadlineAt: dayStart(5) }
 }
 
+/** The zone's UTC offset in minutes at `ms` (e.g. 120 for Berlin in summer, −420 for Los Angeles). */
+export function utcOffsetMinutes(tz: string, ms: number): number {
+  return zoned(ms, tz).offset
+}
+
+/** True when any bound differs by more than `tolMs` (default 1h, the rules' DST slack). */
+export function boundsDiffer(a: WeekBounds, b: WeekBounds, tolMs = 3_600_000): boolean {
+  return (['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt'] as const).some((k) => Math.abs(a[k] - b[k]) > tolMs)
+}
+
 /** Calendar arithmetic on week ids (no timezone needed). */
 export function addWeeks(weekId: WeekId, n: number): WeekId {
   return isoDate(calendarDate(weekId).plus({ weeks: n }))

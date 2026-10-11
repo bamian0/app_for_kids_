@@ -7,6 +7,7 @@ import { animate, motion, useMotionValue } from 'motion/react'
 import { SheetScopeContext, useUI } from './context.ts'
 import type { SheetDetent, SheetOptions, SheetScope } from './context.ts'
 import { NavReset } from './NavigationStack.tsx'
+import { blurFocusedField } from './keyboard.ts'
 import { createVelocityTracker, prefersReducedMotion, rubberband, springs } from './motion.ts'
 import { cx } from './press.ts'
 import './sheet.css'
@@ -41,13 +42,15 @@ export function Sheet(props: SheetProps) {
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
-function useViewportHeight() {
+/** Outside a UIProvider there is no keyboard-aware shell to measure, so the window it is. */
+function useWindowHeight(enabled: boolean) {
   const [h, setH] = useState(() => (typeof window === 'undefined' ? 800 : window.innerHeight))
   useEffect(() => {
+    if (!enabled) return
     const onResize = () => setH(window.innerHeight)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [])
+  }, [enabled])
   return h
 }
 
@@ -71,7 +74,9 @@ function SheetPresenter({
   )
   const canDismiss = dismissible ?? !full
   const showGrabber = grabber ?? !full
-  const H = useViewportHeight()
+  // The app shell's height, which ends at the keyboard's top while it is up.
+  const windowHeight = useWindowHeight(!ui)
+  const H = ui?.appHeight || windowHeight
 
   // Registration order gives the stacking level; each sheet scales whatever sits right below it.
   const cover = useMotionValue(0)
@@ -222,6 +227,8 @@ function SheetPresenter({
         const belowLarge = y.get() > p.large + 1
         drag.mode = (dy > 0 && atTop) || (dy < 0 && (belowLarge || !drag.scroller)) ? 'drag' : 'scroll'
         if (drag.mode === 'scroll') return
+        // Commit an edit in progress (onBlur saves) before the sheet can go away.
+        blurFocusedField()
         anim.current?.stop()
         dragging.current = true
         drag.y0 = yy

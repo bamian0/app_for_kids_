@@ -34,13 +34,16 @@ service cloud.firestore {
     function validProfile(d) {
       return exactKeys(d, ['name', 'color', 'createdAt'])
         && text(d.name, 40)
-        && str(d.color, 1, 32)
+        // Only #RRGGBB: the color lands in CSS, where anything else (url(...)) could load a tracker.
+        && d.color is string && d.color.matches('^#[0-9A-Fa-f]{6}$')
         && d.createdAt is timestamp;
     }
 
     function validPushSub(d) {
       return exactKeys(d, ['endpoint', 'keys', 'createdAt', 'ua'])
-        && str(d.endpoint, 1, 1024) && d.endpoint.matches('^https://.+')
+        && str(d.endpoint, 1, 1024)
+        // Real push services only, so nobody can point the reminders job at a server that never answers.
+        && d.endpoint.matches('^https://(web[.]push[.]apple[.]com|fcm[.]googleapis[.]com|updates[.]push[.]services[.]mozilla[.]com|[A-Za-z0-9-]+([.][A-Za-z0-9-]+)*[.]notify[.]windows[.]com)/.*$')
         && exactKeys(d.keys, ['p256dh', 'auth'])
         && str(d.keys.p256dh, 1, 256)
         && str(d.keys.auth, 1, 256)
@@ -65,26 +68,33 @@ service cloud.firestore {
 
     // ---------- invites ----------
 
-    function validInvite(code, d) {
-      let space = get(spacePath(d.spaceId)).data;
-      return isInviteCode(code)
-        && exactKeys(d, ['spaceId', 'spaceName', 'inviterName', 'createdBy', 'createdAt'])
-        && str(d.spaceId, 1, 128)
-        && text(d.spaceName, 40)
-        && text(d.inviterName, 40)
-        && d.createdBy == request.auth.uid
-        && d.createdAt == request.time
+    // The invite mirrors the space's name and stakes for the join preview. getAfter, so rotating the
+    // code (space update + new invite + old invite deleted) works as one batch.
+    function mirrorsSpace(code, d, space) {
+      return d.spaceName == space.name && d.reward == space.reward && d.penalty == space.penalty
         && request.auth.uid in space.memberIds
         && space.inviteCode == code;
     }
 
+    function validInvite(code, d) {
+      return isInviteCode(code)
+        && exactKeys(d, ['spaceId', 'spaceName', 'reward', 'penalty', 'inviterName', 'createdBy', 'createdAt'])
+        && str(d.spaceId, 1, 128)
+        && text(d.inviterName, 40)
+        && d.createdBy == request.auth.uid
+        && d.createdAt == request.time
+        && mirrorsSpace(code, d, getAfter(spacePath(d.spaceId)).data);
+    }
+
     match /invites/{code} {
-      allow get: if signedIn();
+      // Signed out too: a friend opening an invite link sees what they're joining before signing up.
+      // get, not list: the code is the secret.
+      allow get: if true;
       allow create: if signedIn() && validInvite(code, incoming());
-      // Renaming a space renames its invite preview; nothing else about an invite ever changes.
-      allow update: if signedIn() && isMember(existing().spaceId)
-        && incoming().diff(existing()).affectedKeys().hasOnly(['spaceName'])
-        && text(incoming().spaceName, 40);
+      // Editing the space's name or stakes refreshes its invite; nothing else about an invite changes.
+      allow update: if signedIn()
+        && incoming().diff(existing()).affectedKeys().hasOnly(['spaceName', 'reward', 'penalty'])
+        && mirrorsSpace(code, incoming(), getAfter(spacePath(existing().spaceId)).data);
       allow delete: if signedIn()
         && (existing().createdBy == request.auth.uid || isMember(existing().spaceId));
     }
@@ -97,12 +107,14 @@ service cloud.firestore {
 
     function validNewSpace(d) {
       return exactKeys(d, ['name', 'reward', 'penalty', 'ownerId', 'memberIds', 'joinedAt',
-                           'timezone', 'inviteCode', 'threshold', 'latePenalty', 'createdAt'])
+                           'timezone', 'utcOffsetMin', 'inviteCode', 'threshold', 'latePenalty', 'createdAt'])
         && validSpaceText(d)
         && d.ownerId == request.auth.uid
         && d.memberIds == [request.auth.uid]
         && d.joinedAt == {request.auth.uid: request.time}
         && str(d.timezone, 1, 64) && d.timezone.matches('^[A-Za-z0-9_+/-]+$')
+        // The zone's offset at creation (UTC−12 … UTC+14). Immutable: every week's timeline is anchored to it.
+        && d.utcOffsetMin is int && d.utcOffsetMin >= -720 && d.utcOffsetMin <= 840
         && isInviteCode(d.inviteCode)
         && d.threshold == 90
         && d.latePenalty == 5
@@ -115,20 +127,79 @@ service cloud.firestore {
         && validSpaceText(incoming());
     }
 
-    function leavesSpace() {
-      let uid = request.auth.uid;
-      return uid in existing().memberIds
-        && changedOnly(['memberIds', 'joinedAt'])
-        && incoming().memberIds == existing().memberIds.removeAll([uid])
-        && incoming().joinedAt.diff(existing().joinedAt).affectedKeys().hasOnly([uid])
-        && !(uid in incoming().joinedAt);
+    // The owner is a member who joined no later than any other (8 slots: rules have no loops).
+    function earliestJoined(d) {
+      let j = d.joinedAt;
+      let o = j[d.ownerId];
+      let ms = d.memberIds;
+      let n = ms.size();
+      return d.ownerId in ms
+        && (n <= 0 || o <= j[ms[0]]) && (n <= 1 || o <= j[ms[1]]) && (n <= 2 || o <= j[ms[2]]) && (n <= 3 || o <= j[ms[3]])
+        && (n <= 4 || o <= j[ms[4]]) && (n <= 5 || o <= j[ms[5]]) && (n <= 6 || o <= j[ms[6]]) && (n <= 7 || o <= j[ms[7]]);
     }
 
-    // The joins/{uid} doc written in the same batch is the proof of invite.
+    // leftAt (optional, so older clients can still leave): only `who` changes, and only to now.
+    // It tells a week that closed before someone left from one they walked out of.
+    function recordsLeft(who) {
+      let before = existing().get('leftAt', {});
+      let after = incoming().get('leftAt', {});
+      let changed = after.diff(before).affectedKeys();
+      return changed.hasOnly([who]) && (!changed.hasAny([who]) || after[who] == request.time);
+    }
+
+    // Leaving removes self from memberIds and joinedAt. An owner who leaves others behind hands the
+    // space to the earliest-joined of them in the same write.
+    function leavesSpace() {
+      let uid = request.auth.uid;
+      let e = existing();
+      let d = incoming();
+      return uid in e.memberIds
+        && changedOnly(['memberIds', 'joinedAt', 'ownerId', 'leftAt'])
+        && d.memberIds == e.memberIds.removeAll([uid])
+        && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([uid])
+        && !(uid in d.joinedAt)
+        && recordsLeft(uid)
+        && (uid == e.ownerId && d.memberIds.size() > 0 ? earliestJoined(d) : d.ownerId == e.ownerId);
+    }
+
+    // The owner removes one other member (a leaked invite, a second account).
+    function removesMember() {
+      let e = existing();
+      let d = incoming();
+      let removed = e.memberIds.removeAll(d.memberIds);
+      return request.auth.uid == e.ownerId && request.auth.uid in e.memberIds
+        && changedOnly(['memberIds', 'joinedAt', 'leftAt'])
+        && removed.size() == 1
+        && !(request.auth.uid in removed)
+        && d.memberIds == e.memberIds.removeAll(removed)
+        && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly(removed)
+        && !d.joinedAt.keys().hasAny(removed)
+        && recordsLeft(removed[0]);
+    }
+
+    // Spaces whose owner left before ownership moved with them: the earliest-joined member takes over.
+    function claimsOwnership() {
+      return request.auth.uid in existing().memberIds
+        && !(existing().ownerId in existing().memberIds)
+        && changedOnly(['ownerId'])
+        && earliestJoined(incoming());
+    }
+
+    // The owner rotates the invite code. The old code can't come back: invites must match the space's code.
+    function rotatesInviteCode() {
+      return request.auth.uid == existing().ownerId && request.auth.uid in existing().memberIds
+        && changedOnly(['inviteCode'])
+        && isInviteCode(incoming().inviteCode)
+        && incoming().inviteCode != existing().inviteCode;
+    }
+
+    // The joins/{uid} doc written in the same batch is the proof of invite. Its code must be the
+    // space's current one, so a rotated-out code is dead even if its invite doc lingers.
     function joinsSpace(spaceId) {
       let uid = request.auth.uid;
       let proof = getAfter(/databases/$(database)/documents/spaces/$(spaceId)/joins/$(uid)).data;
       return !(uid in existing().memberIds)
+        && proof.code == existing().inviteCode
         && changedOnly(['memberIds', 'joinedAt'])
         && incoming().memberIds == existing().memberIds.concat([uid])
         && incoming().memberIds.size() <= 8
@@ -141,7 +212,9 @@ service cloud.firestore {
     match /spaces/{spaceId} {
       allow read: if signedIn() && request.auth.uid in existing().memberIds;
       allow create: if signedIn() && validNewSpace(incoming());
-      allow update: if signedIn() && (editsSpaceText() || leavesSpace() || joinsSpace(spaceId));
+      allow update: if signedIn()
+        && (editsSpaceText() || leavesSpace() || joinsSpace(spaceId) || removesMember() || rotatesInviteCode()
+            || claimsOwnership());
 
       match /joins/{uid} {
         allow get: if isUser(uid);
@@ -155,40 +228,71 @@ service cloud.firestore {
       // ---------- weeks ----------
 
       // weekId 'YYYY-MM-DD' must be a real Monday. timestamp.date() errors (= deny) on impossible dates.
-      function validNewWeek(weekId, d) {
+      // The timeline is anchored to the space's offset at creation: Monday 00:00 local is within 1h of
+      // Monday 00:00 UTC − utcOffsetMin (the 1h is DST), and each later bound within 1h of whole days
+      // after it. Spaces from before utcOffsetMin keep the old ±14h anchor until the reminders job
+      // backfills their offset (clients can't set it: they could pick any offset).
+      // Created before lockAt only, with every current space member: taking part doesn't depend on
+      // who opens the app.
+      function validNewWeek(spaceId, weekId, d) {
+        let space = get(spacePath(spaceId)).data;
         let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
-        let tol = duration.value(2, 'h');
+        let tol = duration.value(1, 'h');
+        let off = space.get('utcOffsetMin', null);
         return weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
           && monday.dayOfWeek() == 1
           && exactKeys(d, ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy'])
-          // Monday 00:00 local is within ±14h of Monday 00:00 UTC for every timezone.
-          && near(d.startAt, monday, duration.value(14, 'h'))
+          && (off == null ? near(d.startAt, monday, duration.value(14, 'h')) : near(d.startAt, monday - duration.value(off, 'm'), tol))
           && near(d.lockAt, d.startAt + duration.value(1, 'd'), tol)
           && near(d.reviewOpenAt, d.startAt + duration.value(4, 'd'), tol)
           && near(d.deadlineAt, d.startAt + duration.value(5, 'd'), tol)
           && d.submittedBy == []
-          && d.members == (request.time < d.lockAt ? [request.auth.uid] : [])
-          && request.time < d.startAt + duration.value(8, 'd')
-          && d.startAt < request.time + duration.value(8, 'd');
+          && request.time < d.lockAt
+          && d.startAt < request.time + duration.value(8, 'd')
+          && d.members is list
+          && d.members.size() == space.memberIds.size()
+          && d.members.hasAll(space.memberIds);
       }
 
-      function joinsWeek(spaceId) {
-        let uid = request.auth.uid;
+      // Before lockAt any member adds current space members who are missing (append only, no duplicates).
+      function addsMembers(spaceId) {
+        let e = existing();
+        let added = incoming().members.removeAll(e.members);
+        let space = get(spacePath(spaceId)).data;
         return changedOnly(['members'])
-          && !(uid in existing().members)
-          && incoming().members == existing().members.concat([uid])
-          && request.time < existing().lockAt
-          && isMember(spaceId);
+          && request.time < e.lockAt
+          && request.auth.uid in space.memberIds
+          && added.size() > 0
+          && incoming().members == e.members.concat(added)
+          && added.toSet().size() == added.size()
+          && space.memberIds.hasAll(added);
       }
 
-      function submitsReviews() {
+      // Someone leaving the space (themselves, or removed by the owner) leaves the week too, while it is
+      // still open and they haven't submitted. getAfter: it's in the same batch as the space update.
+      function leavesWeek(spaceId) {
+        let e = existing();
+        let removed = e.members.removeAll(incoming().members);
+        let space = getAfter(spacePath(spaceId)).data;
+        return changedOnly(['members'])
+          && request.time < e.deadlineAt
+          && removed.size() == 1
+          && incoming().members == e.members.removeAll(removed)
+          && !removed.hasAny(e.submittedBy)
+          && !removed.hasAny(space.memberIds)
+          && (removed.hasOnly([request.auth.uid]) || request.auth.uid == space.ownerId);
+      }
+
+      function submitsReviews(spaceId) {
         let uid = request.auth.uid;
         let w = existing();
         return changedOnly(['submittedBy'])
           && uid in w.members
           && !(uid in w.submittedBy)
           && incoming().submittedBy == w.submittedBy.concat([uid])
-          && w.reviewOpenAt <= request.time && request.time < w.deadlineAt;
+          && w.reviewOpenAt <= request.time && request.time < w.deadlineAt
+          // Reviews need this update in their batch, so someone who left can't review any more.
+          && isMember(spaceId);
       }
 
       // Exactly {id, title}: size() == 2 and both keys are read. matches() also rejects non-strings.
@@ -221,8 +325,10 @@ service cloud.firestore {
         return isUser(uid) && request.time < w.deadlineAt && uid in w.members && isMember(spaceId);
       }
 
-      function revealed(w) {
-        return request.time >= w.deadlineAt || w.submittedBy.hasAll(w.members);
+      // Participants who left the space don't hold the reveal back.
+      function revealed(spaceId, w) {
+        return request.time >= w.deadlineAt
+          || w.submittedBy.toSet().hasAll(w.members.toSet().intersection(get(spacePath(spaceId)).data.memberIds.toSet()));
       }
 
       // Reviews are only written in the submit batch: the reviewer was not in submittedBy before
@@ -239,7 +345,7 @@ service cloud.firestore {
           && d.revieweeId is string && d.revieweeId != uid
           && rid == uid + '_' + d.revieweeId
           && d.submittedAt == request.time
-          && d.marks is map && d.marks.size() <= 25
+          && d.marks is map && validMarkKeys(d.marks.keys())
           // `in` and hasOnly() tell ints from floats, so both spellings of 0 and 1 are listed.
           && d.marks.values().hasOnly([0, 0.5, 1, 0.0, 1.0])
           && uid in w.members && d.revieweeId in w.members
@@ -248,10 +354,35 @@ service cloud.firestore {
           && uid in getAfter(weekPath(spaceId, weekId)).data.submittedBy;
       }
 
+      // Marks are keyed by task id: at most 25, each shaped like one (keeps a review doc small).
+      function validMarkKeys(ks) {
+        let n = ks.size();
+        let id = '[A-Za-z0-9_-]{1,64}';
+        return n <= 25
+          && (n <= 0 || ks[0].matches(id)) && (n <= 1 || ks[1].matches(id)) && (n <= 2 || ks[2].matches(id)) && (n <= 3 || ks[3].matches(id)) && (n <= 4 || ks[4].matches(id))
+          && (n <= 5 || ks[5].matches(id)) && (n <= 6 || ks[6].matches(id)) && (n <= 7 || ks[7].matches(id)) && (n <= 8 || ks[8].matches(id)) && (n <= 9 || ks[9].matches(id))
+          && (n <= 10 || ks[10].matches(id)) && (n <= 11 || ks[11].matches(id)) && (n <= 12 || ks[12].matches(id)) && (n <= 13 || ks[13].matches(id)) && (n <= 14 || ks[14].matches(id))
+          && (n <= 15 || ks[15].matches(id)) && (n <= 16 || ks[16].matches(id)) && (n <= 17 || ks[17].matches(id)) && (n <= 18 || ks[18].matches(id)) && (n <= 19 || ks[19].matches(id))
+          && (n <= 20 || ks[20].matches(id)) && (n <= 21 || ks[21].matches(id)) && (n <= 22 || ks[22].matches(id)) && (n <= 23 || ks[23].matches(id)) && (n <= 24 || ks[24].matches(id));
+      }
+
+      // Check-offs are written one task at a time (merge), so each write adds at most one key, shaped
+      // like a task id. With the 200-key cap that bounds a progress doc to a few KB.
+      function validProgress(added) {
+        let d = incoming();
+        return exactKeys(d, ['done', 'updatedAt'])
+          && d.done is map
+          && d.done.size() <= 200
+          && d.done.values().hasOnly([true, false])
+          && d.updatedAt == request.time
+          && added.size() <= 1
+          && (added.size() == 0 || added[0].matches('[A-Za-z0-9_-]{1,64}'));
+      }
+
       match /weeks/{weekId} {
         allow read: if isMember(spaceId);
-        allow create: if isMember(spaceId) && validNewWeek(weekId, incoming());
-        allow update: if signedIn() && (joinsWeek(spaceId) || submitsReviews());
+        allow create: if isMember(spaceId) && validNewWeek(spaceId, weekId, incoming());
+        allow update: if signedIn() && (addsMembers(spaceId) || submitsReviews(spaceId) || leavesWeek(spaceId));
 
         match /plans/{uid} {
           allow read: if isMember(spaceId);
@@ -265,12 +396,8 @@ service cloud.firestore {
         match /progress/{uid} {
           allow read: if isMember(spaceId);
           // setDoc(..., {merge: true}) is validated on the merged document.
-          allow create, update: if canTick(spaceId, weekId, uid)
-            && exactKeys(incoming(), ['done', 'updatedAt'])
-            && incoming().done is map
-            && incoming().done.size() <= 200
-            && incoming().done.values().hasOnly([true, false])
-            && incoming().updatedAt == request.time;
+          allow create: if canTick(spaceId, weekId, uid) && validProgress(incoming().done.keys());
+          allow update: if canTick(spaceId, weekId, uid) && validProgress(incoming().done.keys().removeAll(existing().done.keys()));
         }
 
         // Blind until revealed. Clients query where('reviewerId', '==', uid) before the reveal
@@ -278,22 +405,52 @@ service cloud.firestore {
         match /reviews/{rid} {
           allow read: if signedIn()
             && (existing().reviewerId == request.auth.uid
-                || (isMember(spaceId) && revealed(get(weekPath(spaceId, weekId)).data)));
+                || (isMember(spaceId) && revealed(spaceId, get(weekPath(spaceId, weekId)).data)));
           allow create: if signedIn() && validReview(spaceId, weekId, rid);
         }
       }
 
+      // ---------- month stakes ----------
+
+      function monthStr(t) {
+        let m = t.month();
+        return string(t.year()) + (m < 10 ? '-0' : '-') + string(m);
+      }
+
+      // The first member to open a month freezes the space's stakes for it, so editing them later only
+      // changes months not frozen yet. Only for the month in play: the current week's month (its Friday)
+      // or the calendar month, in any timezone, which is always within [now − 3d, now + 5d].
+      function validMonthStakes(spaceId, monthId) {
+        let d = incoming();
+        let space = get(spacePath(spaceId)).data;
+        return monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+          && monthId >= monthStr(request.time - duration.value(3, 'd'))
+          && monthId <= monthStr(request.time + duration.value(5, 'd'))
+          && exactKeys(d, ['reward', 'penalty', 'createdAt'])
+          && d.reward == space.reward
+          && d.penalty == space.penalty
+          && d.createdAt == request.time;
+      }
+
+      // Create only: a frozen month never changes.
+      match /months/{monthId} {
+        allow read: if isMember(spaceId);
+        allow create: if isMember(spaceId) && validMonthStakes(spaceId, monthId);
+      }
+
       // ---------- settlements ----------
 
+      // Members settle up for current and former members (someone who left still owes or is owed).
       function validSettlement(spaceId, sid) {
         let d = incoming();
-        let members = get(spacePath(spaceId)).data.memberIds;
+        let space = get(spacePath(spaceId)).data;
+        let members = space.memberIds;
         return exactKeys(d, ['monthId', 'uid', 'settled', 'settledBy', 'settledAt'])
           && d.monthId is string && d.monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
           && d.uid is string
           && sid == d.monthId + '_' + d.uid
           && request.auth.uid in members
-          && d.uid in members
+          && (d.uid in members || d.uid in space.get('leftAt', {}))
           && d.settled is bool
           && d.settledBy == request.auth.uid
           && d.settledAt == request.time;

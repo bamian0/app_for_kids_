@@ -124,6 +124,10 @@ describe('progress', () => {
       'done not a map': () => setDoc(progressRef(alice, 'alice'), { done: ['t1'], updatedAt: serverTimestamp() }),
       'extra key': () => setDoc(progressRef(alice, 'alice'), { done: {}, updatedAt: serverTimestamp(), streak: 3 }),
       'more than 200 entries': () => tick(db('bob'), 'bob', 'one-too-many', true),
+      'key not a task id': () => tick(alice, 'alice', 'not a task id!', true),
+      'key 65 chars': () => tick(alice, 'alice', 'k'.repeat(65), true),
+      'two new keys at once': () =>
+        setDoc(progressRef(alice, 'alice'), { done: { t1: true, t2: true }, updatedAt: serverTimestamp() }, { merge: true }),
       'someone else\'s progress': () => tick(db('bob'), 'alice', 't1', true),
       'not a participant': () => tick(db('carol'), 'carol', 't1', true),
       'left the space': () => tick(db('dave'), 'dave', 't1', true),

@@ -7,10 +7,12 @@ import { NavigationStack, UIProvider } from './ui/index.ts'
 import { LaunchScreen, NotConfiguredScreen } from './screens/SystemScreens.tsx'
 import { WelcomeScreen } from './screens/auth/WelcomeScreen.tsx'
 import { SpacesScreen } from './screens/SpacesScreen.tsx'
+import { captureOpenParam } from './screens/components/openTarget.ts'
 import { captureJoinParam } from './screens/components/pendingJoin.ts'
 import './screens/screens.css'
 
 captureJoinParam()
+captureOpenParam()
 
 export default function App() {
   return <UIProvider>{isConfigured ? <Session /> : <NavigationStack root={<NotConfiguredScreen />} />}</UIProvider>

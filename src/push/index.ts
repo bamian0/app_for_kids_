@@ -2,6 +2,7 @@
 import { deleteDoc, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import type { UID } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
+import { isUIBusy, presentToast } from '../ui/bridge.ts'
 
 /** 'needs-install': iOS Safari tab — push only works after Add to Home Screen. */
 export type PushSupport = 'supported' | 'needs-install' | 'unsupported'
@@ -157,7 +158,63 @@ export async function disablePush(uid: UID): Promise<void> {
   await sub.unsubscribe()
 }
 
-/** Registers ./sw.js (safe to call once at startup). Production builds only, so dev never serves stale files. */
+// ---------- Updates ----------
+
+/** Set by vite.config.ts; sw.js is stamped with the same id, so page and worker can be compared. */
+const BUILD_ID: string | undefined = import.meta.env.VITE_BUILD_ID
+/** How often a resumed app asks the server for a new worker. */
+const UPDATE_CHECK_MS = 30 * 60 * 1000
+
+/** The build of the worker in charge of this page (sw.js answers 'build'), or null if it can't say. */
+function controllerBuild(): Promise<string | null> {
+  const worker = navigator.serviceWorker.controller
+  if (!worker || typeof MessageChannel === 'undefined') return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel()
+    const done = (build: string | null) => {
+      clearTimeout(timer)
+      port1.close()
+      resolve(build)
+    }
+    const timer = setTimeout(() => done(null), 3000)
+    port1.onmessage = (e: MessageEvent) => done(typeof e.data === 'string' ? e.data : null)
+    worker.postMessage('build', [port2])
+  })
+}
+
+/**
+ * Keeps an installed app current. iOS resumes Home Screen apps from memory without navigating, so
+ * nothing checks for a new worker unless we do: on every return to the app, at most every 30 minutes.
+ * Once the worker in charge belongs to a newer build than this page, the page reloads, unless the
+ * user is typing or has a sheet or alert open; then a banner offers the reload instead.
+ * A fresh install, or a launch that already loaded the new build, has matching ids and does nothing.
+ */
+export function watchForUpdates(reg: ServiceWorkerRegistration, build: string | undefined = BUILD_ID): () => void {
+  let lastCheck = Date.now()
+  const reloadIfStale = async () => {
+    const current = await controllerBuild()
+    if (!build || !current || current === build) return
+    if (!isUIBusy()) location.reload()
+    else presentToast({ title: 'Updated — tap to reload', icon: 'sparkles', durationMs: 6000, onPress: () => location.reload() })
+  }
+  const onVisibility = () => {
+    if (document.visibilityState !== 'visible') return
+    if (Date.now() - lastCheck >= UPDATE_CHECK_MS) {
+      lastCheck = Date.now()
+      reg.update().catch(() => {})
+    }
+    // An update that arrived while the user was busy is applied on the next return.
+    void reloadIfStale()
+  }
+  navigator.serviceWorker.addEventListener('controllerchange', reloadIfStale)
+  document.addEventListener('visibilitychange', onVisibility)
+  return () => {
+    navigator.serviceWorker.removeEventListener('controllerchange', reloadIfStale)
+    document.removeEventListener('visibilitychange', onVisibility)
+  }
+}
+
+/** Registers ./sw.js and watches for updates (safe to call once at startup). Production builds only, so dev never serves stale files. */
 export function registerServiceWorker(): void {
   if (!import.meta.env.PROD || typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
   const register = () => {
@@ -165,6 +222,7 @@ export function registerServiceWorker(): void {
       .register(SW_URL, { scope: './', updateViaCache: 'none' })
       .then((reg) => {
         registration = reg
+        watchForUpdates(reg)
       })
       .catch((e: unknown) => console.warn('Service worker registration failed', e))
   }

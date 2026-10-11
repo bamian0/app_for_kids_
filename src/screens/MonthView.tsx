@@ -1,58 +1,72 @@
 // The month: your score against the bar, everyone's weeks and late points, and once the month is
-// over, who owes whom (with an honor-system Settled switch).
+// over, who owes whom (with an honor-system Settled switch for the people owed).
 import { useEffect, useState } from 'react'
-import { setSettled, useAuth, useMonth, useSettlements } from '../data/api.ts'
+import { setSettled, useAuth, useMonth, useMonthStakes, useProfiles, useSettlements } from '../data/api.ts'
 import { settlementDocId } from '../domain/ids.ts'
 import { computeMonth } from '../domain/scoring.ts'
 import type { MemberMonthResult } from '../domain/scoring.ts'
-import { addMonths, formatMonth, formatWeekRange, monthIdForWeek, weekBounds, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
-import type { MonthId, Space, UID, WeekId } from '../domain/types.ts'
+import { addMonths, formatMonth, formatWeekRange, weekBounds, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
+import type { MonthId, Settlement, Space, UID, WeekId } from '../domain/types.ts'
 import { Avatar, EmptyState, Icon, Pill, Row, ScoreRing, Section, useEdgeGlow, useToast } from '../ui/index.ts'
 import { Loading, MiniScore, formatScore } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
-import { firstName, listNames, nameOf, personOf } from './components/people.ts'
+import { shortDate } from './components/format.ts'
+import { canSettle, currentMonth, defaultMonth, firstMonth, hasDebt, settleHint, verdictText } from './components/month.ts'
+import { firstName, nameOf, personOf } from './components/people.ts'
 import type { Profiles } from './components/people.ts'
 import { firstTime } from './components/storage.ts'
+import { deadlineText } from './components/zone.ts'
 
 export interface MonthViewProps {
   space: Space
   profiles: Profiles
   onOpenWeek: (weekId: WeekId) => void
+  /** Open on this month (from the verdict notification) instead of the default. */
+  initialMonth?: MonthId
 }
 
-function monthOf(ms: number, space: Space): MonthId {
-  return monthIdForWeek(weekIdFor(ms, space.timezone))
-}
-
-export function MonthView({ space, profiles, onOpenWeek }: MonthViewProps) {
+export function MonthView({ space, profiles: spaceProfiles, onOpenWeek, initialMonth }: MonthViewProps) {
   const { uid } = useAuth()
   const me = uid ?? ''
   const nowMs = useNow()
-  const current = monthOf(nowMs, space)
-  const first = Number.isFinite(space.createdAt) && space.createdAt > 0 ? monthOf(space.createdAt, space) : current
-  const [monthId, setMonthId] = useState(current)
+  const current = currentMonth(space, nowMs)
+  const first = firstMonth(space, nowMs)
+  // For a week after a month ends, its verdict comes first.
+  const [monthId, setMonthId] = useState(() =>
+    initialMonth && initialMonth >= first && initialMonth <= current ? initialMonth : defaultMonth(space, me, nowMs),
+  )
   const live = useMonth(space, monthId)
+  const stakes = useMonthStakes(space, monthId).data ?? space
   const settlements = useSettlements(space.id)
   const playGlow = useEdgeGlow().play
   const toast = useToast()
 
   const results = live.data ? computeMonth(space, monthId, live.data, nowMs) : null
-  const anyPassed = !!results && Object.values(results).some((r) => r.passed === true)
+  // Everyone who played the month, including people who have left since.
+  const extra = useProfiles(results ? Object.keys(results) : [])
+  const profiles: Profiles = { ...extra, ...spaceProfiles }
+  const mine = results?.[me]
+  const iWon = !!mine && hasDebt(mine) && mine.passed === true
 
-  // The month verdict: a one-time light moment when someone cleared the bar.
+  // The month verdict: a one-time light moment, only for your own win.
   useEffect(() => {
-    if (anyPassed && firstTime(`verdict.${space.id}.${monthId}.${me}`)) playGlow(2800)
-  }, [anyPassed, space.id, monthId, me, playGlow])
+    if (iWon && firstTime(`verdict.${space.id}.${monthId}.${me}`)) playGlow(2800)
+  }, [iWon, space.id, monthId, me, playGlow])
 
-  const settled = (uid: UID) => settlements.data?.find((s) => s.id === settlementDocId(monthId, uid))?.settled === true
-  const toggleSettled = (uid: UID, value: boolean) => {
-    setSettled(space.id, monthId, uid, value).catch((e: unknown) =>
+  const settlementOf = (id: UID) => settlements.data?.find((s) => s.id === settlementDocId(monthId, id))
+  const toggleSettled = (id: UID, value: boolean) => {
+    setSettled(space.id, monthId, id, value).catch((e: unknown) =>
       toast({ title: 'Couldn’t update', message: e instanceof Error ? e.message : undefined, tone: 'error' }),
     )
   }
 
-  const ordered = [me, ...space.memberIds.filter((id) => id !== me)].filter((id) => results?.[id])
-  const complete = results?.[me]?.complete ?? false
+  const complete = mine?.complete ?? false
+  // You first, then current members, then people who have left. In a finished month, only people who played it.
+  const ordered = results
+    ? [me, ...space.memberIds.filter((id) => id !== me), ...Object.keys(results).filter((id) => !space.memberIds.includes(id))].filter(
+        (id) => results[id] && (id === me || !results[id].complete || results[id].weeks.length > 0),
+      )
+    : []
 
   return (
     <>
@@ -80,12 +94,13 @@ export function MonthView({ space, profiles, onOpenWeek }: MonthViewProps) {
           <MemberMonth
             key={id}
             space={space}
+            stakes={stakes}
             result={results[id]}
             me={me}
             profiles={profiles}
             nowMs={nowMs}
             hero={id === me}
-            settled={settled(id)}
+            settlement={settlementOf(id)}
             onSettled={(v) => toggleSettled(id, v)}
             onOpenWeek={onOpenWeek}
           />
@@ -97,40 +112,30 @@ export function MonthView({ space, profiles, onOpenWeek }: MonthViewProps) {
 
 interface MemberMonthProps {
   space: Space
+  stakes: { reward: string; penalty: string }
   result: MemberMonthResult
   me: UID
   profiles: Profiles
   nowMs: number
   hero: boolean
-  settled: boolean
+  settlement: Settlement | undefined
   onSettled: (value: boolean) => void
   onOpenWeek: (weekId: WeekId) => void
 }
 
-function verdictText(space: Space, result: MemberMonthResult, me: UID, profiles: Profiles): string | null {
-  if (!result.complete) return null
-  if (result.passed === null) return 'No scored weeks, so nothing’s owed.'
-  const isMe = result.uid === me
-  const who = isMe ? 'you' : firstName(nameOf(profiles, result.uid))
-  const others = space.memberIds.filter((id) => id !== result.uid).map((id) => (id === me ? 'you' : firstName(nameOf(profiles, id))))
-  // "you" leads a list ("you and Sam"), and is capitalised at the start of a sentence.
-  others.sort((a, b) => (a === 'you' ? -1 : b === 'you' ? 1 : 0))
-  const othersText = others.length ? listNames(others) : 'nobody'
-  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
-  if (result.passed) return `${cap(othersText)} ${others.length === 1 && others[0] !== 'you' ? 'owes' : 'owe'} ${who}: ${space.reward}`
-  return `${cap(who)} ${isMe ? 'owe' : 'owes'} ${othersText}: ${space.penalty}`
-}
-
-function MemberMonth({ space, result, me, profiles, nowMs, hero, settled, onSettled, onOpenWeek }: MemberMonthProps) {
+function MemberMonth({ space, stakes, result, me, profiles, nowMs, hero, settlement, onSettled, onOpenWeek }: MemberMonthProps) {
   const person = personOf(profiles, result.uid)
   const isMe = result.uid === me
-  const verdict = verdictText(space, result, me, profiles)
+  const name = (id: UID) => firstName(nameOf(profiles, id))
+  const verdict = verdictText(result, me, name, stakes)
   const scored = result.weeks.filter((w) => w.closed && w.score !== null).length
   const label = result.complete ? 'Final' : 'So far'
   const summary =
     result.finalScore === null
       ? 'No scored weeks yet'
       : `${scored} week${scored === 1 ? '' : 's'} scored${result.penaltyPoints ? ` · −${result.penaltyPoints} late` : ''}`
+  const settled = settlement?.settled === true
+  const hint = settleHint(result, me, name)
 
   const weekRows = weekIdsInMonth(result.monthId).map((weekId) => {
     const entry = result.weeks.find((w) => w.weekId === weekId)
@@ -154,7 +159,7 @@ function MemberMonth({ space, result, me, profiles, nowMs, hero, settled, onSett
     <Section>
       {hero ? (
         <div className="s-month-hero">
-          <ScoreRing value={result.finalScore} threshold={space.threshold} size={176} stroke={17} aria-label={result.finalScore === null ? 'No score yet' : formatScore(result.finalScore)}>
+          <ScoreRing key={result.finalScore == null ? 'empty' : 'score'} value={result.finalScore} threshold={space.threshold} size={176} stroke={17} aria-label={result.finalScore === null ? 'No score yet' : formatScore(result.finalScore)}>
             {result.finalScore === null ? (
               <span className="s-hero-score s-hero-score--empty">—</span>
             ) : (
@@ -178,21 +183,28 @@ function MemberMonth({ space, result, me, profiles, nowMs, hero, settled, onSett
         <Row
           leading={<Avatar name={person.name} color={person.color} size={36} />}
           title={<span className="t-semibold">{person.name}</span>}
-          subtitle={summary}
+          subtitle={result.former ? `Left · ${summary}` : summary}
           accessory={<MiniScore value={result.finalScore} threshold={space.threshold} caption={label} />}
         />
       )}
       {verdict && (
         <Row
           leading={
-            <span className={result.passed ? 's-status-icon s-status-icon--win' : 's-status-icon'} aria-hidden>
-              <Icon name={result.passed ? 'trophy' : result.passed === false ? 'flame' : 'info'} size={19} weight={2} />
+            <span className={result.passed && result.others.length > 0 ? 's-status-icon s-status-icon--win' : 's-status-icon'} aria-hidden>
+              <Icon name={result.others.length === 0 || result.passed === null ? 'info' : result.passed ? 'trophy' : 'flame'} size={19} weight={2} />
             </span>
           }
           title={<span className="t-semibold">{verdict}</span>}
         />
       )}
-      {verdict && result.passed !== null && <Row title="Settled" toggle={settled} onToggle={onSettled} />}
+      {hasDebt(result) && (
+        // Only the people owed get the switch; everyone else sees where it stands and who marked it.
+        <Row
+          title="Settled"
+          subtitle={settled && settlement ? `Marked by ${settlement.settledBy === me ? 'you' : name(settlement.settledBy)} · ${shortDate(settlement.settledAt)}` : (hint ?? undefined)}
+          {...(canSettle(result, me) ? { toggle: settled, onToggle: onSettled } : { detail: settled ? 'Yes' : 'Not yet' })}
+        />
+      )}
       {weekRows}
       {result.missedReviews > 0 && (
         <Row
@@ -206,7 +218,13 @@ function MemberMonth({ space, result, me, profiles, nowMs, hero, settled, onSett
         />
       )}
       {isMe && !result.complete && result.finalScore === null && (
-        <Row title={<span className="c-secondary">Scores count once a week closes, Saturday 00:00.</span>} />
+        <Row
+          title={
+            <span className="c-secondary">
+              Scores count once a week closes. This one closes {deadlineText(weekBounds(weekIdFor(nowMs, space.timezone), space.timezone).deadlineAt, space.timezone, nowMs)}.
+            </span>
+          }
+        />
       )}
     </Section>
   )

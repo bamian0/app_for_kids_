@@ -17,8 +17,12 @@ export function shortName(profiles: Profiles, uid: UID, me: UID | null): string 
   return uid === me ? 'You' : firstName(nameOf(profiles, uid))
 }
 
+/** Only a plain hex color reaches CSS: anything else in a profile could load a URL from every viewer. */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i
+
 export function personOf(profiles: Profiles, uid: UID) {
-  return { id: uid, name: nameOf(profiles, uid), color: profiles[uid]?.color || colorForUid(uid) }
+  const color = profiles[uid]?.color
+  return { id: uid, name: nameOf(profiles, uid), color: color && HEX_COLOR.test(color) ? color : colorForUid(uid) }
 }
 
 /** "Alex", "Alex and Sam", "Alex, Sam and Kim". */

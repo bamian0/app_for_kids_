@@ -1,6 +1,9 @@
 // Stakes service worker: offline app shell, cached static files, Web Push.
-// Plain JS, served as-is from public/ (no build step). Bump VERSION to drop old caches.
+// Plain JS, copied from public/; the build only writes its id into BUILD. Bump VERSION to drop old caches.
 const VERSION = 1
+// Written by vite.config.ts. Every deploy is then a byte-different worker, which an installed app finds
+// when it checks for updates on resume, and the page compares it with its own (see 'message').
+const BUILD = 'dev'
 const SHELL_CACHE = `stakes-shell-v${VERSION}`
 const STATIC_CACHE = `stakes-static-v${VERSION}`
 const MAX_STATIC_ENTRIES = 80
@@ -113,6 +116,11 @@ async function trimCache(cache) {
   const excess = keys.length - MAX_STATIC_ENTRIES
   if (excess > 0) await Promise.all(keys.slice(0, excess).map((key) => cache.delete(key)))
 }
+
+// The page asks which build is in charge, to tell a real update from a fresh install or launch.
+self.addEventListener('message', (event) => {
+  if (event.data === 'build' && event.ports[0]) event.ports[0].postMessage(BUILD)
+})
 
 // ---------- Web Push ----------
 

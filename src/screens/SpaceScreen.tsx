@@ -2,22 +2,27 @@
 // floating button sends you into the review.
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { useAuth, useProfiles, useSpace, useWeek } from '../data/api.ts'
-import { computeWeek, reviewTargets } from '../domain/scoring.ts'
-import { addWeeks, formatWeekRange, weekIdFor } from '../domain/time.ts'
-import type { Space, WeekId } from '../domain/types.ts'
-import { AvatarStack, Button, EmptyState, GlassButton, Icon, Screen, Section, SegmentedControl, useNav, useSheet } from '../ui/index.ts'
+import { useAuth, useMonthStakes, useProfiles, useSpace, useWeek } from '../data/api.ts'
+import { computeWeek, joinedAfterLock, membersAt, reviewTargets } from '../domain/scoring.ts'
+import { addMonths, addWeeks, formatWeekRange, weekBounds, weekIdFor } from '../domain/time.ts'
+import type { MonthId, Space, WeekId } from '../domain/types.ts'
+import { AvatarStack, Button, EmptyState, GlassButton, Screen, Section, SegmentedControl, useNav, useSheet } from '../ui/index.ts'
 import { Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
+import { monthName } from './components/format.ts'
 import { InviteCard } from './components/InviteCard.tsx'
+import { currentMonth } from './components/month.ts'
 import { compactNames, firstName, listNames, nameOf, personOf } from './components/people.ts'
 import type { Profiles } from './components/people.ts'
+import { StakesList } from './components/Stakes.tsx'
+import { stillIn } from './components/status.ts'
 import { MonthView } from './MonthView.tsx'
 import { ReviewSheet } from './ReviewSheet.tsx'
 import { SpaceSettingsScreen } from './SpaceSettingsScreen.tsx'
 import { WeekView } from './WeekView.tsx'
 
-type Tab = 'this' | 'next' | 'month'
+export type SpaceTab = 'this' | 'next' | 'month'
+type Tab = SpaceTab
 
 /** Loads a space by id and shows the right state while it loads or after you've left it. */
 function SpaceGate({ spaceId, title, render }: { spaceId: string; title?: string; render: (space: Space) => ReactNode }) {
@@ -45,8 +50,16 @@ function SpaceGate({ spaceId, title, render }: { spaceId: string; title?: string
   return <>{render(live.data)}</>
 }
 
-export function SpaceScreen({ spaceId }: { spaceId: string }) {
-  return <SpaceGate spaceId={spaceId} render={(space) => <SpaceContent space={space} />} />
+export interface SpaceScreenProps {
+  spaceId: string
+  /** Open on this tab (e.g. Month, from the verdict notification). */
+  initialTab?: SpaceTab
+  /** The month the Month tab opens on. */
+  initialMonth?: MonthId
+}
+
+export function SpaceScreen({ spaceId, initialTab, initialMonth }: SpaceScreenProps) {
+  return <SpaceGate spaceId={spaceId} render={(space) => <SpaceContent space={space} initialTab={initialTab} initialMonth={initialMonth} />} />
 }
 
 /** A single past week, opened from the month view. */
@@ -66,30 +79,37 @@ export function WeekScreen({ spaceId, weekId }: { spaceId: string; weekId: WeekI
 }
 
 function WeekWithProfiles({ space, weekId }: { space: Space; weekId: WeekId }) {
-  const profiles = useProfiles(space.memberIds)
+  // A past week can hold people who have left since: load them too.
+  const live = useWeek(space, weekId)
+  const profiles = useProfiles([...space.memberIds, ...(live.data?.week?.members ?? [])])
   return <WeekView space={space} weekId={weekId} profiles={profiles} />
 }
 
-function SpaceContent({ space }: { space: Space }) {
+function SpaceContent({ space, initialTab, initialMonth }: { space: Space; initialTab?: Tab; initialMonth?: MonthId }) {
   const nav = useNav()
   const sheet = useSheet()
   const { uid } = useAuth()
   const me = uid ?? ''
   const nowMs = useNow()
-  const [picked, setPicked] = useState<Tab | null>(null)
+  const [picked, setPicked] = useState<Tab | null>(initialTab ?? null)
   const thisWeek = weekIdFor(nowMs, space.timezone)
   const nextWeek = addWeeks(thisWeek, 1)
 
-  // Opening a space opens its current week: before the lock that makes you a participant.
   const week = useWeek(space, thisWeek)
   const weekMembers = week.data?.week?.members ?? []
   const profiles = useProfiles([...space.memberIds, ...weekMembers])
   const result = week.data ? computeWeek(week.data, space, nowMs) : null
   const mine = result?.members[me]
+  const bounds = week.data?.week ?? weekBounds(thisWeek, space.timezone)
+  const counted = membersAt(space, bounds.deadlineAt)
   const reviewDue = result?.phase === 'review' && mine?.participating === true && !mine.hasSubmitted
-  const targets = week.data && reviewDue ? reviewTargets(week.data, me) : []
-  // On a weekend after a week you sat out, open on the week you can still do something about.
-  const tab: Tab = picked ?? (result?.phase === 'closed' && !mine?.participating ? 'next' : 'this')
+  const targets = week.data && reviewDue ? reviewTargets(week.data, me, counted) : []
+  // With nobody to review, confirming still unlocks the results early for friends in the week.
+  const confirmDue = reviewDue && targets.length === 0 && !!result && stillIn(result, me, counted).length > 0
+  // Sitting this week out (joined after the lock, or the week started without you): open on the
+  // week you can still do something about.
+  const sittingOut = nowMs >= bounds.lockAt && (joinedAfterLock(space, me, bounds.lockAt) || (!!result && !mine?.participating))
+  const tab: Tab = picked ?? (sittingOut ? 'next' : 'this')
 
   const openReview = () =>
     sheet.present((close) => <ReviewSheet space={space} weekId={thisWeek} close={close} />, { 'aria-label': 'Friday review' })
@@ -110,15 +130,19 @@ function SpaceContent({ space }: { space: Space }) {
         </>
       }
       toolbar={
-        tab === 'this' && reviewDue ? (
+        tab === 'this' && targets.length > 0 ? (
           <Button size="large" fullWidth icon="checkmark" onClick={openReview}>
-            {targets.length > 0 ? `Review ${compactNames(targets.map((id) => firstName(nameOf(profiles, id))))}` : 'Finish Review'}
+            {`Review ${compactNames(targets.map((id) => firstName(nameOf(profiles, id))))}`}
+          </Button>
+        ) : tab === 'this' && confirmDue ? (
+          <Button size="large" fullWidth icon="lockOpen" onClick={openReview}>
+            Unlock Results
           </Button>
         ) : undefined
       }
       toolbarFullWidth
     >
-      <StakesCard space={space} profiles={profiles} me={me} onInvite={openInvite} />
+      <StakesCard space={space} profiles={profiles} me={me} nowMs={nowMs} onInvite={openInvite} />
       <div className="s-tabs">
         <SegmentedControl<Tab>
           aria-label="View"
@@ -131,39 +155,31 @@ function SpaceContent({ space }: { space: Space }) {
           onChange={setPicked}
         />
       </div>
-      {tab === 'this' && <WeekView space={space} weekId={thisWeek} profiles={profiles} onReview={reviewDue ? openReview : undefined} />}
+      {tab === 'this' && (
+        <WeekView space={space} weekId={thisWeek} profiles={profiles} onReview={targets.length > 0 || confirmDue ? openReview : undefined} onPlanNext={() => setPicked('next')} />
+      )}
       {tab === 'next' && <WeekView space={space} weekId={nextWeek} profiles={profiles} />}
       {tab === 'month' && (
-        <MonthView space={space} profiles={profiles} onOpenWeek={(weekId) => nav.push(<WeekScreen spaceId={space.id} weekId={weekId} />, { title: formatWeekRange(weekId) })} />
+        <MonthView
+          space={space}
+          profiles={profiles}
+          initialMonth={initialMonth}
+          onOpenWeek={(weekId) => nav.push(<WeekScreen spaceId={space.id} weekId={weekId} />, { title: formatWeekRange(weekId) })}
+        />
       )}
     </Screen>
   )
 }
 
-function StakesCard({ space, profiles, me, onInvite }: { space: Space; profiles: Profiles; me: string; onInvite: () => void }) {
+/** This month's stakes: frozen once its first lists locked, so an edit since then starts next month. */
+function StakesCard({ space, profiles, me, nowMs, onInvite }: { space: Space; profiles: Profiles; me: string; nowMs: number; onInvite: () => void }) {
   const alone = space.memberIds.length < 2
+  const month = currentMonth(space, nowMs)
+  const stakes = useMonthStakes(space, month).data ?? space
+  const changed = stakes.reward !== space.reward || stakes.penalty !== space.penalty
   return (
-    <Section>
-      <div className="s-stakes">
-        <div className="s-stakes__item">
-          <span className="s-stakes__icon s-stakes__icon--win" aria-hidden>
-            <Icon name="trophy" size={18} weight={2} />
-          </span>
-          <span className="s-stakes__text">
-            <span className="s-stakes__label">Hit {space.threshold}%, they owe you</span>
-            <span className="s-stakes__value">{space.reward}</span>
-          </span>
-        </div>
-        <div className="s-stakes__item">
-          <span className="s-stakes__icon" aria-hidden>
-            <Icon name="flame" size={18} weight={2} />
-          </span>
-          <span className="s-stakes__text">
-            <span className="s-stakes__label">Miss, you owe them</span>
-            <span className="s-stakes__value">{space.penalty}</span>
-          </span>
-        </div>
-      </div>
+    <Section footer={changed ? `New stakes from ${monthName(addMonths(month, 1))}. See Settings.` : undefined}>
+      <StakesList reward={stakes.reward} penalty={stakes.penalty} threshold={space.threshold} />
       {alone && (
         <div className="s-alone">
           <AvatarStack people={[personOf(profiles, me)]} size={28} />
@@ -183,11 +199,7 @@ function InviteSheet({ space, close }: { space: Space; close: () => void }) {
     <Screen
       title="Invite Friends"
       titleDisplay="inline"
-      trailing={
-        <GlassButton prominent onClick={close}>
-          Done
-        </GlassButton>
-      }
+      trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={close} />}
     >
       <div className="s-sheet-hero">
         <div className="s-sheet-hero__title">Bring friends into {space.name}</div>

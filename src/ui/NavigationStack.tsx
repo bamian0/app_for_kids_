@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { animate } from 'motion/react'
+import { blurFocusedField } from './keyboard.ts'
 import { createVelocityTracker, prefersReducedMotion, springs } from './motion.ts'
 import { cx } from './press.ts'
 import './nav.css'
@@ -238,6 +239,8 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
       }
       if (dx < 6 || dx < Math.abs(dy)) return
       g.started = true
+      // Commit an edit in progress (onBlur saves) before the page can be popped and unmounted.
+      blurFocusedField()
       anim.current?.stop()
       anim.current = null
       fade.current = false

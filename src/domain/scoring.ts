@@ -40,6 +40,11 @@ export interface WeekResult {
 export interface MemberMonthResult {
   uid: UID
   monthId: MonthId
+  /** Took part in a week of this month but is no longer a space member. */
+  former: boolean
+  /** Everyone else who took part in a week of this month (current or former members): who owes
+   *  this member the reward, or whom this member owes the penalty. */
+  others: UID[]
   weeks: { weekId: WeekId; score: number | null; closed: boolean }[]
   /** Mean of closed participating weeks; null if none. */
   average: number | null
@@ -56,9 +61,37 @@ export interface MemberMonthResult {
 /** Keeps the ≥ threshold check from failing on float error in means of thirds, sevenths, etc. */
 const SCORE_EPSILON = 1e-9
 
-/** Revealed when every member has submitted, or at deadlineAt. */
-export function isRevealed(week: { members: UID[]; submittedBy: UID[]; deadlineAt: number }, nowMs: number): boolean {
-  return nowMs >= week.deadlineAt || week.members.every((uid) => week.submittedBy.includes(uid))
+/** Rounds away float error (means of thirds, sevenths…) so a score that is 90 reads as exactly 90 everywhere. */
+function normalise(score: number): number {
+  return Math.round(score * 1e9) / 1e9
+}
+
+/**
+ * Revealed when every participant has submitted, or at deadlineAt. With `memberIds` (the space's
+ * current members), only participants who are still members count, as in the rules: someone who
+ * left can't hold the reveal back.
+ */
+export function isRevealed(week: { members: UID[]; submittedBy: UID[]; deadlineAt: number }, nowMs: number, memberIds?: UID[]): boolean {
+  if (nowMs >= week.deadlineAt) return true
+  return week.members.every((uid) => week.submittedBy.includes(uid) || (memberIds !== undefined && !memberIds.includes(uid)))
+}
+
+/**
+ * The participants who still count for a week whose deadline is `deadlineAt`: current space members,
+ * plus anyone who left after the deadline (their week was already settled when they went). Someone
+ * who left before it is nobody's review target, so they neither hold back the reveal nor cost anyone
+ * points, and their leaving later never rewrites a closed month.
+ */
+export function membersAt(space: Pick<Space, 'memberIds' | 'leftAt'>, deadlineAt: number): UID[] {
+  const leftLater = Object.entries(space.leftAt ?? {}).flatMap(([uid, at]) => (at >= deadlineAt && !space.memberIds.includes(uid) ? [uid] : []))
+  return [...space.memberIds, ...leftLater]
+}
+
+/** True when `uid` joined the space at or after the week's lockAt, so the week started without them
+ *  (as opposed to a member who simply has no tasks). */
+export function joinedAfterLock(space: Pick<Space, 'joinedAt'>, uid: UID, lockAt: number): boolean {
+  const joined = space.joinedAt[uid]
+  return joined !== undefined && joined >= lockAt
 }
 
 function participantsOf(data: WeekData): UID[] {
@@ -69,11 +102,12 @@ function tasksOf(data: WeekData, uid: UID) {
   return data.plans[uid]?.tasks ?? []
 }
 
-/** Members `uid` must review this week: other participants with ≥1 task. */
-export function reviewTargets(data: WeekData, uid: UID): UID[] {
+/** Members `uid` must review this week: other participants with ≥1 task who, given `memberIds`
+ *  (the space's current members), are still in the space. */
+export function reviewTargets(data: WeekData, uid: UID, memberIds?: UID[]): UID[] {
   const members = participantsOf(data)
   if (!members.includes(uid)) return []
-  return members.filter((m) => m !== uid && tasksOf(data, m).length > 0)
+  return members.filter((m) => m !== uid && tasksOf(data, m).length > 0 && (memberIds === undefined || memberIds.includes(m)))
 }
 
 function isMark(value: unknown): value is Mark {
@@ -106,14 +140,17 @@ function emptyResult(uid: UID): MemberWeekResult {
 }
 
 /**
- * Results for every week participant, plus a non-participating entry for each space member
- * who is not in the week (e.g. joined after lock). Before reveal `score` is null; `tasks[].mark`
- * always reflects the reviews visible to the caller, falling back to self check-offs.
+ * Results for every week participant (including any who have since left the space), plus a
+ * non-participating entry for each space member who is not in the week (joined after lock, or the
+ * week never started). Before reveal `score` is null; `tasks[].mark` always reflects the reviews
+ * visible to the caller, falling back to self check-offs. Participants who left before the deadline
+ * are nobody's review target (see membersAt).
  */
 export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekResult {
   const week = data.week
   const bounds: WeekBounds = week ?? weekBounds(data.weekId, space.timezone)
-  const revealed = week ? isRevealed(week, nowMs) : nowMs >= bounds.deadlineAt
+  const counted = membersAt(space, bounds.deadlineAt)
+  const revealed = week ? isRevealed(week, nowMs, counted) : nowMs >= bounds.deadlineAt
   const pastDeadline = nowMs >= bounds.deadlineAt
   const members = participantsOf(data)
   const reviews = validReviews(data, members)
@@ -157,7 +194,7 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
     // Divide once (sum over tasks and reviewers of half-point marks is exact) to keep float error minimal.
     const score = n === 0 ? 0 : (100 * markSum) / (n * (fromReviews ? received.length : 1))
     const missedReviewsOf = pastDeadline
-      ? reviewTargets(data, uid).filter((target) => !reviews.some((r) => r.reviewerId === uid && r.revieweeId === target))
+      ? reviewTargets(data, uid, counted).filter((target) => !reviews.some((r) => r.reviewerId === uid && r.revieweeId === target))
       : []
 
     results[uid] = {
@@ -177,9 +214,11 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
 }
 
 /**
- * Month results for every current space member. `weeks` lists only the weeks in which the member
- * participated (weeks without a doc, or outside the month, are ignored); `score` there is the
- * revealed score, so it can be non-null before the week closes when everyone submitted early.
+ * Month results for every current space member and everyone who took part in a week of the month
+ * (so people who left still owe or are owed for it; `former` marks them). `weeks` lists only the
+ * weeks in which the member participated (weeks without a doc, or outside the month, are ignored);
+ * `score` there is the revealed score, so it can be non-null before the week closes when everyone
+ * submitted early.
  */
 export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], nowMs: number): Record<UID, MemberMonthResult> {
   const inMonth = new Set(weekIdsInMonth(monthId))
@@ -187,9 +226,10 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
     .flatMap((d) => (d.week && inMonth.has(d.weekId) ? [{ weekId: d.weekId, closed: nowMs >= d.week.deadlineAt, result: computeWeek(d, space, nowMs) }] : []))
     .sort((a, b) => (a.weekId < b.weekId ? -1 : a.weekId > b.weekId ? 1 : 0))
   const complete = nowMs >= monthCompleteAt(monthId, space.timezone)
+  const roster = [...new Set([...space.memberIds, ...computed.flatMap(({ result }) => Object.keys(result.members))])]
 
   const out: Record<UID, MemberMonthResult> = {}
-  for (const uid of space.memberIds) {
+  for (const uid of roster) {
     const entries: MemberMonthResult['weeks'] = []
     const closedScores: number[] = []
     let missedReviews = 0
@@ -202,12 +242,14 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
         missedReviews += member.missedReviewsOf.length
       }
     }
-    const average = closedScores.length > 0 ? closedScores.reduce((a, b) => a + b, 0) / closedScores.length : null
+    const average = closedScores.length > 0 ? normalise(closedScores.reduce((a, b) => a + b, 0) / closedScores.length) : null
     const penaltyPoints = space.latePenalty * missedReviews
-    const finalScore = average === null ? null : Math.max(0, average - penaltyPoints)
+    const finalScore = average === null ? null : normalise(Math.max(0, average - penaltyPoints))
     out[uid] = {
       uid,
       monthId,
+      former: !space.memberIds.includes(uid),
+      others: [],
       weeks: entries,
       average,
       missedReviews,
@@ -217,5 +259,7 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
       passed: complete && finalScore !== null ? finalScore >= space.threshold - SCORE_EPSILON : null,
     }
   }
+  const players = roster.filter((uid) => out[uid].weeks.length > 0)
+  for (const uid of roster) out[uid].others = players.filter((id) => id !== uid)
   return out
 }

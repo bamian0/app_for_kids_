@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addMonths,
   addWeeks,
+  boundsDiffer,
   formatCountdown,
   formatMonth,
   formatWeekRange,
@@ -9,6 +10,7 @@ import {
   monthCompleteAt,
   monthIdFor,
   monthIdForWeek,
+  utcOffsetMinutes,
   weekBounds,
   weekIdFor,
   weekIdsInMonth,
@@ -135,6 +137,64 @@ describe('weekBounds', () => {
     expect(() => weekBounds('2026-10-12T00:00', 'UTC')).toThrow(RangeError)
     expect(() => weekBounds('2026-10-12', 'Mars/Olympus')).toThrow(RangeError)
     expect(() => weekIdFor(0, 'Mars/Olympus')).toThrow(RangeError)
+  })
+})
+
+describe('utcOffsetMinutes and boundsDiffer', () => {
+  it('reads the zone offset at an instant, DST included', () => {
+    expect(utcOffsetMinutes('Europe/Berlin', at('2026-07-01T12:00Z'))).toBe(120)
+    expect(utcOffsetMinutes('Europe/Berlin', at('2026-12-01T12:00Z'))).toBe(60)
+    expect(utcOffsetMinutes('America/Los_Angeles', at('2026-07-01T12:00Z'))).toBe(-420)
+    expect(utcOffsetMinutes('Asia/Kolkata', at('2026-07-01T12:00Z'))).toBe(330)
+    expect(utcOffsetMinutes('Pacific/Kiritimati', at('2026-07-01T12:00Z'))).toBe(840)
+  })
+
+  it('flags bounds more than an hour apart', () => {
+    const b = weekBounds('2026-10-12', 'Europe/Berlin')
+    expect(boundsDiffer(b, b)).toBe(false)
+    expect(boundsDiffer(b, { ...b, deadlineAt: b.deadlineAt + H })).toBe(false)
+    expect(boundsDiffer(b, { ...b, lockAt: b.lockAt - H - 1 })).toBe(true)
+    expect(boundsDiffer(b, weekBounds('2026-10-12', 'America/Los_Angeles'))).toBe(true)
+  })
+})
+
+// Mirrors validNewWeek in firestore.rules: startAt within 1h of Monday 00:00 UTC minus the space's
+// stored offset, every other bound within 1h of whole days after startAt.
+function rulesAccept(weekId: string, b: ReturnType<typeof weekBounds>, utcOffsetMin: number): boolean {
+  const near = (t: number, target: number) => Math.abs(t - target) <= H
+  const anchor = at(`${weekId}T00:00:00Z`) - utcOffsetMin * 60_000
+  return near(b.startAt, anchor) && near(b.lockAt, b.startAt + D) && near(b.reviewOpenAt, b.startAt + 4 * D) && near(b.deadlineAt, b.startAt + 5 * D)
+}
+
+describe('week bounds vs the rules anchor', () => {
+  // Zones with DST on a weekday (Cairo, Santiago, Asuncion), half-hour DST (Lord Howe), :45 offsets
+  // (Chatham), the extremes (Kiritimati +14, Pago Pago −11) and the usual suspects.
+  const zones = [
+    'America/Los_Angeles', 'America/New_York', 'Europe/Berlin', 'Europe/London', 'Australia/Sydney', 'Australia/Lord_Howe',
+    'Asia/Kolkata', 'Asia/Kathmandu', 'Pacific/Kiritimati', 'Pacific/Pago_Pago', 'Pacific/Chatham', 'Africa/Cairo',
+    'America/Santiago', 'America/Asuncion', 'Asia/Tehran', 'UTC',
+  ]
+  const weeks: string[] = []
+  for (let w = '2026-01-05'; w < '2029-01-01'; w = addWeeks(w, 1)) weeks.push(w)
+
+  it.each(zones)('accepts every real week of 2026-2028 in %s, whichever offset the space was created with', (zone) => {
+    // Every offset the zone has over the period is a possible creation offset.
+    const offsets = [...new Set(weeks.map((w) => utcOffsetMinutes(zone, at(`${w}T12:00:00Z`))))]
+    const rejected = weeks.flatMap((w) => offsets.filter((off) => !rulesAccept(w, weekBounds(w, zone), off)).map((off) => `${w}@${off}`))
+    expect(rejected).toEqual([])
+  })
+
+  it('rejects the skews the old ±14h window allowed', () => {
+    const w = '2026-10-12'
+    const la = weekBounds(w, 'America/Los_Angeles')
+    const shift = (b: typeof la, ms: number) => ({ startAt: b.startAt + ms, lockAt: b.lockAt + ms, reviewOpenAt: b.reviewOpenAt + ms, deadlineAt: b.deadlineAt + ms })
+    expect(rulesAccept(w, la, -420)).toBe(true)
+    // UTC midnight − 14h with every bound − 2h: the lock lands 23h early in Los Angeles.
+    const utcMinus14 = at(`${w}T00:00:00Z`) - 14 * H
+    expect(rulesAccept(w, { startAt: utcMinus14, lockAt: utcMinus14 + D - 2 * H, reviewOpenAt: utcMinus14 + 4 * D - 2 * H, deadlineAt: utcMinus14 + 5 * D - 2 * H }, -420)).toBe(false)
+    expect(rulesAccept(w, shift(la, -2 * H), -420)).toBe(false)
+    expect(rulesAccept(w, shift(la, H + 60_000), -420)).toBe(false)
+    expect(rulesAccept(w, { ...la, deadlineAt: la.deadlineAt - 2 * H }, -420)).toBe(false)
   })
 })
 

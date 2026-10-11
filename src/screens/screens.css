@@ -91,14 +91,34 @@
 .s-welcome__body {
   display: flex;
   flex-direction: column;
-  min-height: calc(100dvh - var(--ui-safe-top) - var(--nav-bar-height) - var(--ui-safe-bottom) - 28px - 120px);
   padding: 0 calc(28px + var(--ui-safe-right)) 0 calc(28px + var(--ui-safe-left));
 }
 .s-welcome__hero {
   display: flex;
   justify-content: center;
   padding: 18px 0 30px;
-  --ring-notch: var(--system-grouped-background);
+}
+/* The actions float above the home indicator, so the content scrolls clear of two buttons and a note. */
+.s-welcome .ui-screen__content--toolbar {
+  padding-bottom: calc(var(--ui-safe-bottom) + 176px);
+}
+.s-welcome .ui-screen__toolbar::before {
+  height: calc(var(--ui-safe-bottom) + 190px);
+  background: linear-gradient(to top, var(--screen-bg) 72%, color-mix(in srgb, var(--screen-bg) 0%, transparent));
+}
+/* iPhone SE and other short screens. */
+.s-welcome--compact .ui-screen__large {
+  padding-top: 0;
+}
+.s-welcome--compact .ui-screen__large-title {
+  font-size: 38px;
+  line-height: 44px;
+}
+.s-welcome--compact .s-welcome__hero {
+  padding: 6px 0 18px;
+}
+.s-welcome--compact .s-features {
+  gap: 14px;
 }
 
 .s-features {
@@ -139,17 +159,20 @@
 }
 
 .s-welcome__actions {
+  position: relative;
+  /* Above the toolbar's fade, like the design system lifts its own buttons. */
+  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: auto;
-  padding-top: 36px;
+  flex: 1;
+  min-width: 0;
 }
-.s-welcome__invite {
-  margin-bottom: 8px;
+.s-welcome__note {
+  margin-bottom: 4px;
   text-align: center;
-  font: 600 15px/20px var(--font);
-  color: var(--label);
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
 }
 
 /* ---------- Spaces ---------- */
@@ -190,7 +213,8 @@
     transform 0.35s var(--ease-out),
     background-color 0.35s ease;
 }
-.s-space-card:active {
+/* Delayed like rows (usePress), so starting a scroll on a card doesn't shrink it. */
+.s-space-card[data-pressed] {
   transform: scale(0.975);
   transition-duration: 0.12s;
 }
@@ -216,10 +240,17 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  overflow: hidden;
+  min-width: 0;
   font: 400 15px/20px var(--font);
   letter-spacing: -0.006em;
   color: var(--secondary-label);
+}
+.s-space-card__stakes .ui-icon {
+  flex-shrink: 0;
+}
+.s-space-card__stakes-text {
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -314,7 +345,20 @@
 .s-install__text {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
+}
+.s-install__action {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--label);
+  color: var(--on-label);
+  font: 600 15px/20px var(--font);
+  transition: opacity 0.2s ease;
+}
+.s-install__action.is-busy {
+  opacity: 0.4;
 }
 .s-install__close {
   position: absolute;
@@ -408,7 +452,7 @@
 }
 .s-invite__hint {
   font: 400 13px/18px var(--font);
-  color: var(--tertiary-label);
+  color: var(--secondary-label);
 }
 
 /* Join: the code field reads like the invite card. */
@@ -442,9 +486,18 @@
   overflow-wrap: anywhere;
 }
 .s-join-preview__text {
-  margin-bottom: 18px;
+  max-width: 300px;
   font: 400 15px/20px var(--font);
   color: var(--secondary-label);
+}
+
+/* A spinner in place of a bar button while it works (e.g. Create). */
+.s-bar-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
 }
 
 /* Rules */

@@ -18,6 +18,12 @@ describe('settlements', () => {
     await allowed(setDoc(ref(db('bob'), '2026-10_alice'), settlement('alice', 'bob')))
   })
 
+  test('members settle up for someone who has left the space', async () => {
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob'], { leftAt: { carol: Timestamp.now() } }) })
+    await allowed(setDoc(ref(db('alice'), '2026-10_carol'), settlement('carol', 'alice')))
+    await denied(setDoc(ref(db('carol'), '2026-10_carol'), settlement('carol', 'carol')))
+  })
+
   test('invalid settlements are rejected', async () => {
     await seed({ 'spaces/s1': spaceDoc(['alice', 'bob']) })
     const alice = db('alice')

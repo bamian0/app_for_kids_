@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Mark, Space, UID, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, formatPercent, listNames, planReminders, planSpace, reminderKey, type PlanResult } from './reminders-plan.ts'
+import { dueWindows, formatPercent, hoursFromNow, listNames, planReminders, planSpace, reminderKey, type PlanResult } from './reminders-plan.ts'
 
 // Europe/Berlin is UTC+2 until Sun 2026-10-25, UTC+1 after. Bounds are written out explicitly.
 const at = (iso: string) => Date.parse(iso)
@@ -138,7 +138,7 @@ describe('dueWindows', () => {
 describe('plan reminder', () => {
   const now = at('2026-10-12T17:17Z') // Monday 19:17
 
-  it('goes to every member with no tasks, joined to the week or not', () => {
+  it('goes to every member with no tasks, joined to the week or not, with the time left', () => {
     const week = makeWeek(W, { members: ['a', 'b'], plans: { a: 2, b: 0 } })
     const result = plan(makeSpace(), [week], now)
     expect(result.send.map((r) => r.uid)).toEqual(['b', 'c', 'd'])
@@ -148,17 +148,25 @@ describe('plan reminder', () => {
       spaceId: 's1',
       uid: 'b',
       title: 'Lock in your week',
-      body: 'Your task list for Film Club locks at midnight. Nothing planned = 0%.',
+      body: 'Your list for Film Club locks in 5 hours. Nothing planned = 0%.',
       url: './',
       tag: 'plan-s1',
       expiresAt: BOUNDS[W].lockAt,
     })
+    // Chris isn't in the week yet: he will be once anyone opens the app, so no 0% claim until then.
+    expect(result.send[1].body).toBe('Your list for Film Club locks in 5 hours.')
     // Anna can still delete her tasks before lock, so her answer isn't final.
     expect(result.skipped).toEqual([])
   })
 
   it('goes to everyone when nobody has opened the week yet', () => {
     expect(plan(makeSpace(), [makeWeek(W, null)], now).send.map((r) => r.uid)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('goes by the stored lock: nothing once it has passed', () => {
+    const early = makeWeek(W, { members: ['a', 'b'] })
+    early.week!.lockAt = at('2026-10-12T17:00Z')
+    expect(plan(makeSpace(), [early], now)).toEqual({ send: [], skipped: ['a', 'b', 'c', 'd'].map((u) => key('plan', u)) })
   })
 })
 
@@ -169,8 +177,8 @@ describe('review reminders', () => {
   it('asks each participant who has not submitted to rate the friends with tasks', () => {
     const result = plan(makeSpace(), [week], at('2026-10-16T08:17Z'))
     expect(bodies(result)).toEqual({
-      a: 'Review day | Rate Ben in Film Club before midnight.',
-      c: 'Review day | Rate Anna and Ben in Film Club before midnight.',
+      a: 'Review day | Rate Ben in Film Club. Due in 14 hours.',
+      c: 'Review day | Rate Anna and Ben in Film Club. Due in 14 hours.',
     })
     expect(result.send[0]).toMatchObject({ key: key('review', 'a'), tag: 'review-s1', expiresAt: BOUNDS[W].deadlineAt })
     // Ben submitted, Dana isn't in this week: both are final.
@@ -180,8 +188,26 @@ describe('review reminders', () => {
   it('skips a participant with nobody to review', () => {
     const solo = makeWeek(W, { members: ['a', 'b'], plans: { a: 3, b: 0 } })
     const result = plan(makeSpace({ memberIds: ['a', 'b'] }), [solo], at('2026-10-16T08:17Z'))
-    expect(bodies(result)).toEqual({ b: 'Review day | Rate Anna in Film Club before midnight.' })
+    expect(bodies(result)).toEqual({ b: 'Review day | Rate Anna in Film Club. Due in 14 hours.' })
     expect(result.skipped).toEqual([key('review', 'a')])
+  })
+
+  it('never sends "due in" after the stored deadline, or before the stored window opens', () => {
+    const skewed = makeWeek(W, { members: ['a', 'b', 'c'], plans: { a: 1, b: 1, c: 1 } })
+    // Someone created the week with the deadline 23h early: it already closed at Friday 01:00.
+    skewed.week!.deadlineAt = at('2026-10-15T23:00Z')
+    const result = plan(makeSpace(), [skewed], at('2026-10-16T08:17Z'))
+    expect(result.send).toEqual([])
+    expect(result.skipped).toEqual(['a', 'b', 'c', 'd'].map((u) => key('review', u)))
+    const late = makeWeek(W, { members: ['a', 'b'], plans: { a: 1, b: 1 } })
+    late.week!.reviewOpenAt = at('2026-10-16T12:00Z')
+    expect(plan(makeSpace(), [late], at('2026-10-16T08:17Z')).send).toEqual([])
+  })
+
+  it('does not ask anyone to review a participant who left the space', () => {
+    const data = makeWeek(W, { members: ['a', 'b', 'c'], plans: { a: 1, b: 1, c: 1 } })
+    const result = plan(makeSpace({ memberIds: ['a', 'b'] }), [data], at('2026-10-16T08:17Z'))
+    expect(bodies(result)).toEqual({ a: 'Review day | Rate Ben in Film Club. Due in 14 hours.', b: 'Review day | Rate Anna in Film Club. Due in 14 hours.' })
   })
 
   it('skips everyone when the week was never opened', () => {
@@ -205,7 +231,7 @@ describe('review reminders', () => {
     const big = makeSpace({ memberIds: ['a', 'b', 'c', 'd', 'e'] })
     const data = makeWeek(W, { members: ['a', 'b', 'c', 'd', 'e'], plans: { a: 1, b: 1, c: 1, d: 1, e: 1 } })
     const result = plan(big, [data], at('2026-10-16T08:17Z'))
-    expect(result.send[0].body).toBe('Rate Ben, Chris, and 2 others in Film Club before midnight.')
+    expect(result.send[0].body).toBe('Rate Ben, Chris, and 2 others in Film Club. Due in 14 hours.')
   })
 })
 
@@ -253,6 +279,23 @@ describe('verdict reminder', () => {
     expect(result.skipped).toContain(reminderKey('s1', '2026-10', 'verdict', 'c'))
   })
 
+  it('uses the stakes frozen for that month, not the space\'s current text', () => {
+    const result = planSpace(
+      { space: makeSpace({ memberIds: ['a', 'b', 'c'], penalty: 'A high five' }), weeks: Object.fromEntries(weeks.map((w) => [w.weekId, w])), stakes: { '2026-10': { reward: 'Dinner on me', penalty: 'Coffee for a week' } } },
+      PROFILES,
+      new Set(),
+      nov1,
+    )
+    expect(result.send.find((r) => r.uid === 'b')?.body).toBe('October in Film Club is done. Pay up: Coffee for a week')
+  })
+
+  it('tells nobody what they owe when nobody else played the month', () => {
+    const solo = OCTOBER_WEEKS.map((id) => (id === '2026-10-05' ? makeWeek(id, { members: ['a'], plans: { a: 1 }, done: { a: ['a1'] } }) : makeWeek(id, null)))
+    const result = plan(makeSpace({ memberIds: ['a'] }), solo, nov1)
+    expect(result.send.filter((r) => r.kind === 'verdict')).toEqual([])
+    expect(result.skipped).toContain(reminderKey('s1', '2026-10', 'verdict', 'a'))
+  })
+
   it('waits until every week of the month is loaded', () => {
     const result = plan(space, weeks.slice(1), nov1)
     expect(result.send.filter((r) => r.kind === 'verdict')).toEqual([])
@@ -298,12 +341,12 @@ describe('dedupe and inputs', () => {
       's2:review:a',
       's2:review:b',
     ])
-    expect(result.send[3].body).toBe('Rate Ben in Night Shoots before midnight.')
+    expect(result.send[3].body).toBe('Rate Ben in Night Shoots. Due in 13 hours.')
   })
 
   it('falls back to a generic name when a profile is missing', () => {
     const result = planSpace({ space: makeSpace(), weeks: { [W]: week } }, { a: { name: 'Anna' } }, new Set(), at('2026-10-16T08:17Z'))
-    expect(result.send[0].body).toBe('Rate a friend and a friend in Film Club before midnight.')
+    expect(result.send[0].body).toBe('Rate a friend and a friend in Film Club. Due in 14 hours.')
   })
 })
 
@@ -313,6 +356,13 @@ describe('copy helpers', () => {
     expect(listNames(['Anna', 'Ben'])).toBe('Anna and Ben')
     expect(listNames(['Anna', 'Ben', 'Chris'])).toBe('Anna, Ben, and Chris')
     expect(listNames(['Anna', 'Ben', 'Chris', 'Dana', 'Eve'])).toBe('Anna, Ben, and 3 others')
+  })
+
+  it('words time left relative to now, right in every timezone', () => {
+    expect(hoursFromNow(15 * 3_600_000)).toBe('15 hours')
+    expect(hoursFromNow(5.6 * 3_600_000)).toBe('6 hours')
+    expect(hoursFromNow(1.2 * 3_600_000)).toBe('1 hour')
+    expect(hoursFromNow(20 * 60_000)).toBe('under an hour')
   })
 
   it('rounds percentages down so a miss never reads as 90%', () => {

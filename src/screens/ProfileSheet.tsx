@@ -1,5 +1,5 @@
 // Your account: name, reminders on this device, sign out, delete account.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { deleteMyAccount, signOut, updateMyName, useAuth } from '../data/api.ts'
 import { disablePush, enablePush, isPushEnabled, preloadPushConfig, pushSupport } from '../push/index.ts'
 import type { UID } from '../domain/types.ts'
@@ -33,7 +33,20 @@ function ProfileHome({ close, onInstallGuide }: Props) {
     if (!editing) setName(savedName)
   }, [savedName, editing])
 
+  // An edit still in the field when the sheet goes away (closed with ✓, dragged down) is saved too.
+  const unsaved = useRef<{ name: string; saved: string } | null>(null)
+  unsaved.current = editing ? { name, saved: savedName } : null
+  useEffect(
+    () => () => {
+      const edit = unsaved.current
+      const clean = edit?.name.trim()
+      if (edit && clean && clean !== edit.saved) updateMyName(clean).catch(() => {})
+    },
+    [],
+  )
+
   const saveName = async () => {
+    unsaved.current = null
     setEditing(false)
     const clean = name.trim()
     if (!clean || clean === savedName) {
@@ -67,11 +80,7 @@ function ProfileHome({ close, onInstallGuide }: Props) {
     <Screen
       title="Profile"
       titleDisplay="inline"
-      trailing={
-        <GlassButton prominent onClick={close}>
-          Done
-        </GlassButton>
-      }
+      trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={close} />}
     >
       <div className="s-profile-hero">
         <Avatar name={name || savedName || '?'} color={auth.profile?.color ?? 'var(--system-gray)'} size={84} />

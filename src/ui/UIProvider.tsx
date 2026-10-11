@@ -11,6 +11,8 @@ import { DialogLayer } from './Alert.tsx'
 import { ToastLayer } from './Toast.tsx'
 import { IridescentEdgeGlow } from './Iridescence.tsx'
 import type { EdgeGlowHandle } from './Iridescence.tsx'
+import { trackKeyboard } from './keyboard.ts'
+import { attachUIBridge } from './bridge.ts'
 import './provider.css'
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -39,7 +41,9 @@ export interface UIProviderProps {
 export function UIProvider({ children, theme }: UIProviderProps) {
   const [host, setHost] = useState<HTMLDivElement | null>(null)
   const [safeTop, setSafeTop] = useState(0)
+  const [appHeight, setAppHeight] = useState(() => (typeof window === 'undefined' ? 800 : window.innerHeight))
   const probe = useRef<HTMLDivElement>(null)
+  const appRef = useRef<HTMLDivElement>(null)
   const presentingRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -51,6 +55,19 @@ export function UIProvider({ children, theme }: UIProviderProps) {
     measure()
     window.addEventListener('resize', measure)
     return () => window.removeEventListener('resize', measure)
+  }, [])
+
+  // The shell ends at the keyboard's top (--keyboard-inset), so its height is what sheets size to:
+  // iOS keeps innerHeight unchanged while the keyboard is up.
+  useEffect(() => trackKeyboard(), [])
+  useLayoutEffect(() => {
+    const el = appRef.current
+    if (!el) return
+    const measure = () => setAppHeight(el.clientHeight || window.innerHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [])
 
   // ---- Sheet stack ----
@@ -127,15 +144,27 @@ export function UIProvider({ children, theme }: UIProviderProps) {
   const glow = useRef<EdgeGlowHandle>(null)
   const playEdgeGlow = useCallback((ms?: number) => glow.current?.play(ms), [])
 
+  // ---- Reachable from outside React (service worker updates) ----
+  const sheetsRef = useRef(sheets)
+  sheetsRef.current = sheets
+  useEffect(
+    () =>
+      attachUIBridge({
+        toast: showToast,
+        modalOpen: () => sheetsRef.current.length > 0 || presentedRef.current.some((p) => p.open) || dialogsRef.current.length > 0,
+      }),
+    [showToast],
+  )
+
   const value = useMemo<UIContextValue>(
-    () => ({ host, safeTop, sheets, registerSheet, presentSheet, dismissTopSheet, showDialog, showToast, playEdgeGlow }),
-    [host, safeTop, sheets, registerSheet, presentSheet, dismissTopSheet, showDialog, showToast, playEdgeGlow],
+    () => ({ host, safeTop, appHeight, sheets, registerSheet, presentSheet, dismissTopSheet, showDialog, showToast, playEdgeGlow }),
+    [host, safeTop, appHeight, sheets, registerSheet, presentSheet, dismissTopSheet, showDialog, showToast, playEdgeGlow],
   )
 
   return (
     <MotionConfig reducedMotion="user">
       <UIContext.Provider value={value}>
-        <div className="ui-app">
+        <div ref={appRef} className="ui-app">
           <div ref={probe} className="ui-app__safe-probe" aria-hidden />
           <div ref={presentingRef} className="ui-app__presenting" inert={sheets.length > 0}>
             {children}

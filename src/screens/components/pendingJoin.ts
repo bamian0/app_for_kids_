@@ -27,6 +27,11 @@ export function hasPendingJoin(): boolean {
   return pending !== null
 }
 
+/** The pending code without taking it (the welcome screen previews the invite). */
+export function peekPendingJoin(): string | null {
+  return pending
+}
+
 /** The pending code, cleared so it opens the join flow only once. */
 export function takePendingJoin(): string | null {
   const code = pending

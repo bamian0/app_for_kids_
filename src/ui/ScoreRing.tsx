@@ -1,10 +1,12 @@
-// Activity-ring score: sweeps in from zero, marks the threshold, and at/above it turns into an
-// iridescent conic arc with a soft glow.
-import { useEffect, useId, useMemo } from 'react'
+// Activity-ring score: sweeps in from zero, marks the threshold with a gap in the track, and at/above
+// it turns into an iridescent arc with a soft glow. Round caps are drawn as discs, so near 100% the
+// end cap passes over the start and shades it, like Apple's Activity rings.
+import { useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { animate, motion, useMotionValue, useTransform } from 'motion/react'
 import { prefersReducedMotion } from './motion.ts'
 import { cx } from './press.ts'
+import { capShadowOpacity, irisAt, polar, ringMet, wholePercent } from './ringMath.ts'
 import './ring.css'
 
 export interface ScoreRingProps {
@@ -12,6 +14,8 @@ export interface ScoreRingProps {
   value: number | null
   /** Percent where the arc turns iridescent (default 90). */
   threshold?: number
+  /** false keeps the arc graphite even at or above the threshold, e.g. for a provisional score (default true). */
+  iridescent?: boolean
   /** Diameter in px (default 140). */
   size?: number
   /** Ring thickness in px (default 14). */
@@ -29,27 +33,16 @@ export interface ScoreRingProps {
   'aria-label'?: string
 }
 
-const IRIS_COUNT = 7
-const WEDGES = 90
-const PAD = 7 // room outside the ring for the threshold tick and glow
-/** Below this the outer threshold tick is too small to read as a mark and looks like a stray pixel. */
-const TICK_MIN_SIZE = 120
-
-function irisAt(turn: number): string {
-  const t = (((turn % 1) + 1) % 1) * IRIS_COUNT
-  const i = Math.floor(t)
-  const f = t - i
-  return `color-mix(in oklab, var(--iris-${i + 1}) ${((1 - f) * 100).toFixed(1)}%, var(--iris-${((i + 1) % IRIS_COUNT) + 1}))`
-}
-
-function polar(c: number, r: number, turn: number): [number, number] {
-  const a = turn * 2 * Math.PI
-  return [c + r * Math.sin(a), c - r * Math.cos(a)]
-}
+/** One wedge per degree: neighbouring colors differ by less than a shade, so the sweep never steps. */
+const WEDGES = 360
+const PAD = 7 // room outside the ring for the glow
+/** Width of the threshold gap in the track, along the ring. */
+const GAP = 2.5
 
 export function ScoreRing({
   value,
   threshold = 90,
+  iridescent = true,
   size = 140,
   stroke = 14,
   animate: shouldAnimate = true,
@@ -61,11 +54,11 @@ export function ScoreRing({
   'aria-label': ariaLabel,
 }: ScoreRingProps) {
   const target = value == null || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value))
-  const met = value != null && target >= threshold
+  const met = ringMet(value, threshold, iridescent)
   const c = size / 2
   const r = c - PAD - stroke / 2
   const circumference = 2 * Math.PI * r
-  const maskId = useId().replace(/:/g, '')
+  const id = useId().replace(/:/g, '')
 
   const progress = useMotionValue(shouldAnimate ? 0 : target)
   useEffect(() => {
@@ -80,47 +73,79 @@ export function ScoreRing({
   const dashOffset = useTransform(progress, (p) => circumference * (1 - p / 100))
   const arcOpacity = useTransform(progress, (p) => (p < 0.4 ? 0 : 1))
   const glowOpacity = useTransform(progress, [threshold - 6, threshold + 2], [0, 1])
-  const rounded = useTransform(progress, (p) => Math.round(p))
+  const rounded = useTransform(progress, wholePercent)
+
+  // The end cap moves with the sweep; attributes are written directly, once per frame.
+  const endCap = useRef<SVGCircleElement>(null)
+  const endShadow = useRef<SVGCircleElement>(null)
+  useLayoutEffect(() => {
+    const place = (p: number) => {
+      const turn = p / 100
+      const [x, y] = polar(c, r, turn)
+      for (const el of [endCap.current, endShadow.current]) {
+        el?.setAttribute('cx', x.toFixed(2))
+        el?.setAttribute('cy', y.toFixed(2))
+      }
+      if (met) endCap.current?.style.setProperty('fill', irisAt(turn))
+      else endCap.current?.style.removeProperty('fill')
+      endShadow.current?.setAttribute('opacity', capShadowOpacity(turn).toFixed(2))
+      const hidden = p < 0.4
+      endCap.current?.setAttribute('visibility', hidden ? 'hidden' : 'visible')
+    }
+    place(progress.get())
+    return progress.on('change', place)
+  }, [progress, c, r, met])
 
   const wedges = useMemo(() => {
+    if (!met) return null
     const out: ReactNode[] = []
-    const R = c
     for (let i = 0; i < WEDGES; i++) {
       const a0 = i / WEDGES
-      const a1 = (i + 1.35) / WEDGES
-      const [x0, y0] = polar(c, R, a0)
-      const [x1, y1] = polar(c, R, a1)
+      // Overlap the next wedge so antialiased edges never show a seam.
+      const [x0, y0] = polar(c, c, a0)
+      const [x1, y1] = polar(c, c, (i + 1.6) / WEDGES)
       out.push(
         <path
           key={i}
-          d={`M${c} ${c}L${x0.toFixed(2)} ${y0.toFixed(2)}A${R} ${R} 0 0 1 ${x1.toFixed(2)} ${y1.toFixed(2)}Z`}
+          d={`M${c} ${c}L${x0.toFixed(2)} ${y0.toFixed(2)}A${c} ${c} 0 0 1 ${x1.toFixed(2)} ${y1.toFixed(2)}Z`}
           style={{ fill: irisAt(a0 + 0.5 / WEDGES) }}
         />,
       )
     }
     return out
-  }, [c])
+  }, [c, met])
 
-  const tick = (() => {
-    const turn = threshold / 100
-    // Exactly the track's width: any overhang shows as specks of card color around the ring.
-    const [nx0, ny0] = polar(c, r - stroke / 2, turn)
-    const [nx1, ny1] = polar(c, r + stroke / 2, turn)
-    const [tx0, ty0] = polar(c, r + stroke / 2 + 2.5, turn)
-    const [tx1, ty1] = polar(c, r + stroke / 2 + 6, turn)
-    return { notch: [nx0, ny0, nx1, ny1], outer: [tx0, ty0, tx1, ty1] }
+  // Track: a full circle, or with a value, an arc that leaves a small gap at the threshold.
+  const track = (() => {
+    if (value == null) return <circle cx={c} cy={c} r={r} fill="none" strokeWidth={stroke} className="ui-ring__track" />
+    const half = GAP / 2 / circumference
+    const t = threshold / 100
+    const [x0, y0] = polar(c, r, t + half)
+    const [x1, y1] = polar(c, r, t - half + 1)
+    return (
+      <path
+        d={`M${x0.toFixed(2)} ${y0.toFixed(2)}A${r} ${r} 0 1 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`}
+        fill="none"
+        strokeWidth={stroke}
+        className="ui-ring__track"
+      />
+    )
   })()
 
+  const [sx, sy] = polar(c, r, 0)
   const arcProps = {
     cx: c,
     cy: c,
     r,
     fill: 'none',
     strokeWidth: stroke,
-    strokeLinecap: 'round' as const,
     strokeDasharray: circumference,
     transform: `rotate(-90 ${c} ${c})`,
   }
+  const shadowRadius = stroke / 2 + Math.max(1.5, stroke * 0.22)
+  // The end cap only shades the start of the ring (where it passes over it), never its own trail.
+  const [ex, ey] = polar(c, r, (shadowRadius + 2) / circumference)
+  const startRegion = `M${sx.toFixed(2)} ${sy.toFixed(2)}A${r} ${r} 0 0 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`
 
   const label = children ?? (showValue && value != null ? (
     <span className="ui-ring__value">
@@ -136,7 +161,7 @@ export function ScoreRing({
       className={cx('ui-ring', met && 'ui-ring--met', className)}
       style={{ width: size, height: size, ...style }}
       role="img"
-      aria-label={ariaLabel ?? (value == null ? 'No score yet' : `${Math.round(target)} percent`)}
+      aria-label={ariaLabel ?? (value == null ? 'No score yet' : `${wholePercent(target)} percent`)}
     >
       {met && (
         <motion.div className="ui-ring__glow" style={{ opacity: glowOpacity, inset: PAD - 2 }} aria-hidden>
@@ -144,34 +169,40 @@ export function ScoreRing({
         </motion.div>
       )}
       <svg className="ui-ring__svg" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
-        {met && (
-          <defs>
-            <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width={size} height={size}>
+        <defs>
+          {met && (
+            <mask id={`${id}-arc`} maskUnits="userSpaceOnUse" x="0" y="0" width={size} height={size}>
               <motion.circle {...arcProps} stroke="#fff" style={{ strokeDashoffset: dashOffset, opacity: arcOpacity }} />
+              <motion.circle cx={sx} cy={sy} r={stroke / 2} fill="#fff" style={{ opacity: arcOpacity }} />
             </mask>
-          </defs>
-        )}
-        <circle cx={c} cy={c} r={r} fill="none" strokeWidth={stroke} className="ui-ring__track" />
-        <line
-          className="ui-ring__notch"
-          x1={tick.notch[0]}
-          y1={tick.notch[1]}
-          x2={tick.notch[2]}
-          y2={tick.notch[3]}
-        />
-        {met ? (
-          <g mask={`url(#${maskId})`}>{wedges}</g>
-        ) : (
-          <motion.circle {...arcProps} className="ui-ring__arc" style={{ strokeDashoffset: dashOffset, opacity: arcOpacity }} />
-        )}
-        {size >= TICK_MIN_SIZE && (
-          <line
-            className="ui-ring__tick"
-            x1={tick.outer[0]}
-            y1={tick.outer[1]}
-            x2={tick.outer[2]}
-            y2={tick.outer[3]}
-          />
+          )}
+          <mask id={`${id}-start`} maskUnits="userSpaceOnUse" x="0" y="0" width={size} height={size}>
+            <path d={startRegion} fill="none" stroke="#fff" strokeWidth={stroke} />
+            {/* A hair smaller than the cap, so at exactly 100% no shadow fringe peeks out around it. */}
+            <circle cx={sx} cy={sy} r={stroke / 2 - 0.5} fill="#fff" />
+          </mask>
+          <radialGradient id={`${id}-shadow`}>
+            <stop offset={(stroke / 2 / shadowRadius).toFixed(3)} stopColor="#000" stopOpacity={0.26} />
+            <stop offset="1" stopColor="#000" stopOpacity={0} />
+          </radialGradient>
+        </defs>
+        {track}
+        {value != null &&
+          (met ? (
+            <g mask={`url(#${id}-arc)`}>{wedges}</g>
+          ) : (
+            <>
+              <motion.circle {...arcProps} className="ui-ring__arc" style={{ strokeDashoffset: dashOffset, opacity: arcOpacity }} />
+              <motion.circle cx={sx} cy={sy} r={stroke / 2} className="ui-ring__cap" style={{ opacity: arcOpacity }} />
+            </>
+          ))}
+        {value != null && (
+          <>
+            <g mask={`url(#${id}-start)`}>
+              <circle ref={endShadow} r={shadowRadius} fill={`url(#${id}-shadow)`} opacity={0} />
+            </g>
+            <circle ref={endCap} r={stroke / 2} className="ui-ring__cap" />
+          </>
         )}
       </svg>
       {label && <div className="ui-ring__label">{label}</div>}

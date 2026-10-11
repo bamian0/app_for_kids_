@@ -19,7 +19,9 @@ export const springs = {
   sheet: { type: 'spring', stiffness: 300, damping: 33, mass: 1, restDelta: 0.5, restSpeed: 2 },
   /** Thumbs, toggles, small layout moves: quick with a hint of give. */
   snappy: { type: 'spring', stiffness: 520, damping: 38, mass: 1 },
-  /** Check-offs, badges, toasts: visible bounce. */
+  /** Banners: settles like an iOS notification, no visible bounce (damping ratio ≈ 0.88). */
+  banner: { type: 'spring', stiffness: 420, damping: 36, mass: 1 },
+  /** Check-offs and badges: visible bounce. */
   bouncy: { type: 'spring', stiffness: 380, damping: 19, mass: 1 },
 } satisfies Record<string, SpringPreset>
 

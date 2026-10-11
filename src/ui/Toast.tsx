@@ -54,8 +54,8 @@ export function Banner({ onDismiss, onPress, ...t }: BannerProps) {
       className={cx('ui-banner', t.tone && `ui-banner--${t.tone}`)}
       role="status"
       aria-live="polite"
-      initial={{ y: -140, opacity: 0.4 }}
-      animate={{ y: 0, opacity: 1, transition: springs.bouncy }}
+      initial={{ y: -90, opacity: 0.4 }}
+      animate={{ y: 0, opacity: 1, transition: springs.banner }}
       exit={{ y: -140, opacity: 0, transition: { duration: 0.32, ease: [0.4, 0, 1, 1] } }}
       drag="y"
       dragConstraints={{ top: 0, bottom: 0 }}

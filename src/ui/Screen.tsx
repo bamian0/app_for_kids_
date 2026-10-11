@@ -1,5 +1,6 @@
-// A navigation screen: scroll view + large title that collapses into a centered inline title in a
-// frosted bar, back button from the stack, trailing bar items, and a floating glass toolbar.
+// A navigation screen: scroll view + large title that slides under an iOS 26 soft scroll edge while
+// the centered inline title fades in, back button from the stack, trailing bar items, and a floating
+// glass toolbar.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode, Ref } from 'react'
 import { useNavPage } from './NavigationStack.tsx'
@@ -26,7 +27,7 @@ export interface ScreenProps {
   trailing?: ReactNode
   /** Floating glass capsule above the home indicator. */
   toolbar?: ReactNode
-  /** Stretch the toolbar capsule to the screen width (for a single full-width button). */
+  /** Full-width buttons floating on their own, without the glass capsule (e.g. one large filled button). */
   toolbarFullWidth?: boolean
   /** grouped (default): gray page for inset lists. plain: white/black page. */
   background?: 'grouped' | 'plain'
@@ -57,6 +58,9 @@ export function Screen({
   const rootRef = useRef<HTMLDivElement>(null)
   const scrollEl = useRef<HTMLDivElement | null>(null)
   const largeRef = useRef<HTMLDivElement>(null)
+  const largeTitleRef = useRef<HTMLHeadingElement>(null)
+  const materialRef = useRef<HTMLDivElement>(null)
+  const barTitleRef = useRef<HTMLHeadingElement>(null)
   const large = titleDisplay === 'large'
 
   const setTitle = page?.setTitle
@@ -65,49 +69,42 @@ export function Screen({
   }, [title, setTitle])
 
   useLayoutEffect(() => {
-    const root = rootRef.current
     const scroller = scrollEl.current
-    if (!root || !scroller) return
-    let largeHeight = largeRef.current?.offsetHeight ?? 0
-    let collapsed: boolean | null = null
-    let scrolled: boolean | null = null
+    if (!scroller) return
+    let titleHeight = largeTitleRef.current?.offsetHeight ?? 0
+    const opacity = new WeakMap<HTMLElement, string>()
+    // Inline opacity on two elements only: a custom property here would restyle the whole screen per frame.
+    const fade = (el: HTMLElement | null, value: number) => {
+      if (!el) return
+      const v = Math.min(1, Math.max(0, value)).toFixed(2)
+      if (opacity.get(el) === v) return
+      opacity.set(el, v)
+      el.style.opacity = v
+    }
 
     const update = () => {
       const y = scroller.scrollTop
       const lt = largeRef.current
-      if (lt) {
-        if (y < 0) {
-          // Rubber-band pull: the large title grows a little, anchored at its leading edge.
-          lt.style.transform = `scale(${1 + Math.min(-y, 140) / 1000})`
-          lt.style.clipPath = ''
-        } else {
-          lt.style.transform = ''
-          // Clip what has slid under the bar instead of letting it show through.
-          lt.style.clipPath = y > 0 ? `inset(${Math.min(y, largeHeight)}px 0 0 0)` : ''
-        }
-      }
-      const nextCollapsed = large ? y >= largeHeight - 10 : true
-      const nextScrolled = large ? y >= largeHeight - 2 : y > 0.5
-      if (nextCollapsed !== collapsed) {
-        collapsed = nextCollapsed
-        root.toggleAttribute('data-collapsed', collapsed)
-      }
-      if (nextScrolled !== scrolled) {
-        scrolled = nextScrolled
-        root.toggleAttribute('data-scrolled', scrolled)
-      }
+      // Rubber-band pull: the large title grows a little, anchored at its leading edge.
+      if (lt) lt.style.transform = y < 0 ? `scale(${1 + Math.min(-y, 140) / 1000})` : ''
+      // iOS 26 scroll edge: content softens under the bar from the first pixels of scroll.
+      fade(materialRef.current, y / 12)
+      // The inline title fades in as the large title disappears under the bar's soft edge.
+      if (large) fade(barTitleRef.current, (y - (titleHeight - 12)) / 16)
     }
 
     const ro = new ResizeObserver(() => {
-      largeHeight = largeRef.current?.offsetHeight ?? 0
+      titleHeight = largeTitleRef.current?.offsetHeight ?? 0
       update()
     })
-    if (largeRef.current) ro.observe(largeRef.current)
+    if (largeTitleRef.current) ro.observe(largeTitleRef.current)
     update()
     scroller.addEventListener('scroll', update, { passive: true })
     return () => {
       scroller.removeEventListener('scroll', update)
       ro.disconnect()
+      // An inline title (titleDisplay switched) must not keep the large mode's fade.
+      fade(barTitleRef.current, 1)
     }
   }, [large])
 
@@ -145,10 +142,10 @@ export function Screen({
           scrollEl.current?.scrollTo({ top: 0, behavior: 'smooth' })
         }}
       >
-        <div className="ui-bar__material" />
+        <div ref={materialRef} className="ui-bar__material" />
         <div className="ui-bar__row">
           <div className="ui-bar__leading">{leading ?? back}</div>
-          <h1 className="ui-bar__title" aria-hidden={large || undefined}>
+          <h1 ref={barTitleRef} className="ui-bar__title" aria-hidden={large || undefined}>
             {title}
           </h1>
           <div className="ui-bar__trailing">{trailing}</div>
@@ -158,7 +155,9 @@ export function Screen({
         <div className={cx('ui-screen__content', toolbar != null && 'ui-screen__content--toolbar')}>
           {large && (
             <div ref={largeRef} className="ui-screen__large">
-              <h1 className="ui-screen__large-title">{title}</h1>
+              <h1 ref={largeTitleRef} className="ui-screen__large-title">
+                {title}
+              </h1>
               {subtitle && <div className="ui-screen__subtitle">{subtitle}</div>}
             </div>
           )}
@@ -167,7 +166,7 @@ export function Screen({
       </div>
       {toolbar != null && (
         <div className={cx('ui-screen__toolbar', toolbarFullWidth && 'ui-screen__toolbar--full')}>
-          <GlassSurface className="ui-toolbar">{toolbar}</GlassSurface>
+          {toolbarFullWidth ? <div className="ui-toolbar">{toolbar}</div> : <GlassSurface className="ui-toolbar">{toolbar}</GlassSurface>}
         </div>
       )}
     </div>

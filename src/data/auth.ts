@@ -15,7 +15,7 @@ import type { UID, UserProfile } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
 import { toProfile } from './convert.ts'
-import { humanError, isDenied, MSG } from './errors.ts'
+import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { cleanText, duringSignUp, ensureProfile, newProfile, profileRef, requireUser, startAuth } from './session.ts'
 import { leaveAllSpaces } from './spaces.ts'
 import type { Start } from './store.ts'
@@ -76,11 +76,14 @@ export async function signIn(email: string, password: string): Promise<void> {
   }
 }
 
+/** Resolves for unknown emails too, so the form can't be used to find out who has an account
+ *  (production Firebase does the same with email enumeration protection on). */
 export async function sendPasswordReset(email: string): Promise<void> {
   const cleanEmail = checkEmail(email)
   try {
     await sendPasswordResetEmail(getFirebase().auth, cleanEmail)
   } catch (e) {
+    if (errorCode(e) === 'auth/user-not-found') return
     throw humanError(e)
   }
 }

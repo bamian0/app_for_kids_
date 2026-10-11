@@ -4,7 +4,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { submitReviews, useAuth, useProfiles, useWeek } from '../data/api.ts'
-import { isRevealed, reviewTargets } from '../domain/scoring.ts'
+import { isRevealed, membersAt, reviewTargets } from '../domain/scoring.ts'
 import { formatCountdown, weekBounds } from '../domain/time.ts'
 import type { Mark, Space, UID, WeekId } from '../domain/types.ts'
 import { Avatar, Button, EmptyState, GlassButton, Icon, MarkPicker, ProgressBar, Screen, Section, Shimmer, cx, haptic, useAlert } from '../ui/index.ts'
@@ -12,6 +12,7 @@ import { CheckDot, ErrorText, Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { firstName, listNames, nameOf, personOf } from './components/people.ts'
 import { readJSON, writeJSON } from './components/storage.ts'
+import { deadlineText } from './components/zone.ts'
 
 type Marks = Record<UID, Record<string, Mark>>
 
@@ -50,10 +51,12 @@ export function ReviewSheet({ space, weekId, close }: Props) {
   const bounds = week ?? weekBounds(weekId, space.timezone)
   const submitted = justSubmitted || (week?.submittedBy.includes(me) ?? false)
   const name = (id: UID) => firstName(nameOf(profiles, id))
+  // Someone who left the space isn't reviewed and doesn't hold back the results.
+  const counted = membersAt(space, bounds.deadlineAt)
 
   if (submitted) {
-    const waiting = week ? week.members.filter((id) => !week.submittedBy.includes(id) && id !== me) : []
-    const revealed = week ? isRevealed({ ...week, submittedBy: [...week.submittedBy, me] }, nowMs) : false
+    const waiting = week ? week.members.filter((id) => !week.submittedBy.includes(id) && id !== me && counted.includes(id)) : []
+    const revealed = week ? isRevealed({ ...week, submittedBy: [...week.submittedBy, me] }, nowMs, counted) : false
     return shell(
       <div className="s-success">
         <Shimmer trigger={justSubmitted ? 'done' : undefined} radius="50%" inline>
@@ -65,7 +68,7 @@ export function ReviewSheet({ space, weekId, close }: Props) {
         <div className="s-success__text">
           {revealed || waiting.length === 0
             ? 'Everyone’s in. Results are live.'
-            : `Waiting for ${listNames(waiting.map(name))}. Results unlock when everyone’s in, or at midnight.`}
+            : `Waiting for ${listNames(waiting.map(name))}. Results unlock when everyone’s in, or ${deadlineText(bounds.deadlineAt, space.timezone, nowMs)}.`}
         </div>
       </div>,
       <Button size="large" fullWidth onClick={close}>
@@ -78,13 +81,13 @@ export function ReviewSheet({ space, weekId, close }: Props) {
     return shell(<EmptyState icon="calendar" title="Not yet" message={`Reviews open Friday. That’s in ${formatCountdown(bounds.reviewOpenAt - nowMs)}.`} />)
   }
   if (nowMs >= bounds.deadlineAt) {
-    return shell(<EmptyState icon="lock" title="Too late" message="Reviews closed at midnight. Missed reviews cost 5 points each." />)
+    return shell(<EmptyState icon="lock" title="Too late" message={`Reviews are closed. Each missed review costs ${space.latePenalty} points.`} />)
   }
   if (!week?.members.includes(me)) {
     return shell(<EmptyState icon="calendar" title="Nothing for you this week" message="You’re not taking part this week, so there’s no one to review." />)
   }
 
-  const targets = reviewTargets(data, me)
+  const targets = reviewTargets(data, me, counted)
   const tasksOf = (id: UID) => data.plans[id]?.tasks ?? []
   const missingFor = (id: UID) => tasksOf(id).filter((t) => marks[id]?.[t.id] === undefined).length
   const totalMissing = targets.reduce((n, id) => n + missingFor(id), 0)

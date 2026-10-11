@@ -2,9 +2,9 @@
 // the Friday review status, and after the reveal the marks and scores.
 import { useEffect, useState } from 'react'
 import { setTaskDone, useAuth, useWeek } from '../data/api.ts'
-import { computeWeek } from '../domain/scoring.ts'
+import { computeWeek, joinedAfterLock, membersAt } from '../domain/scoring.ts'
 import type { WeekResult } from '../domain/scoring.ts'
-import { formatWeekRange, weekBounds } from '../domain/time.ts'
+import { formatWeekRange, weekBounds, weekIdFor } from '../domain/time.ts'
 import type { Space, UID, WeekId } from '../domain/types.ts'
 import { EmptyState, Icon, Pill, Row, Section, useEdgeGlow, useToast } from '../ui/index.ts'
 import { Loading } from './components/Bits.tsx'
@@ -13,19 +13,24 @@ import { MemberCard } from './components/MemberCard.tsx'
 import { PlanEditor } from './components/PlanEditor.tsx'
 import { firstName, listNames, nameOf } from './components/people.ts'
 import type { Profiles } from './components/people.ts'
-import { phaseCountdown } from './components/status.ts'
+import { phaseCountdown, reviewTargetsOf, stillIn } from './components/status.ts'
 import { firstTime } from './components/storage.ts'
-import { zoneNote } from './components/zone.ts'
+import { cityOf, deadlineText, zoneNote } from './components/zone.ts'
+
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
 
 export interface WeekViewProps {
   space: Space
   weekId: WeekId
   profiles: Profiles
-  /** Opens the review sheet; given only while your review is due. */
+  /** Opens the review sheet; given only while your review (or confirm) is due. */
   onReview?: () => void
+  /** Switches to next week, for someone sitting this one out. */
+  onPlanNext?: () => void
 }
 
-export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
+export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: WeekViewProps) {
   const { uid } = useAuth()
   const me = uid ?? ''
   const live = useWeek(space, weekId)
@@ -36,7 +41,9 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
 
   const data = live.data
   const result = data ? computeWeek(data, space, nowMs) : null
-  const revealedForMe = !!result?.revealed && !!result.members[me]?.participating && (data?.week?.members.length ?? 0) > 1
+  // Only a fresh reveal: opening a week from weeks ago from the month view is no moment.
+  const freshReveal = !!data?.week && nowMs < data.week.deadlineAt + 2 * DAY
+  const revealedForMe = freshReveal && !!result?.revealed && !!result.members[me]?.participating && (data?.week?.members.length ?? 0) > 1
 
   // The Friday reveal: a one-time light moment per week on this device.
   useEffect(() => {
@@ -52,8 +59,13 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
   const mine = result.members[me]
   const inWeek = mine?.participating === true
   const isMember = space.memberIds.includes(me)
-  const countdown = phaseCountdown(phase, bounds, nowMs, result.revealed)
   const name = (id: UID) => firstName(nameOf(profiles, id))
+  const when = (ms: number) => deadlineText(ms, space.timezone, nowMs)
+  const counted = membersAt(space, bounds.deadlineAt)
+  const countdown = phaseCountdown(phase, bounds, nowMs, result.revealed, {
+    due: inWeek && !mine.hasSubmitted && reviewTargetsOf(result, me, counted).length > 0,
+    alone: inWeek && stillIn(result, me, counted).length === 0,
+  })
 
   const toggleDone = (taskId: string, done: boolean) => {
     if (done) setShimmer({ id: taskId, stamp: Date.now() })
@@ -64,10 +76,15 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
 
   const members = data.week?.members ?? []
   const others = members.filter((id) => id !== me && result.members[id])
-  const notIn = space.memberIds.filter((id) => id !== me && !members.includes(id))
+  // Before the lock everyone is added as soon as anyone opens the app, so only a locked week has people outside it.
+  const notIn = phase === 'planning' ? [] : space.memberIds.filter((id) => id !== me && !members.includes(id))
+  const lateJoiners = notIn.filter((id) => joinedAfterLock(space, id, bounds.lockAt))
+  const satOut = notIn.filter((id) => !lateJoiners.includes(id))
   const myTasks = data.plans[me]?.tasks ?? []
   const started = nowMs >= bounds.startAt
   const note = zoneNote(space.timezone)
+  const which = weekId === weekIdFor(nowMs, space.timezone) ? 'this week' : 'next week'
+  const joinedLate = joinedAfterLock(space, me, bounds.lockAt)
 
   return (
     <>
@@ -78,7 +95,21 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
         </Pill>
       </div>
 
-      <ReviewStatus result={result} me={me} name={name} onReview={onReview} />
+      {data.boundsMismatch && (
+        <Section>
+          <Row
+            leading={
+              <span className="s-penalty-icon" aria-hidden>
+                <Icon name="clock" size={18} weight={2} />
+              </span>
+            }
+            title={<span className="t-semibold">This week’s times are off</span>}
+            subtitle={`They don’t match ${cityOf(space.timezone)} time. The times shown here are the ones that count.`}
+          />
+        </Section>
+      )}
+
+      <ReviewStatus result={result} me={me} counted={counted} name={name} due={when(bounds.deadlineAt)} latePenalty={space.latePenalty} onReview={onReview} />
 
       {phase === 'planning' && isMember ? (
         <Section
@@ -86,9 +117,12 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
           headerAccessory={myTasks.length > 0 ? <span className="s-count t-tabular">{myTasks.length} / 25</span> : undefined}
           footer={
             myTasks.length === 0 ? (
-              <span className="s-warn">Nothing planned = 0% this week. Add at least one task before the list locks.</span>
+              // Red only once the lock is close: a fresh space shouldn't open on an error.
+              <span className={bounds.lockAt - nowMs < 12 * HOUR ? 's-warn' : undefined}>
+                Empty list = 0% {which}. Add a task before it locks {when(bounds.lockAt)}.
+              </span>
             ) : (
-              `Saves as you type. Swipe left to delete. Locks ${started ? 'tonight' : 'Monday'} at midnight.`
+              `Saves as you type. Swipe left to delete. Locks ${when(bounds.lockAt)}.`
             )
           }
         >
@@ -120,8 +154,15 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
           <Row
             icon="calendar"
             title="You’re sitting this week out"
-            subtitle={phase === 'closed' ? 'You didn’t take part in this week.' : 'You joined after the lists locked. You’re in from next week.'}
+            subtitle={
+              joinedLate
+                ? 'You joined after the lists locked. You’re in from next week.'
+                : phase === 'closed'
+                  ? 'You didn’t take part in this week.'
+                  : 'This week started without you.'
+            }
           />
+          {onPlanNext && <Row icon="listBullet" title="Plan Next Week" action chevron onPress={onPlanNext} />}
         </Section>
       ) : null}
 
@@ -136,16 +177,20 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
           threshold={space.threshold}
           latePenalty={space.latePenalty}
           numbered={!started}
+          former={!space.memberIds.includes(id)}
         />
       ))}
 
       {(notIn.length > 0 || note) && (
         <div className="s-footnote">
-          {notIn.length > 0 && (
+          {lateJoiners.length > 0 && (
             <p>
-              {phase === 'planning'
-                ? `${listNames(notIn.map(name))} ${notIn.length === 1 ? 'hasn’t' : 'haven’t'} opened this week yet.`
-                : `${listNames(notIn.map(name))} ${notIn.length === 1 ? 'is' : 'are'} sitting this week out.`}
+              {listNames(lateJoiners.map(name))} joined after the lists locked: in from next week.
+            </p>
+          )}
+          {satOut.length > 0 && (
+            <p>
+              {listNames(satOut.map(name))} {satOut.length === 1 ? 'isn’t' : 'aren’t'} in this week.
             </p>
           )}
           {note && <p>{note}</p>}
@@ -155,29 +200,60 @@ export function WeekView({ space, weekId, profiles, onReview }: WeekViewProps) {
   )
 }
 
+interface ReviewStatusProps {
+  result: WeekResult
+  me: UID
+  /** Participants who still count: someone who left isn't reviewed or waited for. */
+  counted: UID[]
+  name: (id: UID) => string
+  /** The deadline in words: "tonight at midnight", or "Fri 3:00 PM" on another clock. */
+  due: string
+  latePenalty: number
+  onReview?: () => void
+}
+
 /** The Friday line: what you owe, who you're waiting for, or that results are in. */
-function ReviewStatus({ result, me, name, onReview }: { result: WeekResult; me: UID; name: (id: UID) => string; onReview?: () => void }) {
+function ReviewStatus({ result, me, counted, name, due, latePenalty, onReview }: ReviewStatusProps) {
   const mine = result.members[me]
-  if (!mine?.participating || (result.phase !== 'review' && !result.revealed)) return null
-  if (result.revealed) return null
+  if (!mine?.participating || result.phase !== 'review' || result.revealed) return null
+  const friends = stillIn(result, me, counted)
   if (!mine.hasSubmitted) {
+    if (reviewTargetsOf(result, me, counted).length > 0) {
+      return (
+        <Section footer="Blind until everyone’s in. Marks are final once you submit.">
+          <Row
+            leading={
+              <span className="s-status-icon s-status-icon--urgent" aria-hidden>
+                <Icon name="person2" size={20} weight={2} />
+              </span>
+            }
+            title={<span className="t-semibold">Your review is due</span>}
+            subtitle={`Due ${due}. Each friend you skip costs you ${latePenalty} points.`}
+            chevron={!!onReview}
+            onPress={onReview}
+          />
+        </Section>
+      )
+    }
+    // Nobody planned anything: no points at stake. Alone, there's nothing to do but wait.
+    if (friends.length === 0) return null
     return (
-      <Section footer="Blind until everyone’s in. Marks are final once you submit.">
+      <Section>
         <Row
           leading={
-            <span className="s-status-icon s-status-icon--urgent" aria-hidden>
-              <Icon name="person2" size={20} weight={2} />
+            <span className="s-status-icon" aria-hidden>
+              <Icon name="checkmark" size={20} weight={2} />
             </span>
           }
-          title={<span className="t-semibold">Your review is due</span>}
-          subtitle="Mark every friend’s tasks before midnight, or lose 5 points each."
+          title={<span className="t-semibold">Nothing to review</span>}
+          subtitle="None of your friends planned anything. Confirm so results can unlock."
           chevron={!!onReview}
           onPress={onReview}
         />
       </Section>
     )
   }
-  const waiting = Object.values(result.members).filter((m) => m.participating && !m.hasSubmitted)
+  const waiting = friends.filter((id) => !result.members[id].hasSubmitted)
   return (
     <Section>
       <Row
@@ -187,7 +263,7 @@ function ReviewStatus({ result, me, name, onReview }: { result: WeekResult; me: 
           </span>
         }
         title={<span className="t-semibold">Submitted. Waiting for {waiting.length}</span>}
-        subtitle={`${listNames(waiting.map((m) => name(m.uid)))} still reviewing. Results at midnight at the latest.`}
+        subtitle={`${listNames(waiting.map(name))} still reviewing. Results ${due} at the latest.`}
       />
     </Section>
   )

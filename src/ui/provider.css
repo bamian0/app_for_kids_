@@ -1,6 +1,8 @@
 .ui-app {
   position: fixed;
   inset: 0;
+  /* Ends at the keyboard's top, so screens, toolbars and sheets stay above it. */
+  bottom: var(--keyboard-inset, 0px);
   overflow: hidden;
   /* Seen only around the presenting view while a card sheet is up. */
   background: #000;

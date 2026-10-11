@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Live } from './api.ts'
-import { peek, watch, type Emit } from './store.ts'
+import { forget, forgetWhere, peek, watch, type Emit } from './store.ts'
 
 const refused: Live<string> = { data: undefined, loading: false, error: new Error('You don’t have access to this.') }
 
@@ -62,5 +62,38 @@ describe('shared listeners', () => {
     vi.advanceTimersByTime(120_000)
     expect(source.runs.length).toBeLessThanOrEqual(2)
     expect(source.runs.every((r) => r.stopped)).toBe(true)
+  })
+})
+
+describe('forget', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('restarts a watched entry from loading, so a stale "no access" is not reused', () => {
+    const source = fakeSource()
+    let changes = 0
+    const release = watch('f1', source.start, () => changes++)
+    source.runs[0].emit({ data: 'gone', loading: false, error: null })
+    forget('f1')
+    expect(source.runs[0].stopped).toBe(true)
+    expect(source.runs).toHaveLength(2)
+    expect(peek('f1').loading).toBe(true)
+    source.runs[1].emit({ data: 'joined', loading: false, error: null })
+    expect(peek<string>('f1').data).toBe('joined')
+    expect(changes).toBe(3)
+    release()
+  })
+
+  it('discards a lingering entry, so the next watcher starts fresh', () => {
+    const source = fakeSource()
+    const release = watch('f2', source.start, () => {})
+    source.runs[0].emit({ data: 'old', loading: false, error: null })
+    release()
+    forgetWhere((key) => key.startsWith('f2'))
+    expect(source.runs[0].stopped).toBe(true)
+    expect(peek('f2').loading).toBe(true)
+    const again = watch('f2', source.start, () => {})
+    expect(source.runs).toHaveLength(2)
+    again()
   })
 })

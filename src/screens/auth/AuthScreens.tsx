@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, RefObject } from 'react'
 import { sendPasswordReset, signIn, signUp } from '../../data/api.ts'
+import { errorCode } from '../../data/errors.ts'
 import { Button, EmptyState, Section, Screen, TextFieldRow, useNav } from '../../ui/index.ts'
 import { ErrorText } from '../components/Bits.tsx'
 
@@ -10,6 +11,11 @@ const LABEL_WIDTH = 92
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : 'Something went wrong. Try again.'
+}
+
+/** Sign-up failed because the email already has an account (the data layer keeps Firebase's error as the cause). */
+function emailTaken(e: unknown): boolean {
+  return e instanceof Error && errorCode(e.cause) === 'auth/email-already-in-use'
 }
 
 /** Return in a field moves to the next one instead of submitting early. */
@@ -39,10 +45,12 @@ const passwordProps = {
 }
 
 export function SignUpScreen() {
+  const nav = useNav()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [taken, setTaken] = useState(false)
   const [busy, setBusy] = useState(false)
   const emailRef = useRef<HTMLInputElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
@@ -52,11 +60,14 @@ export function SignUpScreen() {
     if (busy) return
     setBusy(true)
     setError(null)
+    setTaken(false)
     try {
       await signUp(name, email, password)
       // Stay busy: the signed-in app replaces this screen in a moment.
     } catch (err) {
-      setError(message(err))
+      const isTaken = emailTaken(err)
+      setTaken(isTaken)
+      setError(isTaken ? null : message(err))
       setBusy(false)
     }
   }
@@ -64,7 +75,11 @@ export function SignUpScreen() {
   return (
     <Screen title="Create Account" subtitle="Your friends will see your name. Never your email.">
       <form onSubmit={submit} noValidate>
-        <Section footer={error ? <ErrorText>{error}</ErrorText> : 'At least 6 characters for the password.'}>
+        <Section
+          footer={
+            taken ? <ErrorText>This email already has an account. Sign in with it instead.</ErrorText> : error ? <ErrorText>{error}</ErrorText> : 'At least 6 characters for the password.'
+          }
+        >
           <TextFieldRow
             label="Name"
             labelWidth={LABEL_WIDTH}
@@ -77,7 +92,19 @@ export function SignUpScreen() {
             maxLength={40}
             onKeyDown={nextOnEnter(emailRef)}
           />
-          <TextFieldRow label="Email" labelWidth={LABEL_WIDTH} value={email} onChange={setEmail} {...emailProps} enterKeyHint="next" inputRef={emailRef} onKeyDown={nextOnEnter(passwordRef)} />
+          <TextFieldRow
+            label="Email"
+            labelWidth={LABEL_WIDTH}
+            value={email}
+            onChange={(v) => {
+              setEmail(v)
+              setTaken(false)
+            }}
+            {...emailProps}
+            enterKeyHint="next"
+            inputRef={emailRef}
+            onKeyDown={nextOnEnter(passwordRef)}
+          />
           <TextFieldRow
             label="Password"
             labelWidth={LABEL_WIDTH}
@@ -91,18 +118,24 @@ export function SignUpScreen() {
           />
         </Section>
         <div className="s-form-actions">
-          <Button type="submit" size="large" fullWidth loading={busy}>
-            Create Account
-          </Button>
+          {taken ? (
+            <Button size="large" fullWidth onClick={() => nav.push(<SignInScreen initialEmail={email.trim()} />, { title: 'Sign In' })}>
+              Sign In Instead
+            </Button>
+          ) : (
+            <Button type="submit" size="large" fullWidth loading={busy}>
+              Create Account
+            </Button>
+          )}
         </div>
       </form>
     </Screen>
   )
 }
 
-export function SignInScreen() {
+export function SignInScreen({ initialEmail = '' }: { initialEmail?: string }) {
   const nav = useNav()
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -132,6 +165,7 @@ export function SignInScreen() {
             value={password}
             onChange={setPassword}
             {...passwordProps}
+            autoFocus={!!initialEmail}
             autoComplete="current-password"
             placeholder="Required"
             enterKeyHint="go"
@@ -175,11 +209,11 @@ function ForgotPasswordScreen({ initialEmail }: { initialEmail: string }) {
 
   if (sentTo) {
     return (
-      <Screen title="Check Your Email" titleDisplay="inline">
+      <Screen title="Reset Password" titleDisplay="inline">
         <EmptyState
           icon="envelope"
           title="Check your email"
-          message={`If ${sentTo} has an account, a reset link is on its way. Set a new password, then sign in.`}
+          message={`If ${sentTo} has an account, a link is on its way.`}
           action={<Button onClick={nav.pop}>Back to Sign In</Button>}
         />
       </Screen>

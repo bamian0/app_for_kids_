@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { createSpace } from '../data/api.ts'
 import type { Space } from '../domain/types.ts'
-import { Button, GlassButton, NavigationStack, Screen, Section, TextArea, TextFieldRow, useNav } from '../ui/index.ts'
+import { ActivityIndicator, GlassButton, NavigationStack, Screen, Section, TextArea, TextFieldRow, useNav } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
 import { InviteCard } from './components/InviteCard.tsx'
 import { cityOf, deviceZone } from './components/zone.ts'
@@ -53,11 +53,15 @@ function CreateSpaceForm({ close, onOpen }: Props) {
     <Screen
       title="New Space"
       titleDisplay="inline"
-      leading={<GlassButton onClick={close}>Cancel</GlassButton>}
+      leading={<GlassButton icon="xmark" aria-label="Cancel" onClick={close} />}
       trailing={
-        <GlassButton prominent onClick={create} disabled={!valid || busy}>
-          Create
-        </GlassButton>
+        busy ? (
+          <span className="s-bar-spinner">
+            <ActivityIndicator color="var(--secondary-label)" label="Creating" />
+          </span>
+        ) : (
+          <GlassButton prominent icon="checkmark" aria-label="Create" onClick={create} disabled={!valid} />
+        )
       }
     >
       <Section header="Name">
@@ -72,11 +76,6 @@ function CreateSpaceForm({ close, onOpen }: Props) {
       >
         <TextArea value={penalty} onChange={setPenalty} placeholder="Coffee for everyone, for a week" maxLength={120} minRows={2} maxRows={4} aria-label="Penalty" />
       </Section>
-      <div className="s-form-actions">
-        <Button size="large" fullWidth onClick={create} disabled={!valid} loading={busy}>
-          Create Space
-        </Button>
-      </div>
     </Screen>
   )
 }
@@ -87,22 +86,13 @@ function InviteStep({ space, done }: { space: Space; done: () => void }) {
       title="Invite Friends"
       titleDisplay="inline"
       hideBack
-      trailing={
-        <GlassButton prominent onClick={done}>
-          Done
-        </GlassButton>
-      }
+      trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={done} />}
     >
       <div className="s-sheet-hero">
         <div className="s-sheet-hero__title">{space.name} is live.</div>
         <div className="s-sheet-hero__text">Stakes need witnesses. Invite one to seven friends.</div>
       </div>
       <InviteCard space={space} />
-      <div className="s-form-actions">
-        <Button size="large" fullWidth variant="gray" onClick={done}>
-          Open {space.name}
-        </Button>
-      </div>
     </Screen>
   )
 }

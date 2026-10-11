@@ -11,9 +11,11 @@
 import { pathToFileURL } from 'node:url'
 import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app'
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore'
+import { IANAZone } from 'luxon'
 import webpush from 'web-push'
-import type { Mark, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, planSpace, reminderKey, type PlanInput, type Reminder } from './reminders-plan.ts'
+import { utcOffsetMinutes } from '../src/domain/time.ts'
+import type { Mark, MonthId, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
+import { dueWindows, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
 
 export const DEFAULT_APP_URL = 'https://bamian0.github.io/app_for_kids_/'
 const FOUR_WEEKS_S = 28 * 24 * 3600
@@ -28,7 +30,18 @@ export interface PushKeys {
 export interface SendOptions {
   TTL: number
   urgency: 'normal' | 'high'
+  /** Socket timeout for web-push, in ms. */
+  timeout: number
 }
+
+/** A push service that doesn't answer in time counts as a failed delivery (retried next run). */
+export const SEND_TIMEOUT_MS = 10_000
+/** One space can't hold up the others for longer than this; the next run picks it up again. */
+export const SPACE_BUDGET_MS = 60_000
+/** Devices per user that get reminders: the newest ones (old subscriptions pile up otherwise). */
+export const MAX_DEVICES = 5
+/** Only real push services, as in firestore.rules (validPushSub). */
+export const PUSH_HOST = /^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.notify\.windows\.com)\//
 
 /** Delivers one push; rejects with an error carrying `statusCode` when the push service refuses it. */
 export type SendPush = (subscription: PushKeys, payload: string, options: SendOptions) => Promise<unknown>
@@ -39,6 +52,9 @@ export interface RunOptions {
   nowMs: number
   dryRun?: boolean
   log?: (message: string) => void
+  /** Overrides for tests. */
+  sendTimeoutMs?: number
+  spaceBudgetMs?: number
 }
 
 export interface RunSummary {
@@ -50,6 +66,8 @@ export interface RunSummary {
   skipped: number
   expiredSubscriptions: number
   failedDeliveries: number
+  /** Spaces left for the next run: an unsupported timezone, or over their time budget. */
+  skippedSpaces: number
   /** Spaces that could not be processed. */
   errors: number
 }
@@ -74,23 +92,51 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
 }
 
+function times(value: unknown): Record<UID, number> {
+  return Object.fromEntries(Object.entries((value ?? {}) as Record<string, unknown>).map(([uid, t]) => [uid, ms(t)]))
+}
+
 function toSpace(snap: DocumentSnapshot): Space {
   const d = snap.data() ?? {}
-  const joinedAt = Object.fromEntries(Object.entries((d.joinedAt ?? {}) as Record<string, unknown>).map(([uid, t]) => [uid, ms(t)]))
-  return {
+  const space: Space = {
     id: snap.id,
     name: str(d.name),
     reward: str(d.reward),
     penalty: str(d.penalty),
     ownerId: str(d.ownerId),
     memberIds: strings(d.memberIds),
-    joinedAt,
+    joinedAt: times(d.joinedAt),
     timezone: str(d.timezone) || 'UTC',
     inviteCode: str(d.inviteCode),
     threshold: typeof d.threshold === 'number' ? d.threshold : 90,
     latePenalty: typeof d.latePenalty === 'number' ? d.latePenalty : 5,
     createdAt: ms(d.createdAt),
   }
+  if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
+  if (d.leftAt && typeof d.leftAt === 'object') space.leftAt = times(d.leftAt)
+  return space
+}
+
+/** Push docs → the newest MAX_DEVICES with a real push service and usable keys. */
+export function pickDevices(docs: { ref: DocumentReference; data: Record<string, unknown> }[]): { ref: DocumentReference; sub: PushKeys }[] {
+  return docs
+    .flatMap(({ ref, data }) => {
+      const { endpoint, keys, createdAt } = data as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown }; createdAt?: unknown }
+      const valid = typeof endpoint === 'string' && PUSH_HOST.test(endpoint) && typeof keys?.p256dh === 'string' && typeof keys?.auth === 'string'
+      return valid ? [{ ref, at: ms(createdAt), sub: { endpoint, keys: { p256dh: keys.p256dh as string, auth: keys.auth as string } } }] : []
+    })
+    .sort((a, b) => b.at - a.at)
+    .slice(0, MAX_DEVICES)
+    .map(({ ref, sub }) => ({ ref, sub }))
+}
+
+/** Rejects with `statusCode`-less timeout error after `ms`, so a hanging push service can't stall the run. */
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise<WeekData> {
@@ -199,8 +245,18 @@ export async function ensureVapidKeys(db: Firestore, generate: () => VapidKeys):
 
 // ---------- the run ----------
 
-export async function runReminders({ db, send, nowMs, dryRun = false, log = console.log }: RunOptions): Promise<RunSummary> {
-  const summary: RunSummary = { spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, errors: 0 }
+export async function runReminders({
+  db,
+  send,
+  nowMs,
+  dryRun = false,
+  log = console.log,
+  sendTimeoutMs = SEND_TIMEOUT_MS,
+  spaceBudgetMs = SPACE_BUDGET_MS,
+}: RunOptions): Promise<RunSummary> {
+  const summary: RunSummary = {
+    spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0,
+  }
   const deviceCache = new Map<UID, Promise<Device[]>>()
   const profiles: PlanInput['profiles'] = {}
 
@@ -210,14 +266,7 @@ export async function runReminders({ db, send, nowMs, dryRun = false, log = cons
       pending = db
         .collection(`users/${uid}/push`)
         .get()
-        .then((snap) =>
-          snap.docs.flatMap((doc) => {
-            const endpoint = doc.get('endpoint')
-            const keys = doc.get('keys')
-            const valid = typeof endpoint === 'string' && typeof keys?.p256dh === 'string' && typeof keys?.auth === 'string'
-            return valid ? [{ ref: doc.ref, sub: { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } } }] : []
-          }),
-        )
+        .then((snap) => pickDevices(snap.docs.map((doc) => ({ ref: doc.ref, data: doc.data() }))))
       deviceCache.set(uid, pending)
     }
     return pending
@@ -246,8 +295,9 @@ export async function runReminders({ db, send, nowMs, dryRun = false, log = cons
     const options: SendOptions = {
       TTL: Math.max(60, Math.min(FOUR_WEEKS_S, Math.round((reminder.expiresAt - nowMs) / 1000))),
       urgency: reminder.kind === 'last-call' ? 'high' : 'normal',
+      timeout: sendTimeoutMs,
     }
-    const results = await Promise.allSettled(devices.map((d) => send(d.sub, payload, options)))
+    const results = await Promise.allSettled(devices.map((d) => withTimeout(send(d.sub, payload, options), sendTimeoutMs, 'push')))
     let delivered = 0
     let failed = 0
     const expired = new Set<Device>()
@@ -294,8 +344,10 @@ export async function runReminders({ db, send, nowMs, dryRun = false, log = cons
     if (weekIds.size === 0) return
 
     const weeks = Object.fromEntries(await Promise.all([...weekIds].map(async (id) => [id, await loadWeek(db, space.id, id)] as const)))
+    const stakes: NonNullable<SpaceInput['stakes']> = {}
+    for (const window of windows) if (window.kind === 'verdict') Object.assign(stakes, await loadStakes(db, space.id, window.period))
     await loadProfiles(space.memberIds)
-    const plan = planSpace({ space, weeks }, profiles, sent, nowMs)
+    const plan = planSpace({ space, weeks, stakes }, profiles, sent, nowMs)
 
     if (!dryRun) {
       for (const key of plan.skipped) {
@@ -309,14 +361,49 @@ export async function runReminders({ db, send, nowMs, dryRun = false, log = cons
   const spaces = await db.collection('spaces').get()
   summary.spaces = spaces.size
   for (const snap of spaces.docs) {
+    const space = toSpace(snap)
+    // A zone the runtime doesn't know (anyone can create a space with any zone-shaped string) is that
+    // space's problem, not a failed run.
+    if (!IANAZone.isValidZone(space.timezone)) {
+      summary.skippedSpaces++
+      log(`space ${snap.id} skipped: unsupported timezone ${JSON.stringify(space.timezone)}`)
+      continue
+    }
     try {
-      await runSpace(toSpace(snap))
+      if (!dryRun) await backfillOffset(snap.ref, space, nowMs)
+      const outcome = await withTimeout(runSpace(space).then(() => 'done' as const), spaceBudgetMs, `space ${snap.id}`).catch((e: unknown) => {
+        if (e instanceof Error && e.message.startsWith(`space ${snap.id} timed out`)) return 'slow' as const
+        throw e
+      })
+      if (outcome === 'slow') {
+        summary.skippedSpaces++
+        log(`space ${snap.id} skipped: over its ${spaceBudgetMs} ms budget`)
+      }
     } catch (e) {
       summary.errors++
       log(`space ${snap.id} failed: ${message(e)}`)
     }
   }
   return summary
+}
+
+/** Frozen stakes of one month, keyed by month, or nothing if the month was never frozen. */
+async function loadStakes(db: Firestore, spaceId: string, monthId: MonthId): Promise<NonNullable<SpaceInput['stakes']>> {
+  const snap = await db.doc(`spaces/${spaceId}/months/${monthId}`).get()
+  const reward = snap.get('reward')
+  const penalty = snap.get('penalty')
+  return snap.exists && typeof reward === 'string' && typeof penalty === 'string' ? { [monthId]: { reward, penalty } } : {}
+}
+
+/**
+ * Spaces from before utcOffsetMin get it from here, computed from their own zone (clients can't be
+ * trusted to set it; the rules then anchor every new week to it).
+ */
+async function backfillOffset(ref: DocumentReference, space: Space, nowMs: number): Promise<void> {
+  if (space.utcOffsetMin !== undefined) return
+  const offset = Math.round(utcOffsetMinutes(space.timezone, nowMs))
+  await ref.update({ utcOffsetMin: offset })
+  space.utcOffsetMin = offset
 }
 
 // ---------- entry point ----------
@@ -358,6 +445,7 @@ async function main(): Promise<void> {
       db,
       nowMs,
       dryRun,
+      // web-push's own socket timeout; runReminders also races each send against the same limit.
       send: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
     })
     console.log(`${new Date(nowMs).toISOString()}${dryRun ? ' (dry run)' : ''}`, JSON.stringify(summary))

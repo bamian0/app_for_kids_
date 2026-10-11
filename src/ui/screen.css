@@ -18,30 +18,28 @@
   right: 0;
   z-index: 20;
   padding-top: var(--ui-safe-top);
+  /* Horizontal drags that start on the bar still reach the edge swipe-back. */
+  touch-action: pan-y;
 }
 
+/* iOS 26 soft scroll edge: no opaque bar and no hairline. Content scrolling under the bar blurs and
+   fades into the page color, and the effect itself fades out below the bar. Screen drives the opacity
+   from the scroll position. */
 .ui-bar__material {
   position: absolute;
-  inset: 0;
-  background: var(--bar-material);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
+  inset: 0 0 -14px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--screen-bg) 94%, transparent),
+    color-mix(in srgb, var(--screen-bg) 82%, transparent) 50%,
+    color-mix(in srgb, var(--screen-bg) 0%, transparent)
+  );
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent);
+  mask-image: linear-gradient(to bottom, #000 50%, transparent);
   opacity: 0;
-  transition: opacity 0.2s ease;
-}
-.ui-bar__material::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: var(--separator);
-  transform: scaleY(0.5);
-  transform-origin: bottom;
-}
-.ui-screen[data-scrolled] .ui-bar__material {
-  opacity: 1;
+  pointer-events: none;
 }
 
 .ui-bar__row {
@@ -74,11 +72,6 @@
   font: 600 17px/22px var(--font);
   letter-spacing: -0.012em;
   color: var(--label);
-  opacity: 0;
-  transition: opacity 0.18s ease;
-}
-.ui-screen[data-collapsed] .ui-bar__title {
-  opacity: 1;
 }
 
 .ui-bar__back {
@@ -175,9 +168,7 @@
   max-width: 100%;
   padding: 6px;
   pointer-events: auto;
-}
-.ui-screen__toolbar--full .ui-toolbar {
-  flex: 1;
+  touch-action: pan-y;
 }
 .ui-toolbar > .ui-button--full {
   flex: 1;
@@ -187,9 +178,30 @@
   z-index: 2;
 }
 
+/* Full width: the buttons float on their own, like an iOS 26 bottom action, with no glass tray around them. */
+.ui-screen__toolbar--full {
+  --toolbar-button-shadow: 0 8px 24px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-screen__toolbar--full {
+    --toolbar-button-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  }
+}
+:root[data-theme="dark"] .ui-screen__toolbar--full {
+  --toolbar-button-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.ui-screen__toolbar--full .ui-toolbar {
+  flex: 1;
+  gap: 8px;
+  padding: 0;
+}
+.ui-screen__toolbar--full .ui-button--filled:not(:disabled) {
+  box-shadow: var(--toolbar-button-shadow);
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .ui-bar__material {
-    background: var(--bar-solid);
+    background: linear-gradient(to bottom, var(--screen-bg) 70%, color-mix(in srgb, var(--screen-bg) 0%, transparent));
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }

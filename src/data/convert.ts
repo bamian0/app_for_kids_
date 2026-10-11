@@ -1,7 +1,7 @@
 // Firestore documents -> domain types. Timestamps become epoch ms; a pending serverTimestamp()
 // reads as the SDK's local estimate, so optimistic writes render immediately.
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
-import type { Invite, Mark, Plan, Progress, Review, Settlement, Space, Task, UID, UserProfile, Week } from '../domain/types.ts'
+import type { Invite, Mark, MonthStakes, Plan, Progress, Review, Settlement, Space, Task, UID, UserProfile, Week } from '../domain/types.ts'
 
 type Snap = DocumentSnapshot | QueryDocumentSnapshot
 
@@ -22,24 +22,31 @@ export function toProfile(snap: Snap): UserProfile {
   return { uid: snap.id, name: str(d.name), color: str(d.color), createdAt: ms(d.createdAt) }
 }
 
+function times(v: unknown): Record<UID, number> {
+  const out: Record<UID, number> = {}
+  for (const [uid, at] of Object.entries(record(v))) out[uid] = ms(at)
+  return out
+}
+
 export function toSpace(snap: Snap): Space {
   const d = data(snap)
-  const joinedAt: Record<UID, number> = {}
-  for (const [uid, at] of Object.entries(record(d.joinedAt))) joinedAt[uid] = ms(at)
-  return {
+  const space: Space = {
     id: snap.id,
     name: str(d.name),
     reward: str(d.reward),
     penalty: str(d.penalty),
     ownerId: str(d.ownerId),
     memberIds: strings(d.memberIds),
-    joinedAt,
+    joinedAt: times(d.joinedAt),
     timezone: str(d.timezone) || 'UTC',
     inviteCode: str(d.inviteCode),
     threshold: typeof d.threshold === 'number' ? d.threshold : 90,
     latePenalty: typeof d.latePenalty === 'number' ? d.latePenalty : 5,
     createdAt: ms(d.createdAt),
   }
+  if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
+  if (d.leftAt && typeof d.leftAt === 'object') space.leftAt = times(d.leftAt)
+  return space
 }
 
 export function toInvite(snap: Snap): Invite {
@@ -48,6 +55,8 @@ export function toInvite(snap: Snap): Invite {
     code: snap.id,
     spaceId: str(d.spaceId),
     spaceName: str(d.spaceName),
+    reward: str(d.reward),
+    penalty: str(d.penalty),
     inviterName: str(d.inviterName),
     createdBy: str(d.createdBy),
     createdAt: ms(d.createdAt),
@@ -104,4 +113,10 @@ export function toSettlement(snap: Snap): Settlement {
     settledBy: str(d.settledBy),
     settledAt: ms(d.settledAt),
   }
+}
+
+/** A frozen month (spaces/{id}/months/{monthId}). */
+export function toMonthStakes(snap: Snap): MonthStakes {
+  const d = data(snap)
+  return { reward: str(d.reward), penalty: str(d.penalty), frozen: true }
 }

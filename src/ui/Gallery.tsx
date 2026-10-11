@@ -17,7 +17,6 @@ import {
   NavigationStack,
   Pill,
   ProgressBar,
-  requestMotionPermission,
   Row,
   Screen,
   ScoreRing,
@@ -46,6 +45,16 @@ const PEOPLE = [
   { id: 'd', name: 'Yuki Tanaka', color: '#8C7699' },
   { id: 'e', name: 'Ines Duarte', color: '#A5735F' },
   { id: 'f', name: 'Theo Martin', color: '#5D8889' },
+]
+
+const RING_STATES: Array<{ label: string; value: number | null; iridescent?: boolean }> = [
+  { label: 'None', value: null },
+  { label: '40', value: 40 },
+  { label: '89.9', value: 89.9 },
+  { label: '90', value: 90 },
+  { label: '97', value: 97 },
+  { label: '100', value: 100 },
+  { label: '100 prov.', value: 100, iridescent: false },
 ]
 
 const TASKS = [
@@ -128,6 +137,22 @@ function Home() {
           value={ring}
           onChange={setRing}
         />
+      </Section>
+
+      <Section
+        header="Score rings"
+        footer="No score, below the bar (gap marks 90%), at the bar, nearly full (the end cap shades the start), full, and a provisional 100% kept graphite with iridescent={false}."
+      >
+        <div className="g-pad g-rings">
+          {RING_STATES.map((r) => (
+            <div key={r.label} className="g-ring">
+              <ScoreRing value={r.value} iridescent={r.iridescent} size={64} stroke={7} />
+              <Text variant="caption2" color="secondary" as="div">
+                {r.label}
+              </Text>
+            </div>
+          ))}
+        </div>
       </Section>
 
       <Section
@@ -305,11 +330,6 @@ function Home() {
         />
         <Row icon="bell" title="Banner" onPress={() => toast({ title: 'Results are in', message: 'Lena gave you 4.5 of 5. Tap to see.', icon: 'trophy' })} />
         <Row icon="sparkles" title="Edge glow (Friday reveal)" onPress={() => glow.play(2600)} />
-        <Row
-          icon="gear"
-          title="Tilt highlights (iPhone)"
-          onPress={async () => toast((await requestMotionPermission()) ? 'Motion on: tilt to move the light' : 'Motion not available')}
-        />
       </Section>
 
       <Section header="Glass" footer="Liquid Glass-like material: blur, saturation, rim light and a specular highlight.">
@@ -328,6 +348,7 @@ function Home() {
             <GlassButton icon="share" aria-label="Share" />
             <GlassButton>Edit</GlassButton>
             <GlassButton prominent icon="checkmark" aria-label="Done" />
+            <GlassButton prominent icon="checkmark" aria-label="Done (disabled)" disabled />
           </div>
         </div>
       </Section>
@@ -416,6 +437,8 @@ function ReviewScreen() {
 
 function DetailScreen({ depth }: { depth: number }) {
   const nav = useNav()
+  const toast = useToast()
+  const [note, setNote] = useState('')
   return (
     <Screen
       title={depth === 1 ? 'Detail' : `Level ${depth}`}
@@ -425,6 +448,9 @@ function DetailScreen({ depth }: { depth: number }) {
         <Row title="Push another" chevron onPress={() => nav.push(<DetailScreen depth={depth + 1} />)} />
         {depth > 1 && <Row title="Pop to root" onPress={() => nav.popToRoot()} />}
         <Row title="Pop" onPress={() => nav.pop()} />
+      </Section>
+      <Section footer="Saves on blur. Type, then swipe back: the gesture ends editing first, so the save still runs.">
+        <TextFieldRow label="Note" value={note} onChange={setNote} placeholder="Type, then swipe back" onBlur={() => note && toast(`Saved: ${note}`)} />
       </Section>
       <Section header="Filler">
         {Array.from({ length: 14 }, (_, i) => (
@@ -458,6 +484,8 @@ function PersonScreen({ name, color }: { name: string; color: string }) {
 
 function SheetDemo({ close }: { close: () => void }) {
   const [checked, setChecked] = useState<Record<string, boolean>>({})
+  const [title, setTitle] = useState('')
+  const toast = useToast()
   return (
     <Screen
       title="Next Week"
@@ -465,6 +493,9 @@ function SheetDemo({ close }: { close: () => void }) {
       leading={<GlassButton icon="xmark" aria-label="Close" onClick={close} />}
       trailing={<GlassButton prominent icon="checkmark" aria-label="Save" onClick={close} />}
     >
+      <Section footer="Saves on blur. Type, then drag the sheet down: the save still runs.">
+        <TextFieldRow label="Title" value={title} onChange={setTitle} placeholder="Type, then drag down" onBlur={() => title && toast(`Saved: ${title}`)} />
+      </Section>
       <Section header="Plan" footer="Drag the grabber up for the large detent, or down to dismiss.">
         {TASKS.map((t) => (
           <Row
@@ -490,12 +521,8 @@ function NewSpaceSheet({ onDone }: { onDone: () => void }) {
     <Screen
       title="New Space"
       titleDisplay="inline"
-      leading={<GlassButton onClick={onDone}>Cancel</GlassButton>}
-      trailing={
-        <GlassButton prominent onClick={onDone} disabled={!name}>
-          Create
-        </GlassButton>
-      }
+      leading={<GlassButton icon="xmark" aria-label="Cancel" onClick={onDone} />}
+      trailing={<GlassButton prominent icon="checkmark" aria-label="Create" onClick={onDone} disabled={!name} />}
     >
       <Section footer="2 to 8 friends. You can rename it later.">
         <TextFieldRow value={name} onChange={setName} placeholder="Space name" autoFocus />

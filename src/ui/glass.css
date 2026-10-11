@@ -116,6 +116,11 @@
 .ui-glass-button:disabled {
   color: var(--tertiary-label);
 }
+/* A disabled Create/Save turns into a gray pill with a gray label, never a black one with black text. */
+.ui-glass-button--prominent:disabled {
+  background: var(--system-fill);
+  color: var(--tertiary-label);
+}
 
 @media (prefers-reduced-transparency: reduce) {
   .ui-glass {
@@ -125,5 +130,8 @@
   }
   .ui-glass-button--prominent {
     background: var(--label);
+  }
+  .ui-glass-button--prominent:disabled {
+    background: var(--system-gray5);
   }
 }

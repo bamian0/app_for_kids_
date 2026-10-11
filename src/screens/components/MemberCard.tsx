@@ -4,8 +4,9 @@ import type { MemberWeekResult } from '../../domain/scoring.ts'
 import type { WeekPhase } from '../../domain/time.ts'
 import type { UID } from '../../domain/types.ts'
 import { Avatar, CheckCircle, Icon, Row, Section, Shimmer } from '../../ui/index.ts'
-import { CheckDot, MarkGlyph, MiniScore, markLabel } from './Bits.tsx'
-import { listNames, nameOf, personOf, shortName } from './people.ts'
+import { CheckDot, MarkGlyph, MiniScore } from './Bits.tsx'
+import { summarizeMarks } from './marks.ts'
+import { firstName, listNames, nameOf, personOf, shortName } from './people.ts'
 import type { Profiles } from './people.ts'
 
 export interface MemberCardProps {
@@ -22,9 +23,11 @@ export interface MemberCardProps {
   shimmer?: { id: string; stamp: number }
   /** Before the week starts check-offs mean nothing, so tasks are numbered instead. */
   numbered?: boolean
+  /** No longer in the space (their week still counts). */
+  former?: boolean
 }
 
-export function MemberCard({ member, me, profiles, revealed, phase, threshold, latePenalty, canCheck, onToggleDone, shimmer, numbered }: MemberCardProps) {
+export function MemberCard({ member, me, profiles, revealed, phase, threshold, latePenalty, canCheck, onToggleDone, shimmer, numbered, former }: MemberCardProps) {
   const isMe = member.uid === me
   const person = personOf(profiles, member.uid)
   const n = member.taskCount
@@ -45,8 +48,9 @@ export function MemberCard({ member, me, profiles, revealed, phase, threshold, l
   } else {
     subtitle = n === 0 ? 'Nothing planned' : `${done} of ${n} done`
     if (phase === 'review' && !isMe) subtitle += member.hasSubmitted ? ' · reviews in' : ' · still reviewing'
-    if (n > 0) score = <MiniScore value={member.provisionalScore} threshold={threshold} caption="Provisional" />
+    if (n > 0) score = <MiniScore value={member.provisionalScore} threshold={threshold} caption="Provisional" iridescent={false} />
   }
+  if (former) subtitle = `Left · ${subtitle}`
 
   const missed = member.missedReviewsOf
   return (
@@ -62,7 +66,7 @@ export function MemberCard({ member, me, profiles, revealed, phase, threshold, l
       ) : (
         member.tasks.map((task, i) => {
           const marks = Object.entries(task.reviewerMarks)
-          const marksText = marks.map(([reviewer, mark]) => `${who(reviewer)}: ${markLabel(mark)}`).join(' · ')
+          const marksText = summarizeMarks(marks, me, who)
           let lead
           if (checkable) {
             lead = <CheckCircle checked={task.selfDone} onChange={(v) => onToggleDone?.(task.taskId, v)} aria-label={task.title} />
@@ -103,7 +107,7 @@ export function MemberCard({ member, me, profiles, revealed, phase, threshold, l
               <Icon name="clock" size={18} weight={2} />
             </span>
           }
-          title={`${isMe ? 'You didn’t' : `${person.name.split(' ')[0]} didn’t`} review ${listNames(missed.map((uid) => (uid === me ? 'you' : nameOf(profiles, uid).split(' ')[0])))}`}
+          title={`${isMe ? 'You didn’t' : `${firstName(person.name)} didn’t`} review ${listNames(missed.map((uid) => (uid === me ? 'you' : firstName(nameOf(profiles, uid)))))}`}
           subtitle={`−${latePenalty * missed.length} points this month`}
         />
       )}

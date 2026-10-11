@@ -222,3 +222,139 @@ describe('registerServiceWorker', () => {
     expect(register).not.toHaveBeenCalled()
   })
 })
+
+describe('watchForUpdates', () => {
+  /** A page of build `page`, controlled by a worker that reports `worker.build` when asked. */
+  async function updating(opts: { page?: string; busy?: boolean; modal?: boolean } = {}) {
+    setup()
+    const worker = { build: opts.page ?? 'b1', postMessage: vi.fn((_: unknown, [port]: Array<{ postMessage: (d: unknown) => void }>) => port.postMessage(worker.build)) }
+    const sw = navigator.serviceWorker as unknown as Record<string, unknown>
+    const swListeners = new Map<string, () => void>()
+    Object.assign(sw, {
+      controller: worker,
+      addEventListener: (type: string, fn: () => void) => swListeners.set(type, fn),
+      removeEventListener: (type: string) => swListeners.delete(type),
+    })
+    const docListeners = new Map<string, () => void>()
+    const doc = {
+      visibilityState: 'visible',
+      activeElement: opts.busy ? { tagName: 'INPUT', type: 'text' } : null,
+      addEventListener: (type: string, fn: () => void) => docListeners.set(type, fn),
+      removeEventListener: (type: string) => docListeners.delete(type),
+    }
+    vi.stubGlobal('document', doc)
+    vi.stubGlobal('location', { reload: vi.fn() })
+    // Delivers synchronously, so the test needs no real message loop.
+    vi.stubGlobal(
+      'MessageChannel',
+      class {
+        port1: { onmessage: ((e: { data: unknown }) => void) | null; close: () => void } = { onmessage: null, close: () => {} }
+        port2 = { postMessage: (data: unknown) => this.port1.onmessage?.({ data }) }
+      },
+    )
+    const push = await load()
+    // After load(): the module registry was reset, and the push client must see this bridge.
+    const { attachUIBridge } = await import('../ui/bridge.ts')
+    const toasts: Array<{ title: string; onPress?: () => void }> = []
+    const detach = attachUIBridge({ toast: (t) => toasts.push(t), modalOpen: () => opts.modal === true })
+    const reg = { update: vi.fn(async () => {}) }
+    const stop = push.watchForUpdates(reg as unknown as ServiceWorkerRegistration, 'b1')
+    const settle = () => new Promise((r) => setTimeout(r, 0))
+    return {
+      worker,
+      reg,
+      toasts,
+      doc,
+      reload: location.reload as ReturnType<typeof vi.fn>,
+      async controllerChange() {
+        swListeners.get('controllerchange')!()
+        await settle()
+      },
+      async resume() {
+        docListeners.get('visibilitychange')!()
+        await settle()
+      },
+      stop() {
+        stop()
+        detach()
+        vi.useRealTimers()
+        return { swListeners, docListeners }
+      },
+    }
+  }
+
+  it('ignores the first install and a launch that already loaded the new build', async () => {
+    const t = await updating()
+    await t.controllerChange()
+    await t.resume()
+    expect(t.reload).not.toHaveBeenCalled()
+    expect(t.toasts).toEqual([])
+    const { swListeners, docListeners } = t.stop()
+    expect(swListeners.size + docListeners.size).toBe(0)
+  })
+
+  it('checks for a new worker on resume, at most every 30 minutes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const t = await updating()
+    await t.resume()
+    expect(t.reg.update).not.toHaveBeenCalled()
+    vi.setSystemTime(Date.now() + 31 * 60 * 1000)
+    await t.resume()
+    expect(t.reg.update).toHaveBeenCalledTimes(1)
+    await t.resume()
+    expect(t.reg.update).toHaveBeenCalledTimes(1)
+    t.doc.visibilityState = 'hidden'
+    vi.setSystemTime(Date.now() + 31 * 60 * 1000)
+    await t.resume()
+    expect(t.reg.update).toHaveBeenCalledTimes(1)
+    t.stop()
+  })
+
+  it('reloads into a new build when nothing is in progress', async () => {
+    const t = await updating()
+    t.worker.build = 'b2'
+    await t.controllerChange()
+    expect(t.reload).toHaveBeenCalledTimes(1)
+    expect(t.toasts).toEqual([])
+    t.stop()
+  })
+
+  it('offers the reload in a banner while typing or with a sheet open', async () => {
+    const typing = await updating({ busy: true })
+    typing.worker.build = 'b2'
+    await typing.controllerChange()
+    expect(typing.reload).not.toHaveBeenCalled()
+    expect(typing.toasts.map((x) => x.title)).toEqual(['Updated — tap to reload'])
+    typing.toasts[0].onPress!()
+    expect(typing.reload).toHaveBeenCalledTimes(1)
+    typing.stop()
+
+    const sheet = await updating({ modal: true })
+    sheet.worker.build = 'b2'
+    await sheet.controllerChange()
+    expect(sheet.reload).not.toHaveBeenCalled()
+    expect(sheet.toasts).toHaveLength(1)
+    sheet.stop()
+  })
+
+  it('applies an update that arrived while busy on the next return to the app', async () => {
+    const t = await updating()
+    t.worker.build = 'b2'
+    await t.resume()
+    expect(t.reload).toHaveBeenCalledTimes(1)
+    t.stop()
+  })
+
+  it('stays put when the worker cannot say which build it is', async () => {
+    const t = await updating()
+    t.worker.build = 'b2'
+    t.worker.postMessage.mockImplementation(() => {})
+    vi.useFakeTimers()
+    const fired = t.controllerChange()
+    await vi.advanceTimersByTimeAsync(3100)
+    await fired
+    expect(t.reload).not.toHaveBeenCalled()
+    expect(t.toasts).toEqual([])
+    t.stop()
+  })
+})

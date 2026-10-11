@@ -6,7 +6,7 @@
 import { DateTime } from 'luxon'
 import type { MonthId, Space, UID, UserProfile, WeekData, WeekId } from '../src/domain/types.ts'
 import { addMonths, addWeeks, monthIdFor, weekBounds, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
-import { computeMonth, computeWeek, reviewTargets } from '../src/domain/scoring.ts'
+import { computeMonth, computeWeek, membersAt, reviewTargets } from '../src/domain/scoring.ts'
 
 export type ReminderKind = 'plan' | 'review' | 'last-call' | 'results' | 'verdict'
 
@@ -41,6 +41,8 @@ export interface SpaceInput {
   space: Space
   /** Loaded weeks by id (a week without a doc has `week: null`). Windows whose weeks are absent are skipped. */
   weeks: Record<WeekId, WeekData>
+  /** Frozen stakes by month (spaces/{id}/months). The verdict falls back to the space's text. */
+  stakes?: Record<MonthId, { reward: string; penalty: string }>
 }
 
 export interface PlanInput {
@@ -116,6 +118,13 @@ function monthName(monthId: MonthId): string {
   return new Intl.DateTimeFormat(LOCALE, { month: 'long', timeZone: 'UTC' }).format(new Date(`${monthId}-01T00:00:00Z`))
 }
 
+/** "6 hours", "1 hour", "under an hour". Relative, so it reads right in every member's timezone. */
+export function hoursFromNow(ms: number): string {
+  const hours = Math.round(ms / HOUR)
+  if (hours >= 2) return `${hours} hours`
+  return hours === 1 ? '1 hour' : 'under an hour'
+}
+
 function hoursLeftTitle(msLeft: number): string {
   const hours = Math.round(msLeft / HOUR)
   if (hours >= 2) return `${hours} hours left`
@@ -124,19 +133,32 @@ function hoursLeftTitle(msLeft: number): string {
 
 type Decision = { uid: UID; title: string; body: string } | { uid: UID; skip: 'final' | 'not-yet' }
 
-function decide(window: DueWindow, space: Space, weeks: Record<WeekId, WeekData>, profiles: PlanInput['profiles'], nowMs: number): Decision[] {
+function decide(
+  window: DueWindow,
+  space: Space,
+  weeks: Record<WeekId, WeekData>,
+  stakes: SpaceInput['stakes'],
+  profiles: PlanInput['profiles'],
+  nowMs: number,
+): Decision[] {
   const members = space.memberIds
   const name = (uid: UID) => profiles[uid]?.name?.trim() || 'a friend'
 
   switch (window.kind) {
     case 'plan': {
-      // Anyone in the space can still join the week before it locks, so the decision isn't final.
+      // Once the week doc exists, its stored lockAt is the deadline (see SPEC §1).
       const data = weeks[window.period]
-      return members.map((uid) =>
-        (data.plans[uid]?.tasks.length ?? 0) > 0
-          ? { uid, skip: 'not-yet' }
-          : { uid, title: 'Lock in your week', body: `Your task list for ${space.name} locks at midnight. Nothing planned = 0%.` },
-      )
+      const lockAt = data.week?.lockAt ?? window.closesAt
+      if (nowMs >= lockAt) return members.map((uid) => ({ uid, skip: 'final' }))
+      return members.map((uid) => {
+        // Tasks can still be deleted before lock, so the decision isn't final.
+        if ((data.plans[uid]?.tasks.length ?? 0) > 0) return { uid, skip: 'not-yet' }
+        const body = `Your list for ${space.name} locks in ${hoursFromNow(lockAt - nowMs)}.`
+        // Everyone in the space joins the week once anyone opens the app before lock; until then the
+        // 0% only holds for those already in it.
+        const inWeek = data.week?.members.includes(uid) ?? false
+        return { uid, title: 'Lock in your week', body: inWeek ? `${body} Nothing planned = 0%.` : body }
+      })
     }
 
     case 'review':
@@ -146,10 +168,13 @@ function decide(window: DueWindow, space: Space, weeks: Record<WeekId, WeekData>
       const week = data.week
       return members.map((uid): Decision => {
         if (!week || !week.members.includes(uid) || week.submittedBy.includes(uid)) return { uid, skip: 'final' }
-        const targets = reviewTargets(data, uid)
+        // The stored review window rules: never "due in" after it has closed.
+        if (nowMs >= week.deadlineAt) return { uid, skip: 'final' }
+        if (nowMs < week.reviewOpenAt) return { uid, skip: 'not-yet' }
+        const targets = reviewTargets(data, uid, membersAt(space, week.deadlineAt))
         if (targets.length === 0) return { uid, skip: 'final' }
         const names = listNames(targets.map(name))
-        if (window.kind === 'review') return { uid, title: 'Review day', body: `Rate ${names} in ${space.name} before midnight.` }
+        if (window.kind === 'review') return { uid, title: 'Review day', body: `Rate ${names} in ${space.name}. Due in ${hoursFromNow(week.deadlineAt - nowMs)}.` }
         const points = space.latePenalty * targets.length
         return { uid, title: hoursLeftTitle(week.deadlineAt - nowMs), body: `Miss the ${space.name} deadline and you lose ${points} points.` }
       })
@@ -160,7 +185,8 @@ function decide(window: DueWindow, space: Space, weeks: Record<WeekId, WeekData>
       const result = data.week ? computeWeek(data, space, nowMs) : null
       return members.map((uid): Decision => {
         const member = result?.members[uid]
-        if (!member?.participating || member.score === null) return { uid, skip: 'final' }
+        if (!member?.participating) return { uid, skip: 'final' }
+        if (member.score === null) return { uid, skip: 'not-yet' }
         return { uid, title: 'Results are in', body: `You scored ${formatPercent(member.score)}. See how ${space.name} did this week.` }
       })
     }
@@ -168,13 +194,17 @@ function decide(window: DueWindow, space: Space, weeks: Record<WeekId, WeekData>
     case 'verdict': {
       const month = computeMonth(space, window.period, window.weekIds.map((id) => weeks[id]), nowMs)
       const label = monthName(window.period)
+      // The stakes frozen for that month; editing them later doesn't change what's owed.
+      const { reward, penalty } = stakes?.[window.period] ?? space
       return members.map((uid): Decision => {
         const result = month[uid]
         if (!result || result.finalScore === null || result.passed === null) return { uid, skip: 'final' }
+        // Nobody else played the month: nothing is owed either way.
+        if (result.others.length === 0) return { uid, skip: 'final' }
         const score = formatPercent(result.finalScore)
         return result.passed
-          ? { uid, title: `You made it: ${score}`, body: `${label} in ${space.name} is done. Collect: ${space.reward}` }
-          : { uid, title: `You fell short: ${score}`, body: `${label} in ${space.name} is done. Pay up: ${space.penalty}` }
+          ? { uid, title: `You made it: ${score}`, body: `${label} in ${space.name} is done. Collect: ${reward}` }
+          : { uid, title: `You fell short: ${score}`, body: `${label} in ${space.name} is done. Pay up: ${penalty}` }
       })
     }
   }
@@ -182,11 +212,11 @@ function decide(window: DueWindow, space: Space, weeks: Record<WeekId, WeekData>
 
 /** Reminders to send now, and final no-ops to log, for one space. */
 export function planSpace(input: SpaceInput, profiles: PlanInput['profiles'], sent: ReadonlySet<string>, nowMs: number): PlanResult {
-  const { space, weeks } = input
+  const { space, weeks, stakes } = input
   const result: PlanResult = { send: [], skipped: [] }
   for (const window of dueWindows(space, nowMs)) {
     if (!window.weekIds.every((id) => id in weeks)) continue
-    for (const decision of decide(window, space, weeks, profiles, nowMs)) {
+    for (const decision of decide(window, space, weeks, stakes, profiles, nowMs)) {
       const key = reminderKey(space.id, window.period, window.kind, decision.uid)
       if (sent.has(key)) continue
       if ('skip' in decision) {

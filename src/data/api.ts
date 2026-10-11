@@ -1,15 +1,15 @@
 // Data layer API used by the screens. Signatures are the contract (docs/SPEC.md §2).
 // Writes live in sibling modules; this file holds the React hooks and re-exports everything.
-import { useEffect, useSyncExternalStore } from 'react'
-import { now } from '../domain/clock.ts'
-import { weekBounds, weekIdsInMonth } from '../domain/time.ts'
-import type { MonthId, Settlement, Space, UID, UserProfile, WeekData, WeekId } from '../domain/types.ts'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { weekIdsInMonth } from '../domain/time.ts'
+import type { MonthId, MonthStakes, Settlement, Space, UID, UserProfile, WeekData, WeekId } from '../domain/types.ts'
 import { mergeProfiles, startProfile } from './auth.ts'
+import { ensureSpace, startMonthStakes } from './months.ts'
 import { authState, startAuth } from './session.ts'
 import { startSettlements } from './settlements.ts'
 import { startMySpaces, startSpace } from './spaces.ts'
 import { combine, useLive } from './store.ts'
-import { joinWeek, mergeWeeks, startWeek, weekKey } from './weeks.ts'
+import { mergeWeeks, startWeek, weekKey } from './weeks.ts'
 
 export interface Live<T> {
   data: T | undefined
@@ -41,14 +41,28 @@ export { signUp, signIn, sendPasswordReset, signOut, updateMyName, deleteMyAccou
 
 // ---------- Spaces ----------
 
+/** Runs ensureSpace for each space when it first loads and when its members change (cheap when nothing to do). */
+function useEnsure(spaces: (Space | null | undefined)[]): void {
+  const signature = spaces.map((s) => (s ? `${s.id}:${s.memberIds.join(',')}:${s.timezone}` : '')).join('|')
+  useEffect(() => {
+    for (const space of spaces) if (space) void ensureSpace(space)
+    // `signature` covers what ensureSpace reads.
+  }, [signature])
+}
+
+/** The user's spaces. Opening the app also keeps each space's weeks and stakes up to date (see ensureSpace). */
 export function useMySpaces(): Live<Space[]> {
   const { uid } = useAuth()
-  return useLive(uid ? `${uid}|spaces` : null, (emit) => startMySpaces(uid as UID)(emit))
+  const live = useLive<Space[]>(uid ? `${uid}|spaces` : null, (emit) => startMySpaces(uid as UID)(emit))
+  useEnsure(live.data ?? [])
+  return live
 }
 
 export function useSpace(spaceId: string): Live<Space | null> {
   const { uid } = useAuth()
-  return useLive(uid && spaceId ? `${uid}|space|${spaceId}` : null, (emit) => startSpace(spaceId)(emit))
+  const live = useLive<Space | null>(uid && spaceId ? `${uid}|space|${spaceId}` : null, (emit) => startSpace(spaceId)(emit))
+  useEnsure([live.data])
+  return live
 }
 
 const NO_PROFILES: Record<UID, UserProfile> = Object.freeze({}) as Record<UID, UserProfile>
@@ -67,30 +81,24 @@ export function useProfiles(uids: UID[]): Record<UID, UserProfile> {
   return live.data ?? NO_PROFILES
 }
 
-export { createSpace, lookupInvite, joinSpace, leaveSpace, updateSpace, inviteLink } from './spaces.ts'
+export { createSpace, lookupInvite, joinSpace, leaveSpace, updateSpace, inviteLink, removeMember, resetInviteCode } from './spaces.ts'
 
 // ---------- Weeks ----------
 
-/** Live data for one week. While the week is still before lockAt it also creates the week doc
- *  or adds the current user to `members` (so opening a week = taking part in it). */
+/**
+ * Live data for one week. Every space member before lockAt takes part, whether or not they open
+ * it: opening any space (here, useSpace or useMySpaces) makes sure this week and next week exist and
+ * hold every current member. `data.boundsMismatch` flags a week whose stored timeline doesn't match
+ * the space's zone.
+ */
 export function useWeek(space: Space, weekId: WeekId): Live<WeekData> {
   const { uid } = useAuth()
-  const isMember = uid !== null && space.memberIds.includes(uid)
-  useEffect(() => {
-    if (!isMember) return
-    try {
-      if (now() >= weekBounds(weekId, space.timezone).lockAt) return
-    } catch {
-      return
-    }
-    // Best effort: a failure here only means the user isn't in the week yet; savePlan retries.
-    joinWeek(space, weekId).catch(() => {})
-    // `space` is only read for id, timezone and membership, which the deps cover.
-  }, [uid, isMember, space.id, space.timezone, weekId])
+  useEnsure([space])
   return useLive(uid ? weekKey(uid, space.id, weekId) : null, (emit) => startWeek(space.id, weekId, uid as UID)(emit))
 }
 
-export { savePlan, setTaskDone, submitReviews, joinWeek } from './weeks.ts'
+export { savePlan, setTaskDone, submitReviews, joinWeek, ensureWeek } from './weeks.ts'
+export { ensureSpace } from './months.ts'
 
 // ---------- Months ----------
 
@@ -105,9 +113,24 @@ export function useMonth(space: Space, monthId: MonthId): Live<WeekData[]> {
   )
 }
 
+/**
+ * The stakes for a month: frozen once its first task lists locked (`frozen: true`), else the space's
+ * current text (`frozen: false`, so an edit now still applies to this month).
+ */
+export function useMonthStakes(space: Space, monthId: MonthId): Live<MonthStakes> {
+  const { uid } = useAuth()
+  const live = useLive<MonthStakes | null>(uid ? `${uid}|months|${space.id}|${monthId}` : null, (emit) => startMonthStakes(space.id, monthId)(emit))
+  return useMemo(() => {
+    if (live.data) return { data: live.data, loading: false, error: live.error }
+    if (live.loading) return { data: undefined, loading: true, error: null }
+    return { data: { reward: space.reward, penalty: space.penalty, frozen: false }, loading: false, error: live.error }
+  }, [live, space.reward, space.penalty])
+}
+
 export function useSettlements(spaceId: string): Live<Settlement[]> {
   const { uid } = useAuth()
   return useLive(uid && spaceId ? `${uid}|settlements|${spaceId}` : null, (emit) => startSettlements(spaceId)(emit))
 }
 
 export { setSettled } from './settlements.ts'
+export { forget, forgetWhere } from './store.ts'

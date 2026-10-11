@@ -11,6 +11,8 @@ interface Entry {
   state: Live<unknown>
   listeners: Set<() => void>
   stop: () => void
+  /** Stops the current run and starts a fresh one from "loading". */
+  restart: () => void
   linger: ReturnType<typeof setTimeout> | null
   retry: ReturnType<typeof setTimeout> | null
   failures: number
@@ -35,7 +37,7 @@ const entries = new Map<string, Entry>()
 export function watch<T>(key: string, start: Start<T>, onChange: () => void): () => void {
   let entry = entries.get(key)
   if (!entry) {
-    const created: Entry = { state: LOADING, listeners: new Set(), stop: () => {}, linger: null, retry: null, failures: 0 }
+    const created: Entry = { state: LOADING, listeners: new Set(), stop: () => {}, restart: () => {}, linger: null, retry: null, failures: 0 }
     entries.set(key, created)
     entry = created
     const begin = () => {
@@ -68,6 +70,13 @@ export function watch<T>(key: string, start: Start<T>, onChange: () => void): ()
         stopRun()
       }
     }
+    created.restart = () => {
+      created.stop()
+      created.state = LOADING
+      created.failures = 0
+      begin()
+      for (const listener of [...created.listeners]) listener()
+    }
     begin()
   }
   const current = entry
@@ -88,6 +97,28 @@ export function watch<T>(key: string, start: Start<T>, onChange: () => void): ()
       current.stop()
     }, LINGER_MS)
   }
+}
+
+/**
+ * Drops what is known for `key`. A watched entry starts over from "loading" with a fresh listener
+ * (e.g. a space that refused us a moment ago and that we've just joined); an unwatched one is
+ * discarded, so the next watcher starts fresh instead of reusing a lingering stale state.
+ */
+export function forget(key: string): void {
+  const entry = entries.get(key)
+  if (!entry) return
+  if (entry.listeners.size > 0) {
+    entry.restart()
+    return
+  }
+  if (entry.linger) clearTimeout(entry.linger)
+  entries.delete(key)
+  entry.stop()
+}
+
+/** forget() for every key that passes `test`. */
+export function forgetWhere(test: (key: string) => boolean): void {
+  for (const key of [...entries.keys()]) if (test(key)) forget(key)
 }
 
 export function peek<T>(key: string): Live<T> {

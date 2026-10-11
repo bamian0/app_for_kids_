@@ -44,10 +44,21 @@ describe('users/{uid}', () => {
       'name not a string': () => setDoc(ref, profile({ name: 42 })),
       'color 33 chars': () => setDoc(ref, profile({ color: '#'.repeat(33) })),
       'color not a string': () => setDoc(ref, profile({ color: 0 })),
+      'color a CSS url()': () => setDoc(ref, profile({ color: 'url(//x.co/a)' })),
+      'color a named color': () => setDoc(ref, profile({ color: 'red' })),
+      'color #RGB': () => setDoc(ref, profile({ color: '#fff' })),
+      'color #RRGGBBAA': () => setDoc(ref, profile({ color: '#8E8E9380' })),
+      'color not hex': () => setDoc(ref, profile({ color: '#GGGGGG' })),
+      'color with a suffix': () => setDoc(ref, profile({ color: '#8E8E93;x' })),
       'client createdAt': () => setDoc(ref, profile({ createdAt: Timestamp.now() })),
       'extra key': () => setDoc(ref, profile({ admin: true })),
       'missing color': () => setDoc(ref, { name: 'Alex', createdAt: serverTimestamp() }),
     })
+  })
+
+  test('colors are #RRGGBB in either case', async () => {
+    await allowed(setDoc(doc(db('alice'), 'users/alice'), profile({ color: '#aeaeb2' })))
+    await allowed(setDoc(doc(db('bob'), 'users/bob'), profile({ color: '#AEAEB2' })))
   })
 
   test('owner can rename but not change createdAt; others cannot update', async () => {
@@ -57,6 +68,7 @@ describe('users/{uid}', () => {
     await allowed(updateDoc(ref, { color: '#AEAEB2' }))
     await allDenied({
       'createdAt changed': () => updateDoc(ref, { createdAt: serverTimestamp() }),
+      'color a CSS url()': () => updateDoc(ref, { color: 'url(http://127.0.0.1:4580/p?u=b)' }),
       'name too long': () => updateDoc(ref, { name: 'x'.repeat(41) }),
       'extra key': () => updateDoc(ref, { email: 'a@b.c' }),
       'other user': () => updateDoc(doc(db('bob'), 'users/alice'), { name: 'Hacked' }),
@@ -81,6 +93,16 @@ describe('users/{uid}/push/{subId}', () => {
     await allowed(deleteDoc(ref))
   })
 
+  test('endpoints of the real push services are accepted', async () => {
+    const endpoints = [
+      'https://web.push.apple.com/QGx1c2VyLXN1YnNjcmlwdGlvbg',
+      'https://fcm.googleapis.com/fcm/send/dX1y2Z:APA91bH',
+      'https://updates.push.services.mozilla.com/wpush/v2/gAAAAABk',
+      'https://wns2-par02p.notify.windows.com/w/?token=BQYAAAB',
+    ]
+    for (const [i, endpoint] of endpoints.entries()) await allowed(setDoc(doc(db('alice'), `users/alice/push/sub${i}`), sub({ endpoint })))
+  })
+
   test('subscriptions are private to their owner', async () => {
     await seed({ 'users/alice/push/sub1': { ...sub(), createdAt: Timestamp.now() } })
     const bob = db('bob')
@@ -97,7 +119,12 @@ describe('users/{uid}/push/{subId}', () => {
   test('invalid subscriptions are rejected', async () => {
     const ref = doc(db('alice'), 'users/alice/push/sub1')
     await allDenied({
-      'http endpoint': () => setDoc(ref, sub({ endpoint: 'http://push.example.com/x' })),
+      'http endpoint': () => setDoc(ref, sub({ endpoint: 'http://web.push.apple.com/x' })),
+      'any https host': () => setDoc(ref, sub({ endpoint: 'https://push.example.com/x' })),
+      'lookalike host': () => setDoc(ref, sub({ endpoint: 'https://web.push.apple.com.evil.example/x' })),
+      'host as userinfo': () => setDoc(ref, sub({ endpoint: 'https://fcm.googleapis.com@evil.example/x' })),
+      'windows lookalike': () => setDoc(ref, sub({ endpoint: 'https://evil.example/notify.windows.com/x' })),
+      'no path': () => setDoc(ref, sub({ endpoint: 'https://fcm.googleapis.com' })),
       'endpoint too long': () => setDoc(ref, sub({ endpoint: 'https://' + 'x'.repeat(1100) })),
       'keys extra field': () => setDoc(ref, sub({ keys: { p256dh: 'a', auth: 'b', x: 'c' } })),
       'keys missing auth': () => setDoc(ref, sub({ keys: { p256dh: 'a' } })),

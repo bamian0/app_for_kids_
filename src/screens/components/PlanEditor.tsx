@@ -56,17 +56,23 @@ function usePlanDraft(space: Space, weekId: WeekId, server: Task[]) {
     editing.current = on
   }, [])
 
-  // Leaving the screen mid-debounce still saves.
+  // A new task typed but not committed yet (no Return, no blur).
+  const pendingNew = useRef('')
+
+  // Leaving the screen mid-debounce, or with a new task still in its field, still saves. WebKit
+  // fires no blur when a focused field is removed, so this is the last chance.
   useEffect(
     () => () => {
-      if (timer.current === undefined) return
+      const title = pendingNew.current.trim()
+      if (timer.current === undefined && !title) return
       window.clearTimeout(timer.current)
-      savePlan(target.current.space, target.current.weekId, latest.current).catch(() => {})
+      const list = title && latest.current.length < MAX_TASKS ? [...latest.current, { id: newTaskId(), title }] : latest.current
+      savePlan(target.current.space, target.current.weekId, list).catch(() => {})
     },
     [],
   )
 
-  return { tasks, edit, setEditing }
+  return { tasks, edit, setEditing, pendingNew }
 }
 
 export interface PlanEditorProps {
@@ -81,8 +87,9 @@ export interface PlanEditorProps {
 }
 
 export function PlanEditor({ space, weekId, tasks: server, done, canCheck, onToggleDone, shimmer }: PlanEditorProps) {
-  const { tasks, edit, setEditing } = usePlanDraft(space, weekId, server)
+  const { tasks, edit, setEditing, pendingNew } = usePlanDraft(space, weekId, server)
   const [adding, setAdding] = useState('')
+  pendingNew.current = adding
   const [focused, setFocused] = useState<string | null>(null)
   const newRef = useRef<HTMLTextAreaElement>(null)
   const full = tasks.length >= MAX_TASKS
@@ -98,6 +105,8 @@ export function PlanEditor({ space, weekId, tasks: server, done, canCheck, onTog
   const commitNew = (keepFocus: boolean) => {
     const title = adding.trim()
     if (!title) return
+    // Cleared before the re-render, so an unmount right after this can't add the task twice.
+    pendingNew.current = ''
     edit((list) => (list.length >= MAX_TASKS ? list : [...list, { id: newTaskId(), title }]), 0)
     setAdding('')
     if (keepFocus) newRef.current?.focus()

@@ -1,12 +1,31 @@
 /* ---------- Edge glow ---------- */
 
 .ui-edge-glow {
+  /* Light mode: thin bands, so white cards near the edges stay white. */
+  --glow-top: 36px;
+  --glow-bottom: 56px;
+  --glow-side: 28px;
+  --glow-rim: 1.5px;
   position: fixed;
   inset: 0;
   z-index: 400;
   overflow: hidden;
   border-radius: var(--display-radius);
   pointer-events: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-edge-glow {
+    --glow-top: 64px;
+    --glow-bottom: 84px;
+    --glow-side: 48px;
+    --glow-rim: 2px;
+  }
+}
+:root[data-theme="dark"] .ui-edge-glow {
+  --glow-top: 64px;
+  --glow-bottom: 84px;
+  --glow-side: 48px;
+  --glow-rim: 2px;
 }
 
 .ui-edge-glow__bloom,
@@ -15,28 +34,29 @@
   inset: 0;
   border-radius: inherit;
   background: conic-gradient(from 200deg at 50% 55%, var(--iris-stops));
-  /* Hue rotation runs on the compositor; the gradient itself is painted once. */
-  animation: ui-glow-hue 3.2s linear infinite;
+  /* The colors drift a little instead of spinning through the whole wheel (which would pass through
+     green). Runs on the compositor; the gradient itself is painted once. */
+  animation: ui-glow-drift 5s ease-in-out infinite alternate;
 }
 
 /* Soft light pooling inward from every edge, deeper along the bottom like Siri. */
 .ui-edge-glow__bloom {
   opacity: var(--iris-glow-opacity);
   -webkit-mask:
-    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% 76px no-repeat,
-    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% 96px no-repeat,
-    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / 56px 100% no-repeat,
-    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / 56px 100% no-repeat;
+    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% var(--glow-top) no-repeat,
+    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% var(--glow-bottom) no-repeat,
+    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / var(--glow-side) 100% no-repeat,
+    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / var(--glow-side) 100% no-repeat;
   mask:
-    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% 76px no-repeat,
-    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% 96px no-repeat,
-    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / 56px 100% no-repeat,
-    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / 56px 100% no-repeat;
+    linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) top / 100% var(--glow-top) no-repeat,
+    linear-gradient(to top, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) bottom / 100% var(--glow-bottom) no-repeat,
+    linear-gradient(to right, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) left / var(--glow-side) 100% no-repeat,
+    linear-gradient(to left, #000, rgba(0, 0, 0, 0.42) 28%, rgba(0, 0, 0, 0.12) 62%, transparent) right / var(--glow-side) 100% no-repeat;
 }
 
 /* A crisp bright line right on the display edge. */
 .ui-edge-glow__rim {
-  padding: 2.5px;
+  padding: var(--glow-rim);
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -58,12 +78,12 @@
   opacity: 0.7;
 }
 
-@keyframes ui-glow-hue {
+@keyframes ui-glow-drift {
   from {
-    filter: hue-rotate(0deg);
+    filter: hue-rotate(-14deg);
   }
   to {
-    filter: hue-rotate(360deg);
+    filter: hue-rotate(18deg);
   }
 }
 

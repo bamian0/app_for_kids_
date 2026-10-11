@@ -1,8 +1,6 @@
 .ui-ring {
   --ring-track: var(--tertiary-system-fill);
   --ring-arc: var(--label);
-  /* Notch color should match whatever the ring sits on (cards by default). */
-  --ring-notch: var(--secondary-system-grouped-background);
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -24,24 +22,15 @@
 .ui-ring__arc {
   stroke: var(--ring-arc);
 }
-.ui-ring__notch {
-  stroke: var(--ring-notch);
-  stroke-width: 2.5;
-}
-.ui-ring__tick {
-  stroke: var(--tertiary-label);
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-.ui-ring--met .ui-ring__tick {
-  stroke: var(--secondary-label);
+.ui-ring__cap {
+  fill: var(--ring-arc);
 }
 
 .ui-ring__glow {
   position: absolute;
   z-index: 0;
   border-radius: 50%;
-  filter: blur(9px);
+  filter: blur(12px);
   pointer-events: none;
 }
 .ui-ring__glow-ring {

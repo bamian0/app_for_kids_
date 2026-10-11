@@ -1,14 +1,19 @@
 // Data layer against the emulators, through the same functions the screens call.
 // One scenario, in order: accounts -> spaces -> weeks -> reviews -> months -> account deletion.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { disableNetwork, enableNetwork } from 'firebase/firestore'
 import {
   createSpace,
   deleteMyAccount,
+  ensureSpace,
   joinSpace,
   joinWeek,
   leaveSpace,
   lookupInvite,
+  removeMember,
+  resetInviteCode,
   savePlan,
+  sendPasswordReset,
   setSettled,
   setTaskDone,
   signIn,
@@ -18,16 +23,19 @@ import {
   updateMyName,
   updateSpace,
 } from '../../src/data/api.ts'
+import type { Live } from '../../src/data/api.ts'
 import { mergeProfiles, startProfile } from '../../src/data/auth.ts'
+import { startMonthStakes } from '../../src/data/months.ts'
 import { authState } from '../../src/data/session.ts'
 import { startSettlements } from '../../src/data/settlements.ts'
 import { startMySpaces, startSpace } from '../../src/data/spaces.ts'
-import { combine } from '../../src/data/store.ts'
+import { combine, peek, watch } from '../../src/data/store.ts'
 import { mergeWeeks, startWeek, weekKey } from '../../src/data/weeks.ts'
 import { now } from '../../src/domain/clock.ts'
 import { colorForUid, formatInviteCode } from '../../src/domain/ids.ts'
-import { addWeeks, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
-import type { Space } from '../../src/domain/types.ts'
+import { addWeeks, monthIdForWeek, utcOffsetMinutes, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
+import type { Space, WeekData } from '../../src/domain/types.ts'
+import { getFirebase } from '../../src/firebase/app.ts'
 import {
   adminGet,
   as,
@@ -56,7 +64,17 @@ const REVIEW_WEEK = '2026-09-21'
 let alex: TestUser
 let sam: TestUser
 let kim: TestUser
+let lee: TestUser
 let space: Space
+
+const OFFLINE = "You're offline. Check your connection and try again."
+
+/** Every state a subscription emits, for checking that none of them was wrong on the way. */
+function record<T>(start: (emit: (next: Live<T>) => void) => () => void) {
+  const states: Live<T>[] = []
+  const stop = start((next) => states.push(next))
+  return { states, stop }
+}
 
 const thisWeek = () => weekIdFor(now(), space.timezone)
 const weekPath = (weekId: string) => `spaces/${space.id}/weeks/${weekId}`
@@ -69,6 +87,7 @@ describe('accounts', () => {
     alex = await createUser('Alex')
     sam = await createUser('Sam')
     kim = await createUser('Kim')
+    lee = await createUser('Lee')
     const profile = await adminGet(`users/${alex.uid}`)
     expect(profile).toMatchObject({ name: 'Alex', color: colorForUid(alex.uid) })
     expect(profile?.createdAt.toMillis()).toBeGreaterThan(Date.now() - 60_000)
@@ -82,6 +101,12 @@ describe('accounts', () => {
     await rejectsWith(signUp('   ', 'pat@example.com', PASSWORD), "Name can't be empty.")
     await rejectsWith(signIn(alex.email, 'wrong-password'), 'Wrong email or password.')
     await rejectsWith(signIn('nobody@example.com', PASSWORD), 'Wrong email or password.')
+  })
+
+  it('a password reset for an unknown email looks the same as for a known one', async () => {
+    await signOut()
+    await expect(sendPasswordReset('nobody@example.com')).resolves.toBeUndefined()
+    await expect(sendPasswordReset(alex.email)).resolves.toBeUndefined()
   })
 
   it('creates the missing profile of an older account on sign-in', async () => {
@@ -109,9 +134,35 @@ describe('spaces', () => {
     expect(space).toMatchObject({ name: 'Film crew', ownerId: alex.uid, memberIds: [alex.uid], threshold: 90, latePenalty: 5 })
     expect(() => new Intl.DateTimeFormat('en-US', { timeZone: space.timezone })).not.toThrow()
     const stored = await adminGet(`spaces/${space.id}`)
-    expect(stored).toMatchObject({ name: 'Film crew', memberIds: [alex.uid], inviteCode: space.inviteCode, timezone: space.timezone })
+    const utcOffsetMin = utcOffsetMinutes(space.timezone, Date.now())
+    expect(stored).toMatchObject({ name: 'Film crew', memberIds: [alex.uid], inviteCode: space.inviteCode, timezone: space.timezone, utcOffsetMin })
+    expect(space.utcOffsetMin).toBe(utcOffsetMin)
     expect(Object.keys(stored?.joinedAt)).toEqual([alex.uid])
-    expect(await adminGet(`invites/${space.inviteCode}`)).toMatchObject({ spaceId: space.id, spaceName: 'Film crew', inviterName: 'Alex', createdBy: alex.uid })
+    expect(await adminGet(`invites/${space.inviteCode}`)).toMatchObject({
+      spaceId: space.id, spaceName: 'Film crew', reward: 'Dinner on me', penalty: 'Coffee for a week', inviterName: 'Alex', createdBy: alex.uid,
+    })
+  })
+
+  it('refuses to create a space offline instead of queueing it, and never creates one twice', async () => {
+    await as(alex)
+    const mine = observe(startMySpaces(alex.uid))
+    await mine.until((l) => l.data?.length === 1)
+    const { db } = getFirebase()
+    await disableNetwork(db)
+    try {
+      const started = Date.now()
+      await rejectsWith(createSpace({ name: 'Offline crew', reward: 'r', penalty: 'p' }), OFFLINE)
+      expect(Date.now() - started).toBeLessThan(9_000)
+    } finally {
+      await enableNetwork(db)
+    }
+    // Tap, cancel, tap again: one space.
+    const input = { name: 'Twice', reward: 'r', penalty: 'p' }
+    const [first, second] = await Promise.all([createSpace(input), createSpace(input)])
+    expect(second.id).toBe(first.id)
+    const after = await mine.until((l) => l.data?.length === 2)
+    expect(after.data?.map((s) => s.name).sort()).toEqual(['Film crew', 'Twice'])
+    mine.stop()
   })
 
   it('validates space text before writing', async () => {
@@ -126,6 +177,13 @@ describe('spaces', () => {
     expect(await lookupInvite(`https://example.github.io/app_for_kids_/?join=${space.inviteCode}`)).toMatchObject(expected)
     expect(await lookupInvite('ZZZZ-ZZZZ')).toBeNull()
     expect(await lookupInvite('hello')).toBeNull()
+  })
+
+  it('shows an invite, stakes included, to someone not signed in yet', async () => {
+    await signOut()
+    expect(await lookupInvite(space.inviteCode)).toMatchObject({
+      spaceId: space.id, spaceName: 'Film crew', reward: 'Dinner on me', penalty: 'Coffee for a week', inviterName: 'Alex',
+    })
   })
 
   it('joins by link (idempotently) and shows up in my spaces', async () => {
@@ -172,12 +230,13 @@ describe('spaces', () => {
     space = { ...space, reward: 'Sushi' }
   })
 
-  it('renaming a space renames its invite preview', async () => {
+  it('editing the space keeps its invite preview in step (name and stakes)', async () => {
     await as(sam)
-    await updateSpace(space.id, { name: 'Crew Two' })
-    expect((await lookupInvite(space.inviteCode))?.spaceName).toBe('Crew Two')
-    await updateSpace(space.id, { name: space.name })
-    expect((await lookupInvite(space.inviteCode))?.spaceName).toBe(space.name)
+    expect((await lookupInvite(space.inviteCode))?.reward).toBe('Sushi')
+    await updateSpace(space.id, { name: 'Crew Two', penalty: 'Dishes' })
+    expect(await lookupInvite(space.inviteCode)).toMatchObject({ spaceName: 'Crew Two', reward: 'Sushi', penalty: 'Dishes' })
+    await updateSpace(space.id, { name: space.name, penalty: space.penalty })
+    expect(await lookupInvite(space.inviteCode)).toMatchObject({ spaceName: space.name, penalty: space.penalty })
   })
 
   it('leaves and rejoins; the last one out retires the invite', async () => {
@@ -186,33 +245,95 @@ describe('spaces', () => {
     await leaveSpace(solo.id)
     expect(await lookupInvite(solo.inviteCode)).toBeNull()
 
-    const live = observe(startSpace(space.id))
-    await live.until((l) => l.data != null)
+    // Watched the way the screens do (shared store entry), so a stale refusal could linger.
+    const key = `${kim.uid}|space|${space.id}`
+    const release = watch(key, startSpace(space.id), () => {})
+    await eventually(() => peek<Space | null>(key).data != null)
     await leaveSpace(space.id)
     // Losing read access reads as "no space" rather than an error.
-    await live.until((l) => l.data === null && l.error === null)
-    live.stop()
+    await eventually(() => peek<Space | null>(key).data === null && peek(key).error === null)
+    release()
     const stored = await adminGet(`spaces/${space.id}`)
     expect(stored?.memberIds).toEqual([alex.uid, sam.uid])
     expect(Object.keys(stored?.joinedAt).sort()).toEqual([alex.uid, sam.uid].sort())
+    expect(stored?.leftAt[kim.uid].toMillis()).toBeGreaterThan(Date.now() - 60_000)
     await leaveSpace(space.id)
     expect(await lookupInvite(space.inviteCode)).not.toBeNull()
 
+    // Rejoining right away shows the space, not the "you left" state still lingering in the store.
     await joinSpace(space.inviteCode)
+    const again = watch(key, startSpace(space.id), () => {})
+    await eventually(() => peek<Space | null>(key).data?.memberIds.includes(kim.uid) === true)
+    again()
     expect((await adminGet(`spaces/${space.id}`))?.memberIds).toEqual([alex.uid, sam.uid, kim.uid])
     space = { ...space, memberIds: [alex.uid, sam.uid, kim.uid] }
+  })
+
+  it('the owner resets the invite code; the old one stops working', async () => {
+    await as(sam)
+    await rejectsWith(resetInviteCode(space.id), 'Only the owner can reset the invite code.')
+    await as(alex)
+    const old = space.inviteCode
+    const code = await resetInviteCode(space.id)
+    expect(code).not.toBe(old)
+    expect(await adminGet(`invites/${old}`)).toBeUndefined()
+    expect(await lookupInvite(code)).toMatchObject({ spaceId: space.id, spaceName: space.name, reward: space.reward, penalty: space.penalty })
+    await as(lee)
+    await rejectsWith(joinSpace(old), 'No space uses this code. Check it with your friend and try again.')
+    space = { ...space, inviteCode: code }
+  })
+
+  it('ownership passes to the earliest-joined member; the owner can remove people', async () => {
+    await as(lee)
+    const crew = await createSpace({ name: 'Crew B', reward: 'r', penalty: 'p' })
+    await as(sam)
+    await joinSpace(crew.inviteCode)
+    await as(kim)
+    await joinSpace(crew.inviteCode)
+    await rejectsWith(removeMember(crew.id, sam.uid), 'Only the owner can remove people.')
+    await as(lee)
+    await leaveSpace(crew.id)
+    expect(await adminGet(`spaces/${crew.id}`)).toMatchObject({ ownerId: sam.uid, memberIds: [sam.uid, kim.uid] })
+    await as(sam)
+    await removeMember(crew.id, kim.uid)
+    const stored = await adminGet(`spaces/${crew.id}`)
+    expect(stored?.memberIds).toEqual([sam.uid])
+    expect(Object.keys(stored?.leftAt).sort()).toEqual([lee.uid, kim.uid].sort())
+    await leaveSpace(crew.id)
+
+    // A space whose owner left before ownership moved with them: its earliest-joined member takes over on open.
+    const t = (days: number) => ts(Date.now() - days * DAY)
+    await seed({
+      'spaces/ownerless': {
+        name: 'Old crew', reward: 'r', penalty: 'p', ownerId: 'gone', memberIds: [kim.uid, sam.uid],
+        joinedAt: { [kim.uid]: t(3), [sam.uid]: t(5) }, timezone: 'UTC', utcOffsetMin: 0, inviteCode: 'OLDCREW2',
+        threshold: 90, latePenalty: 5, createdAt: t(9),
+      },
+    })
+    const old: Space = {
+      id: 'ownerless', name: 'Old crew', reward: 'r', penalty: 'p', ownerId: 'gone', memberIds: [kim.uid, sam.uid],
+      joinedAt: { [kim.uid]: Date.now() - 3 * DAY, [sam.uid]: Date.now() - 5 * DAY }, timezone: 'UTC', utcOffsetMin: 0,
+      inviteCode: 'OLDCREW2', threshold: 90, latePenalty: 5, createdAt: Date.now() - 9 * DAY,
+    }
+    await as(kim)
+    await ensureSpace(old)
+    expect((await adminGet('spaces/ownerless'))?.ownerId).toBe('gone')
+    await as(sam)
+    await ensureSpace(old)
+    expect((await adminGet('spaces/ownerless'))?.ownerId).toBe(sam.uid)
   })
 })
 
 describe('weeks', () => {
-  it('opening a week before lock creates it, later openers join it', async () => {
+  it('every member takes part once anyone opens the space before lock, opened or not', async () => {
     resetClock()
     const next = addWeeks(thisWeek(), 1)
     await as(alex)
     const live = observe(startWeek(space.id, next, alex.uid))
     await live.until((l) => l.data?.week === null)
     expect(await joinWeek(space, next)).toBe(true)
-    await live.until((l) => l.data?.week?.members.join() === alex.uid)
+    await live.until((l) => l.data?.week?.members.length === 3)
+    expect(live.current().data?.boundsMismatch).toBe(false)
     live.stop()
     const bounds = weekBounds(next, space.timezone)
     const stored = await adminGet(weekPath(next))
@@ -220,11 +341,21 @@ describe('weeks', () => {
     expect(stored?.lockAt.toMillis()).toBe(bounds.lockAt)
     expect(stored?.reviewOpenAt.toMillis()).toBe(bounds.reviewOpenAt)
     expect(stored?.deadlineAt.toMillis()).toBe(bounds.deadlineAt)
-    expect(stored).toMatchObject({ members: [alex.uid], submittedBy: [] })
+    expect(stored).toMatchObject({ members: [alex.uid, sam.uid, kim.uid], submittedBy: [] })
 
     await as(sam)
     expect(await joinWeek(space, next)).toBe(true)
-    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid])
+    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
+  })
+
+  it('someone who joins the space before lock is added the next time anyone opens it', async () => {
+    const next = addWeeks(thisWeek(), 1)
+    await as(lee)
+    await joinSpace(space.inviteCode)
+    await as(sam)
+    // What the screens' hooks run on open: this week (until it locks), next week, the month's stakes.
+    await ensureSpace({ ...space, memberIds: [alex.uid, sam.uid, kim.uid, lee.uid] })
+    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid, lee.uid])
   })
 
   it('leaves a week nobody opened before lock inactive', async () => {
@@ -255,10 +386,10 @@ describe('weeks', () => {
     expect(state.data?.plans[sam.uid].updatedAt).toBeGreaterThan(0)
     live.stop()
 
-    // Saving a plan is also how a member who hasn't opened the week joins it.
+    // Kim never opened the week, and is in it all the same.
     await as(kim)
     await savePlan(space, next, [{ id: 'k1', title: 'Shoot B-roll' }])
-    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
+    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid, lee.uid])
   })
 
   it('refuses plans after lock and oversized lists', async () => {
@@ -281,6 +412,16 @@ describe('weeks', () => {
     } finally {
       resetClock()
     }
+  })
+
+  it('flags a week whose stored timeline does not match the space\'s zone', async () => {
+    const skewed = '2026-08-24'
+    await seed({ [weekPath(skewed)]: weekDoc('closed', [alex.uid]) })
+    await as(alex)
+    const live = observe(startWeek(space.id, skewed, alex.uid))
+    const state = await live.until((l) => l.data?.week != null)
+    expect(state.data?.boundsMismatch).toBe(true)
+    live.stop()
   })
 })
 
@@ -320,21 +461,71 @@ describe('reviews', () => {
       live.stop()
 
       await as(kim)
-      live = observe(startWeek(space.id, W, kim.uid))
-      state = await live.until((l) => l.data?.week != null)
-      expect(state.data?.reviews).toEqual([])
+      const seen = record<WeekData>(startWeek(space.id, W, kim.uid))
+      await eventually(() => seen.states.at(-1)?.data?.week != null)
+      expect(seen.states.at(-1)?.data?.reviews).toEqual([])
       await submitReviews(space, W, [
         { revieweeId: alex.uid, marks: { a1: 0.5, a2: 1 } },
         { revieweeId: sam.uid, marks: { s1: 1, s2: 1 } },
       ])
       // The last submission reveals the week while we're watching.
-      state = await live.until((l) => l.data?.reviews.length === 6)
+      await eventually(() => seen.states.at(-1)?.data?.reviews.length === 6)
+      state = seen.states.at(-1)!
       expect(state.data?.reviews.find((r) => r.id === `${alex.uid}_${kim.uid}`)?.marks).toEqual({ k1: 0 })
       expect(state.data?.reviews.every((r) => r.submittedAt > 0)).toBe(true)
-      live.stop()
+      // Never a revealed week (everyone submitted) scored from Kim's own reviews only.
+      const mixed = seen.states.filter((l) => l.data?.week?.submittedBy.length === 3 && l.data.reviews.length < 6)
+      expect(mixed).toEqual([])
+      seen.stop()
     } finally {
       resetClock()
     }
+  })
+
+  it('a week that is already revealed is first published with everyone\'s reviews', async () => {
+    const R = '2026-08-17'
+    const at = ts(Date.now() - 2 * DAY)
+    await seed({
+      [weekPath(R)]: weekDoc('closed', [alex.uid, sam.uid, kim.uid], [alex.uid, sam.uid, kim.uid]),
+      [`${weekPath(R)}/reviews/${alex.uid}_${sam.uid}`]: { reviewerId: alex.uid, revieweeId: sam.uid, marks: { s1: 1 }, submittedAt: at },
+      [`${weekPath(R)}/reviews/${sam.uid}_${alex.uid}`]: { reviewerId: sam.uid, revieweeId: alex.uid, marks: { a1: 1 }, submittedAt: at },
+      [`${weekPath(R)}/reviews/${kim.uid}_${alex.uid}`]: { reviewerId: kim.uid, revieweeId: alex.uid, marks: { a1: 0.5 }, submittedAt: at },
+    })
+    await as(alex)
+    const seen = record<WeekData>(startWeek(space.id, R, alex.uid))
+    await eventually(() => seen.states.at(-1)?.data?.reviews.length === 3)
+    const published = seen.states.filter((l) => l.data)
+    expect(published.length).toBeGreaterThan(0)
+    expect(published.every((l) => l.data?.reviews.length === 3)).toBe(true)
+    seen.stop()
+  })
+
+  it('someone who leaves mid-week leaves the open weeks: nobody reviews them, the reveal doesn\'t wait', async () => {
+    const T = thisWeek()
+    const next = addWeeks(T, 1)
+    await seed({
+      [weekPath(T)]: weekDoc('review', [alex.uid, sam.uid, kim.uid, lee.uid]),
+      [`${weekPath(T)}/plans/${lee.uid}`]: { tasks: [{ id: 'l1', title: 'L1' }], updatedAt: ts(Date.now() - 5 * DAY) },
+      [`${weekPath(T)}/plans/${kim.uid}`]: { tasks: [{ id: 'k1', title: 'K1' }], updatedAt: ts(Date.now() - 5 * DAY) },
+    })
+    await as(lee)
+    await leaveSpace(space.id)
+    expect((await adminGet(weekPath(T)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
+    expect((await adminGet(weekPath(next)))?.members).toEqual([alex.uid, sam.uid, kim.uid])
+    expect((await adminGet(`spaces/${space.id}`))?.leftAt[lee.uid]).toBeDefined()
+
+    await as(alex)
+    await submitReviews(space, T, [])
+    await as(kim)
+    await submitReviews(space, T, [])
+    await as(sam)
+    await submitReviews(space, T, [{ revieweeId: kim.uid, marks: { k1: 1 } }])
+    // Revealed for the server too: Alex reads Sam's review of Kim.
+    await as(alex)
+    const live = observe(startWeek(space.id, T, alex.uid))
+    const state = await live.until((l) => l.data?.reviews.length === 1)
+    expect(state.data?.reviews[0].reviewerId).toBe(sam.uid)
+    live.stop()
   })
 
   it('refuses reviews outside the window before writing', async () => {
@@ -381,14 +572,39 @@ describe('months, settlements and profiles', () => {
     expect(await adminGet(weekPath('2026-09-07'))).toBeUndefined()
   })
 
+  it('freezes the month\'s stakes once its first lists lock; later edits only change months not frozen yet', async () => {
+    resetClock()
+    const month = monthIdForWeek(thisWeek())
+    const started = now() >= weekBounds(weekIdsInMonth(month)[0], space.timezone).lockAt
+    await as(sam)
+    await ensureSpace(space)
+    const live = observe(startMonthStakes(space.id, month))
+    if (!started) {
+      // Run in the first days of a month: nothing frozen yet, edits still apply to it.
+      expect((await live.until((l) => !l.loading)).data).toBeNull()
+      live.stop()
+      return
+    }
+    await live.until((l) => l.data?.frozen === true)
+    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toMatchObject({ reward: space.reward, penalty: space.penalty })
+    await updateSpace(space.id, { penalty: 'A high five' })
+    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toMatchObject({ penalty: space.penalty })
+    expect(live.current().data).toEqual({ reward: space.reward, penalty: space.penalty, frozen: true })
+    live.stop()
+    await updateSpace(space.id, { penalty: space.penalty })
+  })
+
   it('stores settlements', async () => {
     await as(sam)
+    // Lee has left, and still owes or is owed for the months Lee played.
+    await setSettled(space.id, '2026-09', lee.uid, true)
     await setSettled(space.id, '2026-09', alex.uid, true)
     expect(await adminGet(`spaces/${space.id}/settlements/2026-09_${alex.uid}`)).toMatchObject({ monthId: '2026-09', uid: alex.uid, settled: true, settledBy: sam.uid })
     const live = observe(startSettlements(space.id))
-    await live.until((l) => l.data?.length === 1 && l.data[0].settled)
+    const mine = (l: Live<{ uid: string; settled: boolean }[]>) => l.data?.find((x) => x.uid === alex.uid)
+    await live.until((l) => l.data?.length === 2 && mine(l)?.settled === true)
     await setSettled(space.id, '2026-09', alex.uid, false)
-    await live.until((l) => l.data?.[0]?.settled === false)
+    await live.until((l) => mine(l)?.settled === false)
     live.stop()
   })
 
@@ -414,6 +630,8 @@ describe('account deletion', () => {
     expect(await adminGet(`users/${kim.uid}`)).toBeUndefined()
     expect(await adminGet(`users/${kim.uid}/push/sub1`)).toBeUndefined()
     expect((await adminGet(`spaces/${space.id}`))?.memberIds).toEqual([alex.uid, sam.uid])
+    // Kim had not submitted for next week, so Kim is out of it too.
+    expect((await adminGet(weekPath(addWeeks(thisWeek(), 1))))?.members).toEqual([alex.uid, sam.uid])
     await rejectsWith(signIn(kim.email, PASSWORD), 'Wrong email or password.')
   })
 })

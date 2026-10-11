@@ -125,3 +125,16 @@
 .g-glass-buttons {
   position: relative;
 }
+
+.g-rings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 10px;
+}
+.g-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 64px;
+}

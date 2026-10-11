@@ -22,6 +22,9 @@
   /* At the medium detent the bottom of the sheet is off screen; keep content above it. */
   --ui-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sheet-hidden, 0px));
 }
+:root[data-keyboard] .ui-sheet {
+  --ui-safe-bottom: var(--sheet-hidden, 0px);
+}
 .ui-sheet--card {
   --ui-safe-top: 6px;
 }

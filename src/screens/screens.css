@@ -91,22 +91,31 @@
 .s-welcome__body {
   display: flex;
   flex-direction: column;
-  padding: 0 calc(28px + var(--ui-safe-right)) 0 calc(28px + var(--ui-safe-left));
+  padding: 26px calc(28px + var(--ui-safe-right)) 0 calc(28px + var(--ui-safe-left));
+}
+/* The intro puts the app icon above the title, like an Apple welcome screen. */
+.s-welcome--intro .ui-screen__content {
+  display: flex;
+  flex-direction: column;
+}
+.s-welcome--intro .s-welcome__hero {
+  order: -1;
+}
+.s-welcome--intro .ui-screen__large {
+  padding-top: 0;
 }
 .s-welcome__hero {
   display: flex;
   justify-content: center;
-  padding: 18px 0 30px;
+  padding: 24px 0 22px;
 }
-/* The actions float above the home indicator, so the content scrolls clear of two buttons and a note. */
-.s-welcome .ui-screen__content--toolbar {
-  padding-bottom: calc(var(--ui-safe-bottom) + 176px);
-}
+/* The content scrolls clear of the pinned actions (Screen pads it by their measured height); behind the
+   buttons and the note the page is solid, so text scrolling under them never shows through. */
 .s-welcome .ui-screen__toolbar::before {
-  height: calc(var(--ui-safe-bottom) + 190px);
-  background: linear-gradient(to top, var(--screen-bg) 72%, color-mix(in srgb, var(--screen-bg) 0%, transparent));
+  height: calc(var(--ui-toolbar-height, calc(var(--ui-safe-bottom) + 150px)) + 32px);
+  background: linear-gradient(to top, var(--screen-bg) calc(100% - 32px), color-mix(in srgb, var(--screen-bg) 0%, transparent));
 }
-/* iPhone SE and other short screens. */
+/* iPhone SE and other short screens: everything fits above the actions without scrolling. */
 .s-welcome--compact .ui-screen__large {
   padding-top: 0;
 }
@@ -115,7 +124,10 @@
   line-height: 44px;
 }
 .s-welcome--compact .s-welcome__hero {
-  padding: 6px 0 18px;
+  padding: 0 0 14px;
+}
+.s-welcome--compact .s-welcome__body {
+  padding-top: 16px;
 }
 .s-welcome--compact .s-features {
   gap: 14px;
@@ -402,6 +414,33 @@
   max-width: 320px;
   font: 400 15px/20px var(--font);
   color: var(--secondary-label);
+}
+
+/* The app icon as a Home Screen tile (AppIcon): the shadow follows its continuous corners. */
+.s-app-tile {
+  --app-tile-edge: transparent;
+  display: block;
+  flex-shrink: 0;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.16)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .s-app-tile {
+    --app-tile-edge: rgba(255, 255, 255, 0.2);
+  }
+}
+:root[data-theme="dark"] .s-app-tile {
+  --app-tile-edge: rgba(255, 255, 255, 0.2);
+}
+/* Until the image has loaded, the tile shows in the icon's own graphite. */
+.s-app-tile__fill {
+  fill: #232325;
+}
+/* A hairline just inside the edge (the clip keeps the inner half of the stroke). */
+.s-app-tile__edge {
+  fill: none;
+  stroke: var(--app-tile-edge);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
 }
 
 .s-app-icon {

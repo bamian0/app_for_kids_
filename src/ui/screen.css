@@ -111,8 +111,9 @@
   padding-top: calc(var(--ui-safe-top) + var(--nav-bar-height));
   padding-bottom: calc(var(--ui-safe-bottom) + 28px);
 }
+/* At max scroll the last row clears the floating toolbar (its height, safe area included, is measured by Screen). */
 .ui-screen__content--toolbar {
-  padding-bottom: calc(var(--ui-safe-bottom) + 104px);
+  padding-bottom: max(calc(var(--ui-safe-bottom) + 104px), calc(var(--ui-toolbar-height, 0px) + 28px));
 }
 
 .ui-screen__large {

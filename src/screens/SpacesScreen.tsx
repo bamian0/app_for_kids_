@@ -214,9 +214,6 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
         </span>
         <span className="s-space-card__score">
           <ScoreRing
-            // Remount when a score first arrives: the ring places its end cap only on mount or while it sweeps,
-            // so a first value of 0 would leave the cap drawn at the corner.
-            key={ring == null ? 'empty' : 'score'}
             value={ring}
             threshold={space.threshold}
             iridescent={iridescent}

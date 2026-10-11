@@ -1,4 +1,5 @@
 // Small presentational pieces shared by several screens.
+import { useId } from 'react'
 import type { ReactNode } from 'react'
 import { ActivityIndicator, Icon, ScoreRing, cx } from '../../ui/index.ts'
 import { formatScore } from './format.ts'
@@ -52,6 +53,51 @@ export function MiniScore({ value, threshold = 90, caption, iridescent = true }:
       </span>
       <ScoreRing key={value == null ? 'empty' : 'score'} value={value} threshold={threshold} iridescent={iridescent} size={40} stroke={5} aria-label={value == null ? 'No score' : formatScore(value)} />
     </span>
+  )
+}
+
+/** UIKit's continuous corner (top right, clockwise), as [inset from the right edge, down from the top] in corner radii. */
+const CORNER: Array<Array<[number, number]>> = [
+  [[1.08849323, 0], [0.86840689, 0.02221656], [0.66993427, 0.065496]],
+  [[0.63149399, 0.074911]],
+  [[0.37282392, 0.16905899], [0.16905899, 0.37282392], [0.074911, 0.63149399]],
+  [[0.065496, 0.66993427]],
+  [[0.02221656, 0.86840689], [0, 1.08849323], [0, 1.52866483]],
+]
+
+/** A square of side `s` with continuous ("squircle") corners of radius `r`, like an iOS app icon. */
+function squircle(s: number, r: number): string {
+  const at = (a: number, b: number, quarter: number) => {
+    let [x, y] = [s - a * r, b * r]
+    for (let i = 0; i < quarter; i++) [x, y] = [s - y, x] // a quarter turn clockwise about the center
+    return `${+x.toFixed(3)} ${+y.toFixed(3)}`
+  }
+  let d = `M${at(1.52866483, 0, 0)}`
+  for (let q = 0; q < 4; q++) {
+    d += `L${at(1.52866483, 0, q)}`
+    for (const seg of CORNER) d += (seg.length === 3 ? 'C' : 'L') + seg.map(([a, b]) => at(a, b, q)).join(' ')
+  }
+  return `${d}Z`
+}
+
+const TILE = squircle(100, 22.5)
+
+/** The app icon as the Home Screen draws it: continuous corners, a soft shadow, a hairline edge in dark mode. */
+export function AppIcon({ size, className }: { size: number; className?: string }) {
+  const clip = `${useId().replace(/:/g, '')}-tile`
+  return (
+    <svg className={cx('s-app-tile', className)} width={size} height={size} viewBox="0 0 100 100" aria-hidden>
+      <defs>
+        <clipPath id={clip}>
+          <path d={TILE} />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clip})`}>
+        <rect width="100" height="100" className="s-app-tile__fill" />
+        <image href="./icons/icon-512.png" width="100" height="100" preserveAspectRatio="xMidYMid slice" />
+        <path d={TILE} className="s-app-tile__edge" />
+      </g>
+    </svg>
   )
 }
 

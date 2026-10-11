@@ -61,7 +61,25 @@ export function Screen({
   const largeTitleRef = useRef<HTMLHeadingElement>(null)
   const materialRef = useRef<HTMLDivElement>(null)
   const barTitleRef = useRef<HTMLHeadingElement>(null)
+  const toolbarRef = useRef<HTMLDivElement>(null)
   const large = titleDisplay === 'large'
+  const hasToolbar = toolbar != null
+
+  // The content scrolls clear of the floating toolbar, however tall it is (two buttons and a note, a
+  // keyboard taking the home indicator's place): its measured height drives the bottom padding.
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const bar = toolbarRef.current
+    if (!root || !bar) return
+    const set = () => root.style.setProperty('--ui-toolbar-height', `${bar.offsetHeight}px`)
+    set()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(set)
+    ro?.observe(bar)
+    return () => {
+      ro?.disconnect()
+      root.style.removeProperty('--ui-toolbar-height')
+    }
+  }, [hasToolbar])
 
   const setTitle = page?.setTitle
   useEffect(() => {
@@ -71,7 +89,19 @@ export function Screen({
   useLayoutEffect(() => {
     const scroller = scrollEl.current
     if (!scroller) return
-    let titleHeight = largeTitleRef.current?.offsetHeight ?? 0
+    // Where the large title ends, from the top of the content: something may sit above it (an app icon).
+    // Layout offsets, so a pull's stretch or a sheet scaling the page doesn't skew it.
+    let titleEnd = 0
+    const measureTitle = () => {
+      const t = largeTitleRef.current
+      if (!t) return
+      const content = t.closest<HTMLElement>('.ui-screen__content')
+      titleEnd =
+        content && t.offsetParent === scroller
+          ? t.offsetTop + t.offsetHeight - content.offsetTop - parseFloat(getComputedStyle(content).paddingTop)
+          : t.offsetHeight
+    }
+    measureTitle()
     const opacity = new WeakMap<HTMLElement, string>()
     // Inline opacity on two elements only: a custom property here would restyle the whole screen per frame.
     const fade = (el: HTMLElement | null, value: number) => {
@@ -90,14 +120,17 @@ export function Screen({
       // iOS 26 scroll edge: content softens under the bar from the first pixels of scroll.
       fade(materialRef.current, y / 12)
       // The inline title fades in as the large title disappears under the bar's soft edge.
-      if (large) fade(barTitleRef.current, (y - (titleHeight - 12)) / 16)
+      if (large) fade(barTitleRef.current, (y - (titleEnd - 12)) / 16)
     }
 
     const ro = new ResizeObserver(() => {
-      titleHeight = largeTitleRef.current?.offsetHeight ?? 0
+      measureTitle()
       update()
     })
     if (largeTitleRef.current) ro.observe(largeTitleRef.current)
+    // Content appearing or going above the title moves it without resizing it, but resizes the content.
+    const content = largeTitleRef.current?.closest('.ui-screen__content')
+    if (content) ro.observe(content)
     update()
     scroller.addEventListener('scroll', update, { passive: true })
     return () => {
@@ -165,7 +198,7 @@ export function Screen({
         </div>
       </div>
       {toolbar != null && (
-        <div className={cx('ui-screen__toolbar', toolbarFullWidth && 'ui-screen__toolbar--full')}>
+        <div ref={toolbarRef} className={cx('ui-screen__toolbar', toolbarFullWidth && 'ui-screen__toolbar--full')}>
           {toolbarFullWidth ? <div className="ui-toolbar">{toolbar}</div> : <GlassSurface className="ui-toolbar">{toolbar}</GlassSurface>}
         </div>
       )}

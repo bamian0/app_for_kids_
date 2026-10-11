@@ -6,8 +6,9 @@ import { lookupInvite } from '../../data/api.ts'
 import { formatInviteCode } from '../../domain/ids.ts'
 import type { Invite } from '../../domain/types.ts'
 import { isStandalone } from '../../push/index.ts'
-import { Avatar, Button, Icon, ScoreRing, Screen, Section, useNav } from '../../ui/index.ts'
+import { Avatar, Button, Icon, Screen, Section, cx, useNav } from '../../ui/index.ts'
 import type { IconName } from '../../ui/index.ts'
+import { AppIcon } from '../components/Bits.tsx'
 import { peekPendingJoin } from '../components/pendingJoin.ts'
 import { StakesList } from '../components/Stakes.tsx'
 import { SignInScreen, SignUpScreen } from './AuthScreens.tsx'
@@ -60,7 +61,7 @@ export function WelcomeScreen() {
   const invite = usePendingInvite(code)
   // The installed app is where friends who signed up in Safari land: signing in comes first there.
   const installed = isStandalone()
-  // Short phones get a smaller hero so the features fit above the pinned actions.
+  // Short phones get a smaller icon and title so everything fits above the pinned actions.
   const compact = useShortScreen()
 
   const signUp = () => nav.push(<SignUpScreen />, { title: 'Create Account' })
@@ -80,7 +81,7 @@ export function WelcomeScreen() {
     <Screen
       title="Stakes"
       subtitle="Put something on the line."
-      className={compact ? 's-welcome s-welcome--compact' : 's-welcome'}
+      className={cx('s-welcome', !invite && 's-welcome--intro', compact && 's-welcome--compact')}
       toolbar={
         <div className="s-welcome__actions">
           {installed ? (
@@ -119,23 +120,25 @@ export function WelcomeScreen() {
           </Section>
         </>
       ) : (
-        <div className="s-welcome__body">
+        <>
+          {/* Shown above the title, like an Apple welcome screen (CSS order: the title stays first to read). */}
           <div className="s-welcome__hero">
-            {/* Graphite: the prism is kept for real moments (a reveal, a verdict, a real 90%). */}
-            <ScoreRing value={94} iridescent={false} size={compact ? 96 : 132} stroke={compact ? 11 : 14} delay={0.35} aria-label="94 percent, above the bar" />
+            <AppIcon size={compact ? 76 : 96} />
           </div>
-          <ul className="s-features">
-            <Feature icon="listBullet" title="Plan your week">
-              Every task is a promise. Your list locks Monday at midnight.
-            </Feature>
-            <Feature icon="person2" title="Friends grade you">
-              Every Friday, blind. Done, half, or not done.
-            </Feature>
-            <Feature icon="trophy" title="Hit 90% and they owe you">
-              Miss it and you pay up. Settled monthly.
-            </Feature>
-          </ul>
-        </div>
+          <div className="s-welcome__body">
+            <ul className="s-features">
+              <Feature icon="listBullet" title="Plan your week">
+                Every task is a promise. Your list locks Monday at midnight.
+              </Feature>
+              <Feature icon="person2" title="Friends grade you">
+                Every Friday, blind. Done, half, or not done.
+              </Feature>
+              <Feature icon="trophy" title="Hit 90% and they owe you">
+                Miss it and you pay up. Settled monthly.
+              </Feature>
+            </ul>
+          </div>
+        </>
       )}
     </Screen>
   )

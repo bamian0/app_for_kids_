@@ -75,9 +75,11 @@ export function ScoreRing({
   const glowOpacity = useTransform(progress, [threshold - 6, threshold + 2], [0, 1])
   const rounded = useTransform(progress, wholePercent)
 
-  // The end cap moves with the sweep; attributes are written directly, once per frame.
+  // The end cap moves with the sweep; attributes are written directly, once per frame. It is placed
+  // again whenever it mounts (a first value after null), or a 0 that never sweeps leaves it at the corner.
   const endCap = useRef<SVGCircleElement>(null)
   const endShadow = useRef<SVGCircleElement>(null)
+  const hasValue = value != null
   useLayoutEffect(() => {
     const place = (p: number) => {
       const turn = p / 100
@@ -94,7 +96,7 @@ export function ScoreRing({
     }
     place(progress.get())
     return progress.on('change', place)
-  }, [progress, c, r, met])
+  }, [progress, c, r, met, hasValue])
 
   const wedges = useMemo(() => {
     if (!met) return null

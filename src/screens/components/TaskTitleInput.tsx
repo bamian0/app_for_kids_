@@ -13,6 +13,7 @@ export interface TaskTitleInputProps {
   placeholder?: string
   enterKeyHint?: 'done' | 'next' | 'enter'
   disabled?: boolean
+  autoFocus?: boolean
   inputRef?: Ref<HTMLTextAreaElement>
   className?: string
   'aria-label'?: string
@@ -25,7 +26,7 @@ function fitHeight(el: HTMLTextAreaElement): void {
   el.style.height = `${el.scrollHeight}px`
 }
 
-export function TaskTitleInput({ value, onChange, onEnter, onFocus, onBlur, placeholder, enterKeyHint = 'done', disabled, inputRef, className, 'aria-label': ariaLabel }: TaskTitleInputProps) {
+export function TaskTitleInput({ value, onChange, onEnter, onFocus, onBlur, placeholder, enterKeyHint = 'done', disabled, autoFocus, inputRef, className, 'aria-label': ariaLabel }: TaskTitleInputProps) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
 
   useLayoutEffect(() => {
@@ -63,6 +64,7 @@ export function TaskTitleInput({ value, onChange, onEnter, onFocus, onBlur, plac
       enterKeyHint={enterKeyHint}
       autoCapitalize="sentences"
       disabled={disabled}
+      autoFocus={autoFocus}
       aria-label={ariaLabel}
       onChange={(e) => onChange(e.currentTarget.value.replace(/[\r\n]+/g, ' '))}
       onKeyDown={(e) => {

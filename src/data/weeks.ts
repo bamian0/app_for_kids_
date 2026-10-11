@@ -484,9 +484,10 @@ export async function setTaskDone(space: Space, weekId: WeekId, id: string, done
     // Ticking reads only what this device has, so it stays instant and works offline.
     const local = await localWeek(space, weekId, uid)
     const task = local.tasks && taskOf(local.tasks, id)
+    const taskDone = task && local.done ? isTaskDone(task, { ...local.done, [id]: done }) : undefined
     const earning = task ? earningId(space.id, weekId, task.id) : null
     const known = earning ? await knownEarning(uid, earning) : null
-    const change = task && known && local.done ? earnedAtChange(known.earned, isTaskDone(task, { ...local.done, [id]: done })) : undefined
+    const change = known && taskDone !== undefined ? earnedAtChange(known.earned, taskDone) : undefined
     if (change && earning) {
       const batch = writeBatch(getFirebase().db)
       batch.set(ref, progress, { merge: true })
@@ -500,15 +501,21 @@ export async function setTaskDone(space: Space, weekId: WeekId, id: string, done
       }
     }
     await setDoc(ref, progress, { merge: true })
-    if (!local.tasks || (known && !local.done) || known === undefined) settleLater(space.id, weekId, uid, id)
+    // Whatever this device couldn't tell is settled from the server afterwards.
+    if (earning && taskDone !== undefined && known === undefined) settleLater(space.id, weekId, uid, id, { earning, done: taskDone })
+    else if (!local.tasks || (task && known !== null && taskDone === undefined)) settleLater(space.id, weekId, uid, id)
   } catch (e) {
     throw humanError(e)
   }
 }
 
-/** When the device couldn't tell at tick time (nothing cached), the earning is put in step from the server. */
-function settleLater(spaceId: string, weekId: WeekId, uid: UID, id: string): void {
+/**
+ * Puts the task's earning in step from the server, in the background: only the earning when the
+ * device knew the task and whether it is done, else the plan and check-offs too.
+ */
+function settleLater(spaceId: string, weekId: WeekId, uid: UID, id: string, known?: { earning: string; done: boolean }): void {
   void inBackground(`${uid}|earning|${spaceId}|${weekId}`, async () => {
+    if (known) return settleEarning(uid, known.earning, known.done)
     const [plan, progress] = await Promise.all([getDoc(planRef(spaceId, weekId, uid)), getDoc(progressRef(spaceId, weekId, uid))])
     const task = plan.exists() ? taskOf(toPlan(plan).tasks, id) : undefined
     if (!task) return

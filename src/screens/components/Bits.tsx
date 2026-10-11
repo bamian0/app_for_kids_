@@ -1,8 +1,11 @@
 // Small presentational pieces shared by several screens.
 import { useId } from 'react'
-import type { ReactNode } from 'react'
-import { ActivityIndicator, Icon, ScoreRing, cx } from '../../ui/index.ts'
+import type { CSSProperties, ReactNode } from 'react'
+import { formatMoney } from '../../domain/money.ts'
+import type { CurrencyCode } from '../../domain/types.ts'
+import { ActivityIndicator, CheckCircle, Icon, ScoreRing, cx } from '../../ui/index.ts'
 import { formatScore } from './format.ts'
+import '../tasks.css'
 
 export { formatScore } from './format.ts'
 export { markLabel } from './marks.ts'
@@ -104,4 +107,89 @@ export function AppIcon({ size, className }: { size: number; className?: string 
 /** Free-form block inside a Section group, with the row hairline below it. */
 export function Block({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cx('s-block', className)}>{children}</div>
+}
+
+/** Where a plain task has its check circle, a task with steps has this: a ring that fills step by
+ *  step and turns solid with a tick once every step is done. */
+export function StepRing({ done, total, size = 24 }: { done: number; total: number; size?: number }) {
+  const fraction = total > 0 ? done / total : 0
+  return (
+    <span
+      className={cx('tk-ring', fraction === 1 && 'is-complete', fraction === 0 && 'is-empty')}
+      role="img"
+      aria-label={`${done} of ${total} steps done`}
+      style={{ '--ring-size': `${size}px` } as CSSProperties}
+    >
+      <svg viewBox="0 0 24 24" className="tk-ring__svg" aria-hidden>
+        <circle className="tk-ring__track" cx="12" cy="12" r="10.75" />
+        <circle className="tk-ring__arc" cx="12" cy="12" r="10.75" pathLength={1} style={{ strokeDashoffset: 1 - fraction }} />
+        <circle className="tk-ring__fill" cx="12" cy="12" r="11.5" />
+        <path className="tk-ring__tick" d="M7.4 12.3l3.15 3.15 6.05-6.7" pathLength={1} />
+      </svg>
+    </span>
+  )
+}
+
+/** Small label beside a task: "Added Wed", or the amount a revenue task brings in. */
+export function TaskBadge({ icon, strong, children }: { icon?: 'banknote' | 'plusCircle'; strong?: boolean; children: ReactNode }) {
+  return (
+    <span className={cx('tk-badge', strong && 'tk-badge--strong')}>
+      {icon && <Icon name={icon} size={14} weight={1.8} />}
+      <span className="t-tabular">{children}</span>
+    </span>
+  )
+}
+
+/** Your revenue task's amount (only you see it); stronger once the task is done and the money earned. */
+export function AmountBadge({ amount, currency, earned }: { amount: number; currency: CurrencyCode; earned: boolean }) {
+  return (
+    <TaskBadge icon="banknote" strong={earned}>
+      {amount > 0 ? formatMoney(amount, currency) : 'Revenue'}
+    </TaskBadge>
+  )
+}
+
+export interface StepItem {
+  id: string
+  title: string
+  done: boolean
+}
+
+export interface StepListProps {
+  steps: StepItem[]
+  /** check: your own steps, ticked one by one. bullet: before the week starts. dots: progress, read only. */
+  mode: 'check' | 'bullet' | 'dots'
+  onToggle?: (id: string, done: boolean) => void
+  /** A tap on a step opens its task. */
+  onOpen?: () => void
+  /** Whose check-offs the dots show, for VoiceOver ("Checked off by Lena"). */
+  owner?: string
+}
+
+/** A task's steps, indented under its title like subtasks in Reminders. */
+export function StepList({ steps, mode, onToggle, onOpen, owner }: StepListProps) {
+  return (
+    <div className={cx('tk-steps', `tk-steps--${mode}`)} role="list">
+      {steps.map((step) => {
+        let lead: ReactNode
+        if (mode === 'check') lead = <CheckCircle size={20} checked={step.done} onChange={(v) => onToggle?.(step.id, v)} aria-label={step.title} />
+        else if (mode === 'dots') lead = <CheckDot done={step.done} label={owner ? `${step.done ? 'Checked off' : 'Not checked off'} by ${owner}` : undefined} />
+        else lead = <span className="tk-step__bullet" aria-hidden />
+        return (
+          <div key={step.id} className={cx('tk-step', step.done && mode !== 'bullet' && 'is-done')} role="listitem">
+            <span className="tk-step__lead">{lead}</span>
+            {onOpen ? (
+              <button type="button" className="tk-step__main" onClick={onOpen}>
+                <span className="tk-step__title">{step.title}</span>
+              </button>
+            ) : (
+              <span className="tk-step__main">
+                <span className="tk-step__title">{step.title}</span>
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
 }

@@ -71,6 +71,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Icon and text as children (the back button's chevron and title): one centered row. As inline
+   content the chevron sat on the text baseline, a few points above the title's middle. Plain text
+   labels stay inline so their ellipsis keeps working. */
+.ui-glass-button__label:has(> .ui-icon) {
+  display: inline-flex;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+}
 
 .ui-glass-button--small {
   height: 36px;

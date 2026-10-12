@@ -1,0 +1,448 @@
+/* Overview and Goals: money, goals and the week at a glance. Tokens come from the design system. */
+
+:root {
+  /* Earlier weeks in the earnings chart: a quiet gray that still clears 3:1 on the card. */
+  --chart-muted: #8e8e93;
+}
+
+/* ---------- Shared ---------- */
+
+/* Free-form blocks inside a group get the row hairline below them, except the last one. */
+.m-week-hero,
+.m-earned,
+.m-chart-block,
+.m-note,
+.m-ask,
+.m-goal,
+.m-goal-progress {
+  position: relative;
+}
+.m-week-hero::after,
+.m-earned::after,
+.m-chart-block::after,
+.m-note::after,
+.m-ask::after,
+.m-goal::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: bottom;
+  pointer-events: none;
+}
+.ui-section__group > .m-note:last-child::after,
+.ui-section__group > .m-week-hero:last-child::after,
+.ui-section__group > .m-chart-block:last-child::after,
+.ui-section__group > :last-child > .m-goal::after,
+.ui-section__group > .m-goal:last-child::after {
+  display: none;
+}
+
+/* An explanation in place of content that isn't there yet. */
+.m-note,
+.m-ask {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 24px 28px 22px;
+  text-align: center;
+}
+.m-note__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+}
+.m-note__title {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+}
+.m-note__text {
+  max-width: 300px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.m-ask__title {
+  max-width: 280px;
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.017em;
+}
+
+.m-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.m-status .ui-icon {
+  flex-shrink: 0;
+}
+
+.m-amount {
+  color: var(--label);
+  font-variant-numeric: tabular-nums;
+}
+.m-amount.is-muted {
+  color: var(--secondary-label);
+}
+
+.m-form-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -12px calc(var(--gutter) + var(--ui-safe-right)) 30px calc(var(--gutter) + var(--ui-safe-left));
+}
+
+/* ---------- Overview: this week ---------- */
+
+.m-week-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 20px 16px 20px;
+  text-align: center;
+}
+/* The ring's number, set like the month hero's. */
+.m-week-hero__value {
+  display: inline-flex;
+  align-items: baseline;
+  font: 700 34px/1 var(--font-rounded);
+  letter-spacing: -0.02em;
+  color: var(--label);
+}
+.m-week-hero__value.is-empty {
+  color: var(--tertiary-label);
+}
+.m-week-hero__percent {
+  margin-left: 1px;
+  font-size: 0.55em;
+  font-weight: 600;
+  color: var(--secondary-label);
+}
+.m-week-hero__caption {
+  margin-top: 4px;
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+}
+.m-week-hero__note {
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Overview: money ---------- */
+
+.m-earned {
+  padding: 16px 16px 18px;
+}
+.m-earned__label {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.m-earned__value {
+  margin-top: 2px;
+  font: 700 36px/42px var(--font);
+  letter-spacing: -0.024em;
+  overflow-wrap: anywhere;
+}
+.m-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.m-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.m-stat__label {
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.m-stat__value {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-chart-block {
+  padding: 14px 16px 8px;
+}
+.m-chart-block__title {
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+.m-chart {
+  position: relative;
+  width: 100%;
+}
+.m-chart__svg {
+  display: block;
+  overflow: visible;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+}
+.m-chart__svg:focus-visible {
+  outline: 2px solid var(--label);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.m-chart__svg text {
+  font: 500 11px/13px var(--font);
+  font-variant-numeric: tabular-nums;
+  fill: var(--secondary-label);
+}
+.m-chart__grid line {
+  stroke: var(--tertiary-system-fill);
+  stroke-width: 1;
+}
+.m-chart__baseline {
+  stroke: var(--separator);
+  stroke-width: 1;
+}
+.m-chart__bar {
+  fill: var(--chart-muted);
+  transition: fill 0.2s ease;
+}
+.m-chart__week.is-selected:not(.is-current) .m-chart__bar {
+  fill: color-mix(in srgb, var(--label) 62%, var(--chart-muted));
+}
+.m-chart__week.is-current .m-chart__bar {
+  fill: var(--label);
+}
+.m-chart__svg .m-chart__value {
+  font: 600 13px/16px var(--font);
+  fill: var(--label);
+}
+.m-chart__svg .is-selected .m-chart__label {
+  font-weight: 600;
+  fill: var(--label);
+}
+
+.m-subhead {
+  padding: 14px 16px 0;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Goals: balance ---------- */
+
+.m-balance {
+  margin: 0 calc(var(--gutter) + var(--ui-safe-right)) 30px calc(var(--gutter) + var(--ui-safe-left));
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-group);
+  background: var(--secondary-system-grouped-background);
+  box-shadow: var(--card-shadow);
+}
+.m-balance__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+}
+.m-balance__label {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+/* A 30pt glyph on a 44pt target, tucked into the card's corner. */
+.m-balance__menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: -7px -10px -7px 0;
+  color: var(--label);
+}
+.m-balance__menu::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  transition: transform 0.25s var(--ease-out);
+}
+.m-balance__menu:active::before {
+  transform: scale(0.9);
+}
+.m-balance__menu svg {
+  position: relative;
+}
+.m-balance__value {
+  margin-top: 2px;
+  font: 700 44px/52px var(--font);
+  letter-spacing: -0.026em;
+  overflow-wrap: anywhere;
+}
+.m-balance__value.is-negative {
+  color: var(--system-red);
+}
+.m-balance__earned {
+  margin-top: 2px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.m-balance__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+/* Two to a row on a 375pt phone: "Remove Money" fits whole. */
+.m-balance__actions .ui-button {
+  padding: 0 10px;
+}
+
+/* ---------- Goals: list ---------- */
+
+.m-goal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 12px 15px 16px;
+  text-align: left;
+  transition: background-color 0.4s ease;
+}
+.m-goal[data-pressed] {
+  background: var(--row-highlight);
+  transition: none;
+}
+.m-goal__main {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+}
+.m-goal__top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.m-goal__name {
+  flex: 1;
+  min-width: 0;
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  overflow-wrap: anywhere;
+}
+.m-goal__cost {
+  flex-shrink: 0;
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  color: var(--secondary-label);
+}
+.m-goal__bar.ui-progress,
+.m-goal-progress .ui-progress {
+  height: 6px;
+  border-radius: 3px;
+}
+.m-goal__line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: -2px;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.m-goal__line.is-funded {
+  /* The check is cut out of the filled circle in the card's own color, light or dark. */
+  --icon-knockout: var(--secondary-system-grouped-background);
+  font-weight: 600;
+  color: var(--label);
+}
+.m-goal__chevron {
+  flex-shrink: 0;
+  color: var(--tertiary-label);
+}
+
+.m-goal-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 16px;
+}
+.m-goal-progress__numbers {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+.m-goal-progress__funded {
+  font: 700 28px/34px var(--font);
+  letter-spacing: -0.02em;
+}
+.m-goal-progress__of {
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+}
+.m-goal-progress__line {
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Goals: activity ---------- */
+
+.m-activity-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+}
+/* Swiped rows slide over the red Delete, so they need the group's own background. */
+.m-activity .s-swipe__content {
+  background: var(--secondary-system-grouped-background);
+}
+.m-activity .ui-section__group > :last-child .ui-row__main::after {
+  display: none;
+}
+
+/* ---------- Currency picker ---------- */
+
+.m-symbol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+  font: 600 15px/1 var(--font);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+/* Currencies without a sign of their own show their code ("CHF"). */
+.m-symbol.is-long {
+  font-size: 10px;
+  letter-spacing: -0.01em;
+}
+
+/* A text field in the same group as an amount lines up with it on the right, like a Settings form. */
+.m-field-end .ui-field__input {
+  text-align: right;
+}

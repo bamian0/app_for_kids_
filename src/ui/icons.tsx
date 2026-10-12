@@ -329,8 +329,9 @@ const ICONS = {
     body: (
       <>
         <rect x="2.75" y="6.25" width="18.5" height="11.5" rx="2.5" />
-        <circle cx="12" cy="12" r="2.6" />
-        <path d="M6 9.25v5.5M18 9.25v5.5" />
+        <circle cx="12" cy="12" r="2.75" />
+        {/* Dots, not bars: at badge sizes bars beside the circle read as "IOI". */}
+        {[dot(6.5, 12, 1.05), dot(17.5, 12, 1.05)]}
       </>
     ),
   },

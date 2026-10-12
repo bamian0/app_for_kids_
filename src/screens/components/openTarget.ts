@@ -28,6 +28,11 @@ export function captureOpenParam(): void {
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
+/** Whether a notification is waiting to open its space (the app then starts on the Spaces tab). */
+export function hasOpenTarget(): boolean {
+  return target !== null
+}
+
 /** The target, cleared so it opens only once. */
 export function takeOpenTarget(): OpenTarget | null {
   const t = target

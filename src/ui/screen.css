@@ -116,6 +116,17 @@
   padding-bottom: max(calc(var(--ui-safe-bottom) + 104px), calc(var(--ui-toolbar-height, 0px) + 28px));
 }
 
+/* A tab's root screen scrolls clear of the floating tab bar (TabView sets the clearance; 0 elsewhere). */
+.ui-screen--root .ui-screen__content {
+  padding-bottom: max(calc(var(--ui-safe-bottom) + 28px), calc(var(--ui-tab-bar-clearance, 0px) + 24px));
+}
+.ui-screen--root .ui-screen__content--toolbar {
+  padding-bottom: max(calc(var(--ui-safe-bottom) + 104px), calc(var(--ui-toolbar-height, 0px) + 28px));
+}
+.ui-screen--root .ui-screen__toolbar {
+  padding-bottom: max(14px, calc(var(--ui-safe-bottom) - 4px), calc(var(--ui-tab-bar-clearance, 0px) + 10px));
+}
+
 .ui-screen__large {
   padding: 0 calc(16px + var(--ui-safe-right)) 14px calc(16px + var(--ui-safe-left));
   transform-origin: 0 50%;

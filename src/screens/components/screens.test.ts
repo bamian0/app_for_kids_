@@ -4,7 +4,7 @@ import type { MemberMonthResult, MemberWeekResult, WeekResult } from '../../doma
 import { monthCompleteAt, weekBounds } from '../../domain/time.ts'
 import type { Space, WeekData } from '../../domain/types.ts'
 import { formatScore, monthName, wholePercent } from './format.ts'
-import { summarizeMarks } from './marks.ts'
+import { addedLabel, stepCount, summarizeMarks, weekdayIn } from './marks.ts'
 import { canSettle, defaultMonth, freshVerdictMonth, settleHint, verdictStatus, verdictText } from './month.ts'
 import { personOf } from './people.ts'
 import { spaceStatus } from './status.ts'
@@ -67,6 +67,20 @@ describe('summarizeMarks', () => {
     expect(summarizeMarks([['b', 1], ['c', 1], ['d', 1], ['e', 1], ['a', 1]], 'a', who)).toBe('All 5: Done')
     expect(summarizeMarks([['b', 1], ['c', 1], ['d', 0.5], ['e', 1], ['a', 0.5]], 'a', who)).toBe('You: Half · 3 Done · 2 Half')
     expect(summarizeMarks([['b', 0], ['c', 1], ['d', 0.5]], 'a', who)).toBe('1 Done · 1 Half · 1 Not done')
+  })
+})
+
+describe('task badges', () => {
+  it('names the day a task was added on the space’s clock', () => {
+    // Wednesday 23:30 in Rome is already Thursday in Tokyo.
+    const wed = Date.parse('2026-10-14T21:30:00Z')
+    expect(addedLabel(wed, ROME)).toBe('Added Wed')
+    expect(addedLabel(wed, 'Asia/Tokyo')).toBe('Added Thu')
+    expect(weekdayIn(wed, ROME, true)).toBe('Wednesday')
+  })
+  it('counts ticked steps', () => {
+    expect(stepCount([{ done: true }, { done: false }, { done: true }, { done: false }])).toBe('2/4')
+    expect(stepCount([{ done: false }])).toBe('0/1')
   })
 })
 

@@ -164,7 +164,14 @@ export function Screen({
   return (
     <div
       ref={rootRef}
-      className={cx('ui-screen', `ui-screen--${background}`, large ? 'ui-screen--large' : 'ui-screen--inline', className)}
+      className={cx(
+        'ui-screen',
+        `ui-screen--${background}`,
+        large ? 'ui-screen--large' : 'ui-screen--inline',
+        // A stack's root: inside a TabView it leaves room for the floating tab bar.
+        page?.index === 0 && 'ui-screen--root',
+        className,
+      )}
       style={style}
     >
       <header

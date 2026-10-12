@@ -10,7 +10,7 @@ import { earningId } from '../../domain/money.ts'
 import { addedAfterLock, isTaskDone } from '../../domain/scoring.ts'
 import { weekBounds } from '../../domain/time.ts'
 import type { Space, Subtask, Task, WeekId } from '../../domain/types.ts'
-import { ActivityIndicator, Button, GlassButton, Icon, Row, Screen, Section, haptic, transitionFor, useAlert, useToast } from '../../ui/index.ts'
+import { Button, GlassButton, Icon, Row, Screen, Section, haptic, transitionFor, useAlert, useToast } from '../../ui/index.ts'
 import { CheckDot, ErrorText, TaskBadge } from './Bits.tsx'
 import { useNow } from './clock.ts'
 import { addedLabel, weekdayIn } from './marks.ts'
@@ -146,7 +146,7 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
 
   let titleFooter = error ? <ErrorText>{error}</ErrorText> : undefined
   if (!error && mode.kind === 'add') {
-    titleFooter = <>It’s added to this week’s list. Friends see it was added on {weekdayIn(nowMs, space.timezone, true)}, and it can’t be edited or removed.</>
+    titleFooter = <>The task joins this week’s list and gets reviewed on Friday. Friends see it was added on {weekdayIn(nowMs, space.timezone, true)}. Once added, it can’t be edited or removed.</>
   } else if (!error && mode.kind === 'locked') {
     titleFooter = <>Your list is locked, so only the revenue can change.</>
   }
@@ -266,7 +266,7 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
                   <Icon name="plus" size={20} weight={2.2} />
                 </span>
               }
-              title={steps.length === 0 ? 'Add a Step' : 'Add Another Step'}
+              title="Add Step"
               action
               onPress={() => addStep()}
             />
@@ -323,11 +323,6 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
         </Section>
       )}
 
-      {busy && mode.kind !== 'add' && (
-        <div className="s-center-pad">
-          <ActivityIndicator color="var(--secondary-label)" label="Saving" />
-        </div>
-      )}
     </Screen>
   )
 }

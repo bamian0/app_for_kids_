@@ -47,7 +47,7 @@ export function MoneyField({ value, onChange, currency, label, placeholder = '0'
           <span className="tk-money__sizer" data-text={text || placeholder}>
             <input
               id={id}
-              className="tk-money__input t-tabular"
+              className="tk-money__input"
               type="text"
               inputMode="decimal"
               enterKeyHint="done"

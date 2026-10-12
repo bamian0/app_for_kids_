@@ -19,6 +19,9 @@ export interface NavApi {
   popToRoot: () => void
   /** Number of screens above the root (0 at root). */
   depth: number
+  /** Where the stack is heading: a pop lowers it as the pop starts rather than once it lands, so
+   *  chrome like the tab bar can come back alongside the pop. */
+  toDepth: number
   canGoBack: boolean
 }
 
@@ -75,6 +78,8 @@ export interface NavigationStackProps {
 export function NavigationStack({ root, rootTitle, className }: NavigationStackProps) {
   const [entries, setEntries] = useState<Entry[]>(() => [{ key: 0, element: null, title: rootTitle }])
   const [titles, setTitles] = useState<Record<number, string>>({})
+  // A pop is under way (its animation running, or a swipe let go past the point of no return).
+  const [popping, setPopping] = useState(false)
   const entriesRef = useRef(entries)
   entriesRef.current = entries
 
@@ -159,6 +164,7 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
 
   const commitPop = useCallback(() => {
     pending.current = 'settle'
+    setPopping(false)
     setEntries((list) => (list.length > 1 ? list.slice(0, -1) : list))
   }, [])
 
@@ -177,6 +183,7 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
     settleNow()
     if (entriesRef.current.length < 2) return
     fade.current = prefersReducedMotion()
+    setPopping(true)
     animateTo(1, 0, commitPop)
   }, [animateTo, commitPop, settleNow])
 
@@ -185,6 +192,7 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
     const list = entriesRef.current
     if (list.length < 2) return
     fade.current = prefersReducedMotion()
+    setPopping(true)
     if (list.length === 2) {
       animateTo(1, 0, commitPop)
       return
@@ -243,6 +251,8 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
       blurFocusedField()
       anim.current?.stop()
       anim.current = null
+      // A pop caught mid-way by the finger is no longer a pop until it is let go.
+      setPopping(false)
       fade.current = false
       g.p0 = progress.current
       g.x0 = e.clientX
@@ -267,8 +277,10 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
     const v = tracker.current.velocity() / width
     const p = progress.current
     const commit = !cancelled && (v > 0.9 || (p > 0.5 && v > -0.4))
-    if (commit) animateTo(1, Math.max(v, 0), commitPop)
-    else animateTo(0, Math.min(v, 0))
+    if (commit) {
+      setPopping(true)
+      animateTo(1, Math.max(v, 0), commitPop)
+    } else animateTo(0, Math.min(v, 0))
   }
 
   const top = entries.length - 1
@@ -279,8 +291,8 @@ export function NavigationStack({ root, rootTitle, className }: NavigationStackP
   }
 
   const navApi = useMemo<NavApi>(
-    () => ({ push, pop, popToRoot, depth: entries.length - 1, canGoBack: entries.length > 1 }),
-    [push, pop, popToRoot, entries.length],
+    () => ({ push, pop, popToRoot, depth: entries.length - 1, toDepth: Math.max(0, entries.length - (popping ? 2 : 1)), canGoBack: entries.length > 1 }),
+    [push, pop, popToRoot, entries.length, popping],
   )
 
   const setTitleFor = useCallback((key: number, title: string) => {

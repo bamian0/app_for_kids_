@@ -49,12 +49,12 @@ An in-memory stack, like UINavigationController, with no URL routes:
 | `rootTitle?` | string | Back label for screens pushed from root. Defaults to the root `Screen` title. |
 
 ```tsx
-const nav = useNav()  // { push, pop, popToRoot, depth, canGoBack }
+const nav = useNav()  // { push, pop, popToRoot, depth, toDepth, canGoBack }
 nav.push(<SpaceScreen spaceId={id} />, { title: 'Film Crew' })
 nav.pop()
 nav.popToRoot()
 ```
-`push(element, { title })`: `title` is used for the *next* screen's back button. A `<Screen title>` inside the pushed element overrides it automatically. `useNav()` throws outside a stack. Sheets start a fresh navigation context, so put a `NavigationStack` inside a sheet if the flow has steps.
+`push(element, { title })`: `title` is used for the *next* screen's back button. A `<Screen title>` inside the pushed element overrides it automatically. `toDepth` is where the stack is heading: it drops as a pop starts (so chrome like the tab bar can return alongside it), while `depth` follows the mounted screens. `useNav()` throws outside a stack. Sheets start a fresh navigation context, so put a `NavigationStack` inside a sheet if the flow has steps.
 
 ### `Screen`
 The scroll view plus nav bar. iOS 26 style: there is no opaque bar and no hairline. From the first pixels of scroll, content passing under the floating bar buttons softens into a blurred fade of the page color (the "soft scroll edge"), and the large title slides under it while the centered inline title fades in. Pulling down stretches the large title slightly. Tapping the bar scrolls to top.
@@ -84,6 +84,26 @@ The scroll view plus nav bar. iOS 26 style: there is no opaque bar and no hairli
   <Section>…</Section>
 </Screen>
 ```
+
+### `TabView` + `useTabBar()`
+UITabBarController: one `NavigationStack` per tab under an iOS 26 floating glass tab bar (a capsule above the home indicator, icon over a small label, the selected tab on a soft pill that springs between items).
+- Every tab's stack stays mounted, so screens, state and scroll positions survive switching; inactive tabs aren't drawn or reachable.
+- Tapping the selected tab pops its stack to the root, or at the root scrolls it to the top.
+- The bar slides away while the keyboard is up and while the active tab has a screen pushed on its root (like `hidesBottomBarWhenPushed`). Sheets and alerts cover it.
+- Root screens (`<Screen>` at the bottom of a stack) scroll clear of it on their own; nothing to add.
+- `role="tablist"` with arrow-key navigation; Reduce Motion fades instead of sliding.
+
+| prop | type | notes |
+|---|---|---|
+| `tabs` | `{ id, title, icon, root }[]` | `root` is the tab's root screen |
+| `selected`, `onSelect` | | Controlled; persist the choice if the app should reopen on it |
+
+```tsx
+<TabView tabs={[{ id: 'home', title: 'Home', icon: 'squareStack', root: <HomeScreen /> }, …]} selected={tab} onSelect={setTab} />
+const tabs = useTabBar()  // { selected, select } or null outside a TabView
+tabs?.select('goals')
+```
+`TabBar` is the capsule alone (`items`, `selected`, `onSelect`, `hidden`).
 
 ---
 
@@ -269,7 +289,7 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 ## Icons
 `<Icon name="gear" size={22} weight? title? />` renders an SF Symbols-style inline SVG in `currentColor`.
 
-Names: chevronLeft, chevronRight, chevronDown, plus, minus, xmark, checkmark, person, person2, gear, bell, bellSlash, lock, lockOpen, share, ellipsis, link, calendar, trophy, flame, clock, arrowUpRight, trash, info, addToHomeScreen, copy, envelope, signOut, listBullet, pencil, sparkles, halfCircle, xmarkCircleFill, checkmarkCircleFill. `iconNames` lists them; `IconName` is the type.
+Names: chevronLeft, chevronRight, chevronDown, plus, minus, xmark, checkmark, person, person2, gear, bell, bellSlash, lock, lockOpen, share, ellipsis, link, calendar, trophy, flame, clock, arrowUpRight, trash, info, addToHomeScreen, copy, envelope, signOut, listBullet, pencil, sparkles, halfCircle, xmarkCircleFill, checkmarkCircleFill, chevronUp, arrowUp, arrowDown, plusCircle, minusCircle, squareStack, chartBar, target, banknote, listIndent, bag. `iconNames` lists them; `IconName` is the type.
 
 ## Motion, haptics, accessibility
 - `springs.navigation | sheet | snappy | banner | bouncy` are motion spring options (`banner` settles with no visible bounce; `bouncy` is only for check-offs and badges): `<motion.div transition={springs.snappy} />`. `transitionFor(name)` returns a short fade instead when the user prefers reduced motion.

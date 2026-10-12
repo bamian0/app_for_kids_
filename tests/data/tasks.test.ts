@@ -309,3 +309,33 @@ describe('check-offs keep the task’s earning in step', () => {
     await rejectsWith(setTaskRevenue(space, W, { id: 'q1', title: 'x' }, 2_000_000_000, false), 'That amount is too large.')
   })
 })
+
+describe('a full list of steps', () => {
+  const W = '2026-08-10'
+
+  it('makes room for the last tick by clearing ticks of deleted tasks', async () => {
+    // 25 tasks × 8 steps = 200 step ids, the cap of a progress doc.
+    const tasks = Array.from({ length: 25 }, (_, t) => ({ id: `t${t}`, title: `Task ${t}`, subs: Array.from({ length: 8 }, (_, s) => `t${t}s${s}|Step ${s}`) }))
+    const steps = tasks.flatMap((t) => t.subs.map((line) => line.slice(0, line.indexOf('|'))))
+    // Every step but the last is ticked, plus one tick left by a task deleted on Monday.
+    const done = Object.fromEntries([...steps.slice(0, -1).map((id) => [id, true]), ['gone', true]])
+    await seed({
+      [weekPath(W)]: weekDoc('active', [alex.uid, sam.uid]),
+      [`${weekPath(W)}/plans/${alex.uid}`]: { tasks, updatedAt: ts(Date.now() - 3 * DAY) },
+      [`${weekPath(W)}/progress/${alex.uid}`]: { done, updatedAt: ts(Date.now() - DAY) },
+    })
+    await as(alex)
+    const release = watch(weekKey(alex.uid, space.id, W), startWeek(space.id, W, alex.uid), () => {})
+    try {
+      await eventually(() => peek<{ progress: Record<string, unknown> }>(weekKey(alex.uid, space.id, W)).data?.progress[alex.uid] !== undefined)
+      await setTaskDone(space, W, steps[steps.length - 1], true)
+      const stored = (await adminGet(`${weekPath(W)}/progress/${alex.uid}`))?.done as Record<string, boolean>
+      expect(Object.keys(stored)).toHaveLength(200)
+      expect(stored.gone).toBeUndefined()
+      expect(steps.every((id) => stored[id] === true)).toBe(true)
+    } finally {
+      release()
+      forget(weekKey(alex.uid, space.id, W))
+    }
+  })
+})

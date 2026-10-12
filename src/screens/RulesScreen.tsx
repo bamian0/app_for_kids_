@@ -24,8 +24,14 @@ export function RulesScreen({ timezone }: { timezone?: string }) {
         <Rule icon="listBullet" title="Plan">
           List what you’ll get done this week. Your list locks Monday at midnight. Plan next week any time.
         </Rule>
+        <Rule icon="listIndent" title="Steps">
+          Break a task into up to 8 steps and tick them off one by one. The task is done once every step is. Friends review it as one task.
+        </Rule>
         <Rule icon="checkmark" title="Do">
           Tick tasks off as you finish them. Everyone in the space can see your check-offs.
+        </Rule>
+        <Rule icon="plusCircle" title="Add">
+          After the lock, you can still add tasks until Thursday at midnight. Added tasks are final, show the day you added them, and are reviewed on Friday like the rest.
         </Rule>
         <Rule icon="person2" title="Review">
           On Friday, mark every friend’s tasks: Done, Half, or Not done. Reviews are blind, final, and due Friday at midnight.
@@ -38,6 +44,9 @@ export function RulesScreen({ timezone }: { timezone?: string }) {
         </Rule>
         <Rule icon="trophy" title="Pay up">
           Your month is the average of your weeks, minus late points. A week counts in the month its Friday falls in. Hit 90% and the others owe you the reward. Miss and you owe them the penalty. Settle it in real life, then mark it settled.
+        </Rule>
+        <Rule icon="banknote" title="Money">
+          Turn on Generates revenue for a task to count what it brings in toward your goals. Only you see amounts.
         </Rule>
       </Section>
     </Screen>

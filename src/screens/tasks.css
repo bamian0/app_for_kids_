@@ -16,38 +16,42 @@
 }
 .tk-money__symbol {
   flex-shrink: 0;
-  margin-right: 1px;
   font: 400 17px/22px var(--font);
   letter-spacing: -0.01em;
 }
 .tk-money__value.is-empty .tk-money__symbol {
   color: var(--tertiary-label);
 }
-/* The input is as wide as its text, so the symbol always sits right before the digits. */
+/* The input is as wide as its text, so the symbol always sits right before the digits: a hidden copy
+   of the text sizes the box and the input lies over it (an input's own width ignores its text). */
 .tk-money__sizer {
-  display: inline-grid;
+  position: relative;
+  display: block;
   min-width: 0;
   max-width: 100%;
 }
 .tk-money__sizer::after,
 .tk-money__input {
-  grid-area: 1 / 1;
+  /* Room for the caret after the last digit. */
+  padding: 0 2px 0 0;
   font: 400 17px/22px var(--font);
   letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
+  /* Proportional digits: a tabular 1 or 8 sits mid-cell and leaves a gap after the symbol ("$ 1,250"). */
 }
 .tk-money__sizer::after {
-  content: attr(data-text) " ";
+  content: attr(data-text);
+  display: block;
+  height: 22px;
   visibility: hidden;
   white-space: pre;
   overflow: hidden;
 }
 .tk-money__input {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  min-width: 1ch;
   height: 22px;
   margin: 0;
-  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -84,8 +88,8 @@
 }
 .tk-ring__track {
   fill: none;
-  stroke: var(--tertiary-label);
-  stroke-width: 1.5;
+  stroke: var(--system-fill);
+  stroke-width: 2.6;
 }
 .tk-ring__arc {
   fill: none;
@@ -123,6 +127,27 @@
 .tk-ring.is-complete .tk-ring__tick {
   stroke-dashoffset: 0;
   transition: stroke-dashoffset 0.3s cubic-bezier(0.55, 0, 0.35, 1) 0.32s;
+}
+/* Someone else's progress: gray, like their check dots. */
+.tk-ring--muted .tk-ring__arc,
+.tk-ring--muted .tk-ring__fill {
+  stroke: var(--system-gray);
+  fill: none;
+}
+.tk-ring--muted .tk-ring__fill {
+  fill: var(--system-gray);
+}
+.tk-ring--muted .tk-ring__tick {
+  stroke: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tk-ring__arc,
+  .tk-ring__fill,
+  .tk-ring__tick,
+  .tk-ring.is-complete .tk-ring__fill,
+  .tk-ring.is-complete .tk-ring__tick {
+    transition: none;
+  }
 }
 
 /* ---------- Badges ---------- */
@@ -178,12 +203,38 @@
 .tk-row__count {
   flex-shrink: 0;
   color: var(--secondary-label);
-  font: 400 15px/20px var(--font);
+  font: 400 15px/22px var(--font);
   font-variant-numeric: tabular-nums;
+}
+/* Tappable for details, like ⓘ in Reminders; the glyph itself is only a hint. */
+.tk-row__info {
+  display: flex;
+  flex-shrink: 0;
+  margin-right: -4px;
+  color: var(--secondary-label);
+}
+/* As in Reminders, the circle and the trailing bits stay on the title's first line, however much
+   wraps or sits under it (marks, badges). */
+.tk-row {
+  align-items: flex-start;
+}
+.tk-row > .ui-row__leading {
+  height: var(--row-min);
+}
+.tk-row.ui-row--subtitle > .ui-row__leading {
+  height: 38px;
+}
+.tk-row > .ui-row__main {
+  align-items: flex-start;
 }
 /* With steps, the steps block draws the separator below the whole task. */
 .tk-block--steps > .ui-row > .ui-row__main::after,
 .tk-block--steps .s-task__main::after {
+  display: none;
+}
+/* No hairline under the group's last task, however it is wrapped (swipe, shimmer). */
+.ui-section__group > :last-child .tk-row > .ui-row__main::after,
+.ui-section__group > :last-child .tk-steps::after {
   display: none;
 }
 
@@ -203,10 +254,6 @@
   background: var(--separator);
   transform: scaleY(0.5);
   transform-origin: bottom;
-}
-.ui-section__group > .tk-block:last-child .tk-steps::after,
-.ui-section__group > :last-child > .tk-block:last-child .tk-steps::after {
-  display: none;
 }
 .tk-step {
   position: relative;
@@ -294,9 +341,6 @@ button.tk-step__main {
   letter-spacing: -0.006em;
   color: var(--secondary-label);
 }
-.tk-steps--dots .tk-step.is-done .tk-step__main {
-  color: var(--label);
-}
 .tk-step__bullet {
   width: 6px;
   height: 6px;
@@ -320,6 +364,9 @@ button.tk-step__main {
   flex-direction: column;
   flex: 1;
   min-width: 0;
+}
+.tk-task-body .s-title-input {
+  flex: none;
 }
 .tk-task-count {
   flex-shrink: 0;
@@ -394,4 +441,24 @@ button.tk-step__main {
 
 .tk-amount-row {
   overflow: hidden;
+}
+
+/* ---------- Review sheet ---------- */
+
+.s-review-task .tk-steps {
+  --tk-indent: 0px;
+  margin: -2px 0 4px;
+  padding-bottom: 0;
+}
+.s-review-task .tk-steps::after {
+  display: none;
+}
+.s-review-task .tk-steps .tk-step {
+  padding-right: 0;
+}
+.tk-hint-text {
+  min-width: 0;
+}
+.s-review-task__hint .tk-badge {
+  margin-left: 2px;
 }

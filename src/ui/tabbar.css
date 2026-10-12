@@ -1,0 +1,170 @@
+/* Tab view: one stack per tab, and the floating glass tab bar of iOS 26. */
+
+.ui-tabs {
+  --tab-bar-height: 62px;
+  --tab-bar-bottom: max(14px, calc(var(--ui-safe-bottom) - 4px));
+  /* How far the bar reaches up from the bottom edge. Root screens scroll clear of it (screen.css). */
+  --ui-tab-bar-clearance: calc(var(--tab-bar-bottom) + var(--tab-bar-height));
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* The bar's z-index stays inside, so alerts and sheets above the app still cover it. */
+  isolation: isolate;
+}
+/* The bar steps aside for the keyboard, so nothing needs to clear it. */
+:root[data-keyboard] .ui-tabs {
+  --ui-tab-bar-clearance: 0px;
+}
+
+/* Inactive tabs stay mounted (state and scroll positions survive) but aren't drawn or reachable. */
+.ui-tabs__panel {
+  position: absolute;
+  inset: 0;
+}
+.ui-tabs__panel:not(.is-active) {
+  opacity: 0;
+  pointer-events: none;
+  content-visibility: hidden;
+}
+
+/* ---------- Tab bar ---------- */
+
+.ui-tab-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  padding: 0 calc(16px + var(--ui-safe-right)) var(--tab-bar-bottom) calc(16px + var(--ui-safe-left));
+  pointer-events: none;
+  transition:
+    transform 0.5s var(--ease-out),
+    opacity 0.3s ease,
+    visibility 0s;
+}
+/* Scroll edge: content fades into the page color under the bar, like under a floating toolbar. */
+.ui-tab-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--ui-safe-bottom) + 96px);
+  background: linear-gradient(to top, var(--system-grouped-background) 18%, color-mix(in srgb, var(--system-grouped-background) 0%, transparent));
+  pointer-events: none;
+}
+
+/* A screen pushed on top of the tab's root, or the keyboard: the bar slides down and away. */
+.ui-tab-bar[data-hidden] {
+  transform: translateY(calc(100% + 12px));
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    transform 0.4s var(--ease-out),
+    opacity 0.2s ease,
+    visibility 0s linear 0.4s;
+}
+:root[data-keyboard] .ui-tab-bar {
+  transform: translateY(calc(100% + 12px));
+  opacity: 0;
+  visibility: hidden;
+  transition: none;
+}
+
+.ui-tab-bar__capsule {
+  max-width: 100%;
+  padding: 4px;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.ui-tab-bar__items {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  height: calc(var(--tab-bar-height) - 8px);
+}
+
+/* The selected tab sits on a soft pill that springs from tab to tab. */
+.ui-tab-bar__pill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 999px;
+  background: var(--tab-bar-pill);
+  pointer-events: none;
+}
+
+.ui-tab-bar__item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 92px;
+  height: 100%;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--tab-bar-item);
+  transition: color 0.2s ease;
+}
+.ui-tab-bar__item.is-selected {
+  color: var(--label);
+}
+.ui-tab-bar__icon {
+  transition: transform 0.35s cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+.ui-tab-bar__item[data-pressed] .ui-tab-bar__icon {
+  transform: scale(0.88);
+  transition-duration: 0.15s;
+}
+.ui-tab-bar__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 10px/12px var(--font);
+  letter-spacing: 0.01em;
+}
+.ui-tab-bar__item.is-selected .ui-tab-bar__label {
+  font-weight: 600;
+}
+.ui-tab-bar__item:focus-visible {
+  outline-offset: -2px;
+}
+
+:root {
+  --tab-bar-item: color-mix(in srgb, var(--label) 70%, transparent);
+  --tab-bar-pill: rgba(120, 120, 128, 0.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tab-bar-item: color-mix(in srgb, var(--label) 72%, transparent);
+    --tab-bar-pill: rgba(255, 255, 255, 0.12);
+  }
+}
+:root[data-theme="dark"] {
+  --tab-bar-item: color-mix(in srgb, var(--label) 72%, transparent);
+  --tab-bar-pill: rgba(255, 255, 255, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-tab-bar {
+    transition:
+      opacity 0.2s ease,
+      visibility 0s;
+  }
+  .ui-tab-bar[data-hidden] {
+    transform: none;
+    transition:
+      opacity 0.2s ease,
+      visibility 0s linear 0.2s;
+  }
+  .ui-tab-bar__icon {
+    transition: none;
+  }
+}

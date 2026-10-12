@@ -2,6 +2,7 @@
 import {
   arrayUnion,
   collection,
+  deleteField,
   disableNetwork,
   doc,
   enableNetwork,
@@ -16,6 +17,7 @@ import {
   where,
   writeBatch,
   type DocumentSnapshot,
+  type FieldValue,
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
 import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
@@ -33,6 +35,8 @@ import { peek, type Emit, type Start } from './store.ts'
 import { encodeTask, oneLine, TASK_ID } from './tasks.ts'
 
 const MAX_TASKS = 25
+/** Keys a progress doc may hold (the rules' cap): 25 tasks × 8 steps. */
+const MAX_TICKS = 200
 /** Rules compare against server time; give the server a moment past deadlineAt before asking for everyone's reviews. */
 const REVEAL_GRACE_MS = 1_500
 /** After a denied full read (client clock ahead of the server), wait this long before trying again. */
@@ -395,6 +399,17 @@ async function localWeek(space: Space, weekId: WeekId, uid: UID): Promise<{ task
   }
 }
 
+/**
+ * Ticks left by tasks and steps deleted before the lock (and the own key of a task that has steps
+ * now), cleared only when a new tick would go over the cap: a full list of steps needs every key.
+ */
+function staleTicks(local: { tasks?: Task[]; done?: Record<string, boolean> }, id: string): Record<string, FieldValue> {
+  const { tasks, done } = local
+  if (!tasks || !done || Object.hasOwn(done, id) || Object.keys(done).length < MAX_TICKS) return {}
+  const live = new Set(tasks.flatMap((t) => (t.subtasks?.length ? t.subtasks.map((step) => step.id) : [t.id])))
+  return Object.fromEntries(Object.keys(done).filter((key) => !live.has(key)).map((key) => [key, deleteField()]))
+}
+
 /** The task a check-off id belongs to: the task itself or the task holding that step. */
 function taskOf(tasks: Task[], id: string): Task | undefined {
   return tasks.find((t) => t.id === id) ?? tasks.find((t) => t.subtasks?.some((step) => step.id === id))
@@ -480,9 +495,9 @@ export async function setTaskDone(space: Space, weekId: WeekId, id: string, done
     if (now() >= (await boundsOf(space, weekId)).deadlineAt) throw new Error(MSG.closed)
     if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
     const ref = progressRef(space.id, weekId, uid)
-    const progress = { done: { [id]: done }, updatedAt: serverTimestamp() }
     // Ticking reads only what this device has, so it stays instant and works offline.
     const local = await localWeek(space, weekId, uid)
+    const progress = { done: { ...staleTicks(local, id), [id]: done }, updatedAt: serverTimestamp() }
     const task = local.tasks && taskOf(local.tasks, id)
     const taskDone = task && local.done ? isTaskDone(task, { ...local.done, [id]: done }) : undefined
     const earning = task ? earningId(space.id, weekId, task.id) : null

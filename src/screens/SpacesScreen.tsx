@@ -6,7 +6,7 @@ import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, push
 import { computeMonth, computeWeek, joinedAfterLock } from '../domain/scoring.ts'
 import { addWeeks, monthIdForWeek, weekBounds, weekIdFor, weekPhase } from '../domain/time.ts'
 import type { Space, UID, WeekId } from '../domain/types.ts'
-import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useToast } from '../ui/index.ts'
+import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useTabBar, useToast } from '../ui/index.ts'
 import type { IconName } from '../ui/index.ts'
 import { usePress } from '../ui/press.ts'
 import { Loading } from './components/Bits.tsx'
@@ -38,6 +38,7 @@ export function SpacesScreen() {
   const [showInstall, setShowInstall] = useState(() => isIOS() && !isStandalone() && !readLocal(INSTALL_DISMISSED))
   const { push } = nav
   const { present } = sheet
+  const selectTab = useTabBar()?.select
 
   const openSpace = useCallback((id: string, title?: string) => push(<SpaceScreen spaceId={id} />, { title }), [push])
 
@@ -64,15 +65,20 @@ export function SpacesScreen() {
   )
 
   // An invite link that arrived before sign-in opens the join flow now; a notification opens its space.
+  // Either way on the Spaces tab, where the space will open.
   useEffect(() => {
     const code = takePendingJoin()
     if (code) {
+      selectTab?.('spaces')
       join(code)
       return
     }
     const target = takeOpenTarget()
-    if (target) push(<SpaceScreen spaceId={target.spaceId} initialTab={target.monthId ? 'month' : undefined} initialMonth={target.monthId ?? undefined} />)
-  }, [join, push])
+    if (target) {
+      selectTab?.('spaces')
+      push(<SpaceScreen spaceId={target.spaceId} initialTab={target.monthId ? 'month' : undefined} initialMonth={target.monthId ?? undefined} />)
+    }
+  }, [join, push, selectTab])
 
   const addMenu = async () => {
     const choice = await actionSheet({ actions: [{ label: 'New Space' }, { label: 'Join with Code' }] })

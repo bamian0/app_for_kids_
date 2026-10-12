@@ -6,16 +6,11 @@
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test"
 // Screenshots (light and dark) of every step go to $E2E_SCREENSHOTS when it is set, plus light
 // screenshots at the widths in $E2E_WIDTHS (e.g. "375,430").
-import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { addMonths, monthIdForWeek, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { db, resetEmulators, setPlan, setProgress, setReview, setWeek, ts, uidOf, weekDoc, type SeedTask } from './emulator.ts'
-import { iPhone } from './device.ts'
+import { edgeGlows, phone, score, sheet, shown, snap } from './helpers.ts'
 
-const SHOTS = process.env.E2E_SCREENSHOTS
-const WIDTHS = (process.env.E2E_WIDTHS ?? '')
-  .split(',')
-  .map(Number)
-  .filter((w) => w > 0)
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
 
@@ -41,53 +36,6 @@ const LENA_NOW: SeedTask[] = [
 function pct(score: number): string {
   return `${Math.floor(score + 1e-6)}%`
 }
-
-async function phone(browser: Browser): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
-  const context = await browser.newContext(iPhone)
-  // Counts every mount of the Siri-style edge glow (it is gone again a few seconds later).
-  await context.addInitScript(() => {
-    const w = window as unknown as { __edgeGlows: number }
-    w.__edgeGlows = 0
-    new MutationObserver((records) => {
-      for (const r of records)
-        r.addedNodes.forEach((node) => {
-          if (node instanceof Element && (node.matches('.ui-edge-glow') || node.querySelector('.ui-edge-glow'))) w.__edgeGlows++
-        })
-    }).observe(document, { childList: true, subtree: true })
-  })
-  const page = await context.newPage()
-  const errors: string[] = []
-  page.on('pageerror', (e) => errors.push(e.message))
-  return { context, page, errors }
-}
-
-const edgeGlows = (page: Page) => page.evaluate(() => (window as unknown as { __edgeGlows: number }).__edgeGlows)
-
-async function snap(page: Page, name: string, settle = 700): Promise<void> {
-  if (!SHOTS) return
-  await page.waitForTimeout(settle)
-  await page.screenshot({ path: `${SHOTS}/${name}-light.png` })
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await page.waitForTimeout(250)
-  await page.screenshot({ path: `${SHOTS}/${name}-dark.png` })
-  await page.emulateMedia({ colorScheme: 'light' })
-  if (WIDTHS.length === 0) return
-  const size = page.viewportSize() ?? iPhone.viewport
-  for (const width of WIDTHS) {
-    await page.setViewportSize({ width, height: Math.round((width * 844) / 390) })
-    await page.waitForTimeout(400)
-    await page.screenshot({ path: `${SHOTS}/${name}-light-${width}.png` })
-  }
-  await page.setViewportSize(size)
-  await page.waitForTimeout(300)
-}
-
-/** The top-most sheet. Pages under it stay mounted (inert), so sheet controls are looked up inside it. */
-const sheet = (page: Page) => page.getByRole('dialog').last()
-
-/** Visible text only: screens lower in a navigation stack stay mounted, just hidden. */
-const shown = (scope: Page | Locator, text: string | RegExp, exact = false) => scope.getByText(text, { exact }).filter({ visible: true }).first()
-const score = (scope: Page | Locator, value: string) => scope.locator('.s-mini-score__value', { hasText: value }).filter({ visible: true }).first()
 
 async function signUp(page: Page, who: typeof MARCO): Promise<void> {
   await page.getByRole('button', { name: 'Create Account', exact: true }).click()

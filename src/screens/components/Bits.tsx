@@ -110,12 +110,12 @@ export function Block({ children, className }: { children: ReactNode; className?
 }
 
 /** Where a plain task has its check circle, a task with steps has this: a ring that fills step by
- *  step and turns solid with a tick once every step is done. */
-export function StepRing({ done, total, size = 24 }: { done: number; total: number; size?: number }) {
+ *  step and turns solid with a tick once every step is done. `muted`: someone else's, gray like CheckDot. */
+export function StepRing({ done, total, size = 24, muted }: { done: number; total: number; size?: number; muted?: boolean }) {
   const fraction = total > 0 ? done / total : 0
   return (
     <span
-      className={cx('tk-ring', fraction === 1 && 'is-complete', fraction === 0 && 'is-empty')}
+      className={cx('tk-ring', muted && 'tk-ring--muted', fraction === 1 && 'is-complete', fraction === 0 && 'is-empty')}
       role="img"
       aria-label={`${done} of ${total} steps done`}
       style={{ '--ring-size': `${size}px` } as CSSProperties}

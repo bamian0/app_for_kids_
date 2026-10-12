@@ -1,16 +1,18 @@
 // One week of a space: your list (editable until the lock, then check-offs), everyone else's,
 // the Friday review status, and after the reveal the marks and scores.
-import { useEffect, useState } from 'react'
-import { setTaskDone, useAuth, useWeek } from '../data/api.ts'
-import { computeWeek, joinedAfterLock, membersAt } from '../domain/scoring.ts'
+import { useEffect, useMemo, useState } from 'react'
+import { setTaskDone, useAuth, useCurrency, useEarnings, useWeek } from '../data/api.ts'
+import { computeWeek, isTaskDone, joinedAfterLock, membersAt } from '../domain/scoring.ts'
 import type { WeekResult } from '../domain/scoring.ts'
 import { formatWeekRange, weekBounds, weekIdFor } from '../domain/time.ts'
-import type { Space, UID, WeekId } from '../domain/types.ts'
-import { EmptyState, Icon, Pill, Row, Section, useEdgeGlow, useToast } from '../ui/index.ts'
+import type { Earning, Space, UID, WeekId } from '../domain/types.ts'
+import { EmptyState, Icon, Pill, Row, Section, useEdgeGlow, useSheet, useToast } from '../ui/index.ts'
 import { Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { MemberCard } from './components/MemberCard.tsx'
 import { PlanEditor } from './components/PlanEditor.tsx'
+import { TaskSheet } from './components/TaskSheet.tsx'
+import type { TaskSheetMode } from './components/TaskSheet.tsx'
 import { firstName, listNames, nameOf } from './components/people.ts'
 import type { Profiles } from './components/people.ts'
 import { phaseCountdown, reviewTargetsOf, stillIn } from './components/status.ts'
@@ -37,7 +39,16 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
   const nowMs = useNow()
   const playGlow = useEdgeGlow().play
   const toast = useToast()
+  const sheet = useSheet()
   const [shimmer, setShimmer] = useState<{ id: string; stamp: number } | undefined>()
+  const allEarnings = useEarnings().data
+  const currency = useCurrency()
+  // Your revenue tasks of this week, by task id: amounts only ever show on your own list.
+  const earnings = useMemo(() => {
+    const mine: Record<string, Earning> = {}
+    for (const e of allEarnings ?? []) if (e.spaceId === space.id && e.weekId === weekId) mine[e.taskId] = e
+    return mine
+  }, [allEarnings, space.id, weekId])
 
   const data = live.data
   const result = data ? computeWeek(data, space, nowMs) : null
@@ -67,11 +78,25 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
     alone: inWeek && stillIn(result, me, counted).length === 0,
   })
 
-  const toggleDone = (taskId: string, done: boolean) => {
-    if (done) setShimmer({ id: taskId, stamp: Date.now() })
-    setTaskDone(space, weekId, taskId, done).catch((e: unknown) =>
+  const myTasks = data.plans[me]?.tasks ?? []
+  const myDone = data.progress[me]?.done ?? {}
+
+  // `id` is a task or one of its steps. The shimmer plays when the task itself becomes done.
+  const toggleDone = (id: string, done: boolean) => {
+    const task = myTasks.find((t) => t.id === id || t.subtasks?.some((step) => step.id === id))
+    if (done && task && isTaskDone(task, { ...myDone, [id]: true })) setShimmer({ id: task.id, stamp: Date.now() })
+    setTaskDone(space, weekId, id, done).catch((e: unknown) =>
       toast({ title: 'Couldn’t update that task', message: e instanceof Error ? e.message : undefined, tone: 'error' }),
     )
+  }
+
+  const openSheet = (mode: TaskSheetMode) =>
+    sheet.present((close) => <TaskSheet space={space} weekId={weekId} mode={mode} close={close} />, {
+      'aria-label': mode.kind === 'add' ? 'Add a task to this week' : 'Task details',
+    })
+  const openTask = (taskId: string) => {
+    const task = myTasks.find((t) => t.id === taskId)
+    if (task) openSheet({ kind: 'locked', task })
   }
 
   const members = data.week?.members ?? []
@@ -80,11 +105,12 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
   const notIn = phase === 'planning' ? [] : space.memberIds.filter((id) => id !== me && !members.includes(id))
   const lateJoiners = notIn.filter((id) => joinedAfterLock(space, id, bounds.lockAt))
   const satOut = notIn.filter((id) => !lateJoiners.includes(id))
-  const myTasks = data.plans[me]?.tasks ?? []
   const started = nowMs >= bounds.startAt
   const note = zoneNote(space.timezone)
   const which = weekId === weekIdFor(nowMs, space.timezone) ? 'this week' : 'next week'
   const joinedLate = joinedAfterLock(space, me, bounds.lockAt)
+  // After the lock and until Friday, tasks can still be added (one at a time, final).
+  const canAdd = inWeek && isMember && nowMs >= bounds.lockAt && nowMs < bounds.reviewOpenAt
 
   return (
     <>
@@ -122,7 +148,7 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
                 Empty list = 0% {which}. Add a task before it locks {when(bounds.lockAt)}.
               </span>
             ) : (
-              `Saves as you type. Swipe left to delete. Locks ${when(bounds.lockAt)}.`
+              `Saves as you type. Swipe left to delete. Locks ${when(bounds.lockAt)}, then you can only add to it.`
             )
           }
         >
@@ -130,10 +156,12 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
             space={space}
             weekId={weekId}
             tasks={myTasks}
-            done={data.progress[me]?.done ?? {}}
+            done={myDone}
             canCheck={started}
             onToggleDone={toggleDone}
             shimmer={shimmer}
+            earnings={earnings}
+            currency={currency}
           />
         </Section>
       ) : inWeek ? (
@@ -145,9 +173,16 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
           phase={phase}
           threshold={space.threshold}
           latePenalty={space.latePenalty}
+          timezone={space.timezone}
+          lockAt={bounds.lockAt}
           canCheck={nowMs < bounds.deadlineAt}
           onToggleDone={toggleDone}
           shimmer={shimmer}
+          earnings={earnings}
+          currency={currency}
+          onOpenTask={openTask}
+          onAddTask={canAdd ? () => openSheet({ kind: 'add' }) : undefined}
+          footer={canAdd ? `Locked. You can still add tasks until ${when(bounds.reviewOpenAt)}. Friends see the day you added them.` : undefined}
         />
       ) : isMember ? (
         <Section>
@@ -176,6 +211,8 @@ export function WeekView({ space, weekId, profiles, onReview, onPlanNext }: Week
           phase={phase}
           threshold={space.threshold}
           latePenalty={space.latePenalty}
+          timezone={space.timezone}
+          lockAt={bounds.lockAt}
           numbered={!started}
           former={!space.memberIds.includes(id)}
         />

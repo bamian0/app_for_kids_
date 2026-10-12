@@ -4,12 +4,13 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { submitReviews, useAuth, useProfiles, useWeek } from '../data/api.ts'
-import { isRevealed, membersAt, reviewTargets } from '../domain/scoring.ts'
+import { addedAfterLock, isRevealed, isTaskDone, membersAt, reviewTargets } from '../domain/scoring.ts'
 import { formatCountdown, weekBounds } from '../domain/time.ts'
 import type { Mark, Space, UID, WeekId } from '../domain/types.ts'
 import { Avatar, Button, EmptyState, GlassButton, Icon, MarkPicker, ProgressBar, Screen, Section, Shimmer, cx, haptic, useAlert } from '../ui/index.ts'
-import { CheckDot, ErrorText, Loading } from './components/Bits.tsx'
+import { CheckDot, ErrorText, Loading, StepList, StepRing, TaskBadge } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
+import { addedLabel } from './components/marks.ts'
 import { firstName, listNames, nameOf, personOf } from './components/people.ts'
 import { readJSON, writeJSON } from './components/storage.ts'
 import { deadlineText } from './components/zone.ts'
@@ -142,7 +143,8 @@ export function ReviewSheet({ space, weekId, close }: Props) {
   const reviewee = targets[index]
   const person = personOf(profiles, reviewee)
   const tasks = tasksOf(reviewee)
-  const checked = tasks.filter((t) => data.progress[reviewee]?.done[t.id] === true).length
+  const ticks = data.progress[reviewee]?.done ?? {}
+  const checked = tasks.filter((t) => isTaskDone(t, ticks)).length
   const last = index === targets.length - 1
   const go = (to: number) => {
     setDirection(to > index ? 1 : -1)
@@ -221,14 +223,22 @@ export function ReviewSheet({ space, weekId, close }: Props) {
           </div>
           <Section footer={error ? <ErrorText>{error}</ErrorText> : `Be fair, be honest. ${name(reviewee)} reviews you too.`}>
             {tasks.map((task) => {
-              const selfDone = data.progress[reviewee]?.done[task.id] === true
+              const selfDone = isTaskDone(task, ticks)
+              // Steps are evidence: the mark is still for the whole task.
+              const steps = (task.subtasks ?? []).map((step) => ({ id: step.id, title: step.title, done: ticks[step.id] === true }))
+              const ticked = steps.filter((step) => step.done).length
+              const added = task.addedAt !== undefined && addedAfterLock(task, bounds.lockAt)
+              let hint = selfDone ? `Marked done by ${name(reviewee)}` : `Not checked off by ${name(reviewee)}`
+              if (steps.length > 0 && !selfDone) hint = `${ticked} of ${steps.length} steps ticked by ${name(reviewee)}`
               return (
                 <div key={task.id} className="s-review-task">
                   <div className="s-review-task__title">{task.title}</div>
                   <div className="s-review-task__hint">
-                    <CheckDot done={selfDone} />
-                    {selfDone ? `Marked done by ${name(reviewee)}` : `Not checked off by ${name(reviewee)}`}
+                    {steps.length > 0 ? <StepRing done={ticked} total={steps.length} size={16} muted /> : <CheckDot done={selfDone} />}
+                    <span className="tk-hint-text">{hint}</span>
+                    {added && <TaskBadge>{addedLabel(task.addedAt as number, space.timezone)}</TaskBadge>}
                   </div>
+                  {steps.length > 0 && <StepList steps={steps} mode="dots" owner={name(reviewee)} />}
                   <MarkPicker value={marks[reviewee]?.[task.id] ?? null} onChange={(m) => setMark(reviewee, task.id, m)} aria-label={`Mark for ${task.title}`} />
                 </div>
               )

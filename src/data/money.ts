@@ -197,7 +197,9 @@ async function writeState(patch: { currency?: CurrencyCode; baseline?: number })
   // "I have this much now": earnings and moves until now are in it (SPEC §6.3).
   if (patch.baseline !== undefined) Object.assign(changes, { baseline: patch.baseline, baselineAt: serverTimestamp() })
   try {
-    const snap = await read(ref)
+    let snap = await read(ref)
+    // Creating writes every field (the currency too), so a doc the cache lacks is first looked up on the server.
+    if (snap && !snap.exists() && snap.metadata.fromCache) snap = await getDoc(ref).catch(() => snap)
     if (!snap) throw new Error(MSG.offline)
     if (snap.exists()) await updateDoc(ref, changes)
     else await setDoc(ref, { currency: fallbackCurrency(), baseline: null, baselineAt: null, ...changes })

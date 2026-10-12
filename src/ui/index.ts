@@ -8,6 +8,8 @@ export { NavigationStack, useNav, useNavPage } from './NavigationStack.tsx'
 export type { NavApi, NavigationStackProps, PushOptions } from './NavigationStack.tsx'
 export { Screen } from './Screen.tsx'
 export type { ScreenProps } from './Screen.tsx'
+export { TabBar, TabView, useTabBar } from './TabBar.tsx'
+export type { Tab, TabApi, TabBarProps, TabItem, TabViewProps } from './TabBar.tsx'
 
 export { Sheet, useSheet } from './Sheet.tsx'
 export type { SheetProps, SheetDetent, SheetOptions, UseSheet } from './Sheet.tsx'

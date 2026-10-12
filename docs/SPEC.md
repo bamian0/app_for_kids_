@@ -309,3 +309,14 @@ Contract for this batch. Later batches (custom schedules, per-person stakes, fri
 - Rules: `validProfile` accepts an optional `photo` that matches `^data:image/jpeg;base64,[A-Za-z0-9+/]+=*$` and is at most 60,000 characters; nothing else changes. Remote URLs are never allowed (no trackers).
 - Deploy order: publish the rules before the app (an older client keeps working with the new rules).
 - As built: the button reads "Add a photo" or "Change your photo" with an EDIT band. On iPhone and iPad the system's own photo menu (Photo Library, Take Photo, Choose File) does the picking, so two menus never stack: with no photo the tap opens it straight away, and with one our menu offers Choose Photo and Remove Photo. Elsewhere Take Photo (front camera) is offered on touch devices only. Remove Photo asks first. The working copy is at most 2048 px; Move and Scale zooms up to 5× the fill, by pinch, slider, double tap, trackpad or keys, and rubber-bands past the edges. Quality steps down from 0.82 until the photo fits. The new photo shows at once with a spinner (which stops after 8 s offline; the save finishes when the network is back).
+
+## 8. Batch 2: agreed decisions (not built yet; waiting for the owner's go)
+
+Agreed with the owner; build only when they say "go batch 2".
+- **Custom times**: per space, set by the owner: when lists lock and when the review window opens and closes. A change applies from the next week that hasn't locked; everyone sees a notice. Lock before review opens, review window at least a few hours.
+- **Per-person stakes**: each member writes what they get when they hit 90% and what they give when they miss, each either one thing for the whole group or a separate thing per friend. Every friend taps **Agree** on someone's stakes; until then it shows "Waiting for …". Settling becomes per pair ("Lena owes you dinner, settled").
+- **Pause a space**: up to 7 days, needs every member's OK, at most once a month. Paused weeks are skipped in the month average (not scored as 0%) and don't break a streak.
+- **Judges (rate-only members)**: no tasks, no score, nothing at stake; they review everyone and the reveal waits for them. A judge who skips a review is only shown as "Didn't review".
+- **Monthly tasks**: a separate monthly list that locks at the end of the month's first week and is reviewed on the month's last Friday; it counts as one extra week in the monthly average.
+- **Streak rewards**: tiers such as 1 month, 3 months in a row, 12 months in a row at ≥ 90%, each with its own reward (per-person, agreed like the stakes). Missing a month resets the streak; a paused week doesn't.
+- Later (batch 3): friends list with score rings, profile showcase (achieved and current goals, stats, a switch to show last month's earnings), shared goals with weekly check-ins (reminders need notifications set up). Proof uploads are on hold.

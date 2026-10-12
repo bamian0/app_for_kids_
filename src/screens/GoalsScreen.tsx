@@ -17,6 +17,7 @@ import { SwipeToDelete } from './components/SwipeToDelete.tsx'
 import { BalanceSheet } from './money/BalanceSheet.tsx'
 import { CurrencySheet } from './money/CurrencySheet.tsx'
 import { activityDate, moneyWeekId } from './money/format.ts'
+import { HelpButton } from './help/HelpSheet.tsx'
 import { GoalSheet } from './money/GoalSheet.tsx'
 import { goalLine } from './money/goals.ts'
 import { MoveSheet } from './money/MoveSheet.tsx'
@@ -41,7 +42,7 @@ export function GoalsScreen() {
   const newGoal = () => sheet.present((close) => <GoalSheet currency={currency} close={close} />)
 
   return (
-    <Screen title="Goals" trailing={<GlassButton icon="plus" aria-label="New goal" onClick={newGoal} />}>
+    <Screen title="Goals" leading={<HelpButton />} trailing={<GlassButton icon="plus" aria-label="New goal" onClick={newGoal} />}>
       {!loaded ? (
         error ? (
           <EmptyState icon="info" title="Can’t load your money" message={error.message} />

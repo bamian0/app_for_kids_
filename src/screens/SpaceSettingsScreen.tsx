@@ -9,10 +9,10 @@ import { Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { monthName } from './components/format.ts'
 import { InviteCard } from './components/InviteCard.tsx'
+import { HelpScreen } from './help/HelpSheet.tsx'
 import { currentMonth } from './components/month.ts'
 import { firstName, nameOf, personOf } from './components/people.ts'
 import { cityOf } from './components/zone.ts'
-import { RulesScreen } from './RulesScreen.tsx'
 
 export function SpaceSettingsScreen({ spaceId }: { spaceId: string }) {
   const live = useSpace(spaceId)
@@ -178,7 +178,7 @@ function SettingsContent({ space }: { space: Space }) {
       )}
 
       <Section footer={`Lists lock Monday at midnight and reviews are due Friday at midnight, ${cityOf(space.timezone)} time.`}>
-        <Row icon="info" title="How Stakes Works" chevron onPress={() => nav.push(<RulesScreen timezone={cityOf(space.timezone)} />, { title: 'How Stakes Works' })} />
+        <Row icon="info" title="How Stakes Works" chevron onPress={() => nav.push(<HelpScreen timezone={cityOf(space.timezone)} />, { title: 'How Stakes Works' })} />
         <Row icon="clock" title="Time Zone" detail={cityOf(space.timezone)} />
       </Section>
 

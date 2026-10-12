@@ -1,7 +1,7 @@
 // The intro: five pages that explain Stakes before anything else, like an Apple first launch. Swipe or
 // tap Continue; Skip and Get Started both end it. Shown once per device (introFlag.ts): signed out,
 // before Welcome; signed in, once as a full-screen cover. Help replays it.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
 import { motion, useMotionValue, useTransform } from 'motion/react'
 import type { MotionValue } from 'motion/react'
@@ -20,38 +20,37 @@ const VISUALS: Record<IntroPage['id'], ComponentType<VisualProps>> = {
   money: MoneyVisual,
 }
 
-/** Visuals are drawn on a fixed stage and scaled to the room the screen leaves them. */
+/** Visuals are drawn on a fixed stage and scaled to the room the words and the button leave them. */
 const STAGE_W = 320
 const STAGE_H = 300
-/** What the title, text, page dots and button need below the visual, at most. */
-const TEXT_ROOM = 420
+const MAX_SCALE = 1.2
 
 export function IntroScreen({ onDone }: { onDone: () => void }) {
   const pages = introPages()
   const reduced = usePrefersReducedMotion()
   const rootRef = useRef<HTMLDivElement>(null)
-  const pagerRef = useRef<HTMLDivElement>(null)
+  const pagerRef = useRef<HTMLElement>(null)
   const [index, setIndex] = useState(0)
-  // How far anyone has got: a page's visual plays the first time it comes into view, then stays put.
+  // How far the viewer has got: a page's picture plays the first time it comes into view, then stays put.
   const [reached, setReached] = useState(0)
   const progress = useMotionValue(0)
   const last = index === pages.length - 1
 
-  useEffect(() => setReached((r) => Math.max(r, index)), [index])
-
-  // An iPhone SE gets a smaller picture, so the words and the button still fit without scrolling.
+  // The picture takes the room the words leave (the same on every page, so titles line up), and the
+  // two are centered together: an iPhone SE gets a smaller picture and still never scrolls.
   useLayoutEffect(() => {
     const root = rootRef.current
-    if (!root) return
+    const page = root?.querySelector<HTMLElement>('.intro__page')
+    const words = page?.querySelector<HTMLElement>('.intro__words')
+    if (!root || !page || !words) return
     const fit = () => {
-      const room = Math.min(340, Math.max(190, root.clientHeight - TEXT_ROOM))
-      const scale = Math.min(1.12, room / STAGE_H, (root.clientWidth - 24) / STAGE_W)
-      root.style.setProperty('--intro-visual-h', `${Math.round(room)}px`)
-      root.style.setProperty('--intro-scale', scale.toFixed(3))
+      const room = page.clientHeight - parseFloat(getComputedStyle(page).paddingTop) - words.offsetHeight - 24
+      const scale = Math.min(MAX_SCALE, room / STAGE_H, (page.clientWidth - 16) / STAGE_W)
+      root.style.setProperty('--intro-scale', Math.max(0.5, scale).toFixed(3))
     }
     fit()
     const ro = new ResizeObserver(fit)
-    ro.observe(root)
+    ro.observe(page)
     return () => ro.disconnect()
   }, [])
 
@@ -60,7 +59,9 @@ export function IntroScreen({ onDone }: { onDone: () => void }) {
     if (!el || el.clientWidth === 0) return
     const p = el.scrollLeft / el.clientWidth
     progress.set(p)
-    setIndex(Math.min(pages.length - 1, Math.max(0, Math.round(p))))
+    const i = Math.min(pages.length - 1, Math.max(0, Math.round(p)))
+    setIndex(i)
+    setReached((r) => Math.max(r, i))
   }
 
   const goTo = (i: number) => {
@@ -73,7 +74,8 @@ export function IntroScreen({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div ref={rootRef} className="intro">
+    // As a cover it never drags like a sheet: swipes page, nothing else moves.
+    <div ref={rootRef} className="intro" data-sheet-nodrag>
       <div className="intro__bar">
         <GlassButton className={cx('intro__skip', last && 'is-hidden')} onClick={finish} tabIndex={last ? -1 : undefined} aria-hidden={last || undefined}>
           Skip
@@ -114,9 +116,9 @@ function Page({ page, i, count, active, play, progress, reduced }: PageProps) {
   const Visual = VISUALS[page.id]
   // The picture trails the swipe a little and fades, like the parallax of Apple's own intros.
   const distance = useTransform(progress, (p) => Math.min(1, Math.abs(p - i)))
-  const x = useTransform(progress, (p) => `${Math.max(-1, Math.min(1, p - i)) * 36}%`)
+  const x = useTransform(progress, (p) => `${Math.max(-1, Math.min(1, p - i)) * 28}%`)
   const scale = useTransform(distance, (d) => 1 - d * 0.08)
-  const opacity = useTransform(distance, (d) => 1 - d)
+  const opacity = useTransform(distance, (d) => Math.max(0, 1 - d * 1.5))
   return (
     <div
       className="intro__page"
@@ -131,8 +133,10 @@ function Page({ page, i, count, active, play, progress, reduced }: PageProps) {
           <Visual play={play} />
         </div>
       </motion.div>
-      <h1 className="intro__title">{page.title}</h1>
-      <p className="intro__text">{page.text}</p>
+      <div className="intro__words">
+        <h1 className="intro__title">{page.title}</h1>
+        <p className="intro__text">{page.text}</p>
+      </div>
     </div>
   )
 }

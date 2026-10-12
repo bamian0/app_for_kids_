@@ -7,7 +7,8 @@ import { motion } from 'motion/react'
 import { now } from '../../domain/clock.ts'
 import { AVATAR_COLORS } from '../../domain/ids.ts'
 import { formatMoney } from '../../domain/money.ts'
-import { Avatar, CheckCircle, Icon, MarkPicker, Pill, ProgressBar, ScoreRing, Shimmer, cx, springs, usePrefersReducedMotion } from '../../ui/index.ts'
+import type { Mark } from '../../domain/types.ts'
+import { Avatar, CheckCircle, Icon, MarkPicker, Pill, ProgressBar, ScoreRing, Shimmer, springs, usePrefersReducedMotion } from '../../ui/index.ts'
 import type { IconName } from '../../ui/index.ts'
 import { AppIcon, StepRing, TaskBadge } from '../components/Bits.tsx'
 
@@ -18,21 +19,20 @@ export interface VisualProps {
 
 const noop = () => {}
 
-/** Steps through a short sequence once `play` turns true: 0 before, then 1, 2… at each delay (ms). */
+/** Steps through a short sequence once `play` turns true: 0 before, then 1, 2… at each delay (ms).
+ *  `delays` is a module constant, so a re-render never restarts the timers. */
 function useSequence(play: boolean, delays: readonly number[]): number {
   const reduced = usePrefersReducedMotion()
   const [step, setStep] = useState(0)
-  const total = delays.length
-  const key = delays.join()
   useEffect(() => {
     if (!play) return
     if (reduced) {
-      setStep(total)
+      setStep(delays.length)
       return
     }
-    const timers = key.split(',').map((ms, i) => window.setTimeout(() => setStep((s) => Math.max(s, i + 1)), Number(ms)))
+    const timers = delays.map((ms, i) => window.setTimeout(() => setStep((s) => Math.max(s, i + 1)), ms))
     return () => timers.forEach((t) => window.clearTimeout(t))
-  }, [play, reduced, total, key])
+  }, [play, reduced, delays])
   return step
 }
 
@@ -55,14 +55,14 @@ function PopIn({ play, delay = 0, className, style, children }: { play: boolean;
 
 const FRIENDS: { name: string; color: string; x: number; y: number; badge?: IconName }[] = [
   { name: 'Lena', color: AVATAR_COLORS[5], x: -96, y: -70, badge: 'checkmark' },
-  { name: 'Marco Rossi', color: AVATAR_COLORS[0], x: 100, y: -58 },
+  { name: 'Marco', color: AVATAR_COLORS[0], x: 100, y: -58 },
   { name: 'Ana', color: AVATAR_COLORS[1], x: 92, y: 84, badge: 'trophy' },
   { name: 'Sam', color: AVATAR_COLORS[6], x: -90, y: 80 },
 ]
 
 export function WelcomeVisual({ play }: VisualProps) {
   return (
-    <div className="intro-v intro-v--welcome">
+    <div className="intro-v">
       <svg className="intro-v__orbit" viewBox="0 0 320 300" aria-hidden>
         <motion.circle
           cx="160"
@@ -94,13 +94,13 @@ export function WelcomeVisual({ play }: VisualProps) {
 
 // ---------- 2. Plan: this week's list ----------
 
-const PLAN_STEPS = [450, 950, 1450, 2100] as const
+const PLAN_STEPS = [400, 850, 1300, 1800] as const
 
 export function PlanVisual({ play }: VisualProps) {
   const step = useSequence(play, PLAN_STEPS)
   const stepsDone = step >= 3 ? 3 : step >= 2 ? 2 : 1
   return (
-    <div className="intro-v intro-v--plan">
+    <div className="intro-v">
       <Pill icon="lock" className="intro-v__pill">
         Locks Monday at midnight
       </Pill>
@@ -135,7 +135,12 @@ function TaskLine({ lead, title, sub, badge }: { lead: ReactNode; title: string;
 
 // ---------- 3. Review: Friday, blind ----------
 
-const REVIEW_STEPS = [650, 1350] as const
+const REVIEW_STEPS = [600, 1100, 1600] as const
+const REVIEWED: { title: string; mark: Mark }[] = [
+  { title: 'Morning run', mark: 1 },
+  { title: 'Finish the edit', mark: 0.5 },
+  { title: 'Call the bank', mark: 0 },
+]
 
 export function ReviewVisual({ play }: VisualProps) {
   const step = useSequence(play, REVIEW_STEPS)
@@ -144,7 +149,8 @@ export function ReviewVisual({ play }: VisualProps) {
       {/* Someone else's review behind it: there, but hidden until everyone is in. */}
       <div className="intro-card intro-card--behind">
         <span className="intro-card__veil">
-          <Icon name="lock" size={15} weight={2} />
+          <Icon name="lock" size={14} weight={2.1} />
+          Hidden until everyone submits
         </span>
       </div>
       <div className="intro-card">
@@ -152,18 +158,16 @@ export function ReviewVisual({ play }: VisualProps) {
           <Avatar name="Lena" color={AVATAR_COLORS[5]} size={40} />
           <span className="intro-person__text">
             <span className="intro-person__name">Lena</span>
-            <span className="intro-person__sub">2 tasks</span>
+            <span className="intro-person__sub">3 tasks</span>
           </span>
-          <span className="intro-person__day">Fri</span>
+          <span className="intro-person__day">Friday</span>
         </div>
-        <div className="intro-mark">
-          <span className="intro-mark__title">Morning run</span>
-          <MarkPicker value={step >= 1 ? 1 : null} onChange={noop} />
-        </div>
-        <div className="intro-mark">
-          <span className="intro-mark__title">Finish the edit</span>
-          <MarkPicker value={step >= 2 ? 0.5 : null} onChange={noop} />
-        </div>
+        {REVIEWED.map((task, i) => (
+          <div key={task.title} className="intro-mark">
+            <span className="intro-mark__title">{task.title}</span>
+            <MarkPicker size="compact" value={step > i ? task.mark : null} onChange={noop} />
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -171,13 +175,15 @@ export function ReviewVisual({ play }: VisualProps) {
 
 // ---------- 4. Month: the bar, and the prism ----------
 
+/** The sweep lands after ~1.4s; the prism then passes over what they owe you. */
+const SHINE_AT = [1500] as const
+
 export function MonthVisual({ play }: VisualProps) {
   const reduced = usePrefersReducedMotion()
   const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(now())
-  // The sweep lands after ~1.4s; the prism then passes over what they owe you.
-  const shine = useSequence(play, [1500])
+  const shine = useSequence(play, SHINE_AT)
   return (
-    <div className="intro-v intro-v--month">
+    <div className="intro-v">
       <div className="intro-ring">
         <ScoreRing value={play ? 94 : null} threshold={90} size={188} stroke={19} delay={0.15} showValue animate={!reduced} />
         <span className="intro-ring__caption">{month}</span>
@@ -201,15 +207,17 @@ export function MonthVisual({ play }: VisualProps) {
 
 // ---------- 5. Money: private balance and goals ----------
 
+const FILL_AT = [350] as const
+
 const GOALS = [
   { name: 'New lens', cost: 1560, funded: 1250 },
   { name: 'Weekend in Lisbon', cost: 900, funded: 0 },
 ]
 
 export function MoneyVisual({ play }: VisualProps) {
-  const step = useSequence(play, [350])
+  const step = useSequence(play, FILL_AT)
   return (
-    <div className="intro-v intro-v--money">
+    <div className="intro-v">
       <div className="intro-card">
         <div className="intro-balance">
           <span className="intro-balance__label">Balance</span>
@@ -225,7 +233,7 @@ export function MoneyVisual({ play }: VisualProps) {
           </div>
         ))}
       </div>
-      <Pill icon="lock" className={cx('intro-v__pill', 'intro-v__pill--below')}>
+      <Pill icon="lock" className="intro-v__pill intro-v__pill--below">
         Only you can see this
       </Pill>
     </div>

@@ -9,8 +9,10 @@ const WIDTHS = (process.env.E2E_WIDTHS ?? '')
   .map(Number)
   .filter((w) => w > 0)
 
-export async function phone(browser: Browser): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
+/** `intro`: a phone that has never seen the intro. Otherwise it was seen long ago, as on most phones. */
+export async function phone(browser: Browser, opts: { intro?: boolean } = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
   const context = await browser.newContext(iPhone)
+  if (!opts.intro) await context.addInitScript(() => localStorage.setItem('stakes.introSeen', '1'))
   // Counts every mount of the Siri-style edge glow (it is gone again a few seconds later).
   await context.addInitScript(() => {
     const w = window as unknown as { __edgeGlows: number }

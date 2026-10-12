@@ -539,42 +539,6 @@
   height: 44px;
 }
 
-/* Rules */
-.s-rule {
-  position: relative;
-  display: flex;
-  gap: 14px;
-  padding: 14px 16px 14px 16px;
-}
-.s-rule + .s-rule::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 60px;
-  right: 0;
-  height: 1px;
-  background: var(--separator);
-  transform: scaleY(0.5);
-  transform-origin: top;
-}
-.s-rule__icon {
-  display: flex;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 30px;
-  padding-top: 1px;
-}
-.s-rule__title {
-  font: 600 17px/22px var(--font);
-  letter-spacing: -0.012em;
-}
-.s-rule__body {
-  margin-top: 2px;
-  font: 400 15px/20px var(--font);
-  letter-spacing: -0.006em;
-  color: var(--secondary-label);
-}
-
 /* Profile */
 .s-profile-hero {
   display: flex;
@@ -583,9 +547,6 @@
   gap: 4px;
   padding: 4px 32px 28px;
   text-align: center;
-}
-.s-profile-hero .ui-avatar {
-  margin-bottom: 10px;
 }
 .s-profile-hero__name {
   font: 700 22px/28px var(--font);

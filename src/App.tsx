@@ -1,16 +1,18 @@
-// App shell: picks the flow from the auth state (setup, launch, welcome, or the signed-in tabs) and
-// crossfades between them. Everything else is navigation stacks and sheets from the design system.
+// App shell: picks the flow from the auth state (setup, launch, intro, welcome, or the signed-in tabs)
+// and crossfades between them. Everything else is navigation stacks and sheets from the design system.
 import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useAuth } from './data/api.ts'
 import { isConfigured } from './firebase/config.ts'
-import { NavigationStack, TabView, UIProvider } from './ui/index.ts'
+import { NavigationStack, Sheet, TabView, UIProvider } from './ui/index.ts'
 import type { Tab } from './ui/index.ts'
 import { LaunchScreen, NotConfiguredScreen } from './screens/SystemScreens.tsx'
 import { WelcomeScreen } from './screens/auth/WelcomeScreen.tsx'
 import { GoalsScreen } from './screens/GoalsScreen.tsx'
 import { OverviewScreen } from './screens/OverviewScreen.tsx'
 import { SpacesScreen } from './screens/SpacesScreen.tsx'
+import { IntroScreen } from './screens/help/IntroScreen.tsx'
+import { hasSeenIntro, markIntroSeen } from './screens/help/introFlag.ts'
 import { captureOpenParam, hasOpenTarget } from './screens/components/openTarget.ts'
 import { captureJoinParam, hasPendingJoin } from './screens/components/pendingJoin.ts'
 import { readLocal, writeLocal } from './screens/components/storage.ts'
@@ -41,8 +43,14 @@ export default function App() {
 
 function Session() {
   const auth = useAuth()
+  // The intro, once per device: signed out it comes before Welcome, signed in it covers the tabs.
+  const [intro, setIntro] = useState(() => !hasSeenIntro())
+  const finishIntro = useCallback(() => {
+    markIntroSeen()
+    setIntro(false)
+  }, [])
   // A new key per account resets navigation, so nobody lands inside someone else's screens.
-  const key = auth.status === 'signedIn' ? `in:${auth.uid}` : auth.status
+  const key = auth.status === 'signedIn' ? `in:${auth.uid}` : auth.status === 'signedOut' && intro ? 'intro' : auth.status
   return (
     <AnimatePresence initial={false}>
       <motion.div
@@ -56,17 +64,20 @@ function Session() {
         {auth.status === 'loading' ? (
           <LaunchScreen />
         ) : auth.status === 'signedOut' ? (
-          <NavigationStack root={<WelcomeScreen />} />
+          intro ? <IntroScreen onDone={finishIntro} /> : <NavigationStack root={<WelcomeScreen />} />
         ) : (
-          <SignedIn />
+          <SignedIn intro={intro} onIntroDone={finishIntro} />
         )}
       </motion.div>
     </AnimatePresence>
   )
 }
 
-function SignedIn() {
+function SignedIn({ intro, onIntroDone }: { intro: boolean; onIntroDone: () => void }) {
   const [tab, setTab] = useState<TabId>(initialTab)
+  // Someone already signed in sees the intro once, as a cover. An invite link or a notification goes
+  // straight to its space instead, and the intro waits for the next launch.
+  const [cover] = useState(() => intro && !hasPendingJoin() && !hasOpenTarget())
   const select = useCallback((id: TabId) => {
     setTab(id)
     writeLocal(TAB_KEY, id)
@@ -79,5 +90,12 @@ function SignedIn() {
     ],
     [],
   )
-  return <TabView tabs={tabs} selected={tab} onSelect={select} />
+  return (
+    <>
+      <TabView tabs={tabs} selected={tab} onSelect={select} />
+      <Sheet open={cover && intro} onClose={onIntroDone} presentation="fullScreen" aria-label="Introduction">
+        <IntroScreen onDone={onIntroDone} />
+      </Sheet>
+    </>
+  )
 }

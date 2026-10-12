@@ -110,9 +110,9 @@ export const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const
 
 /** The week at a glance, for the little illustration at the top of Help. */
 export const WEEK_TIMELINE: TimelineStop[] = [
-  { day: 0, icon: 'lock', title: 'Monday', detail: 'Your list locks at midnight' },
-  { day: 3, icon: 'plusCircle', title: 'Thursday', detail: 'Last day to add a task' },
-  { day: 4, icon: 'person2', title: 'Friday', detail: 'Review friends by midnight' },
+  { day: 0, icon: 'lock', title: 'Monday', detail: 'Lists lock at midnight' },
+  { day: 3, icon: 'plusCircle', title: 'Thursday', detail: 'Last day to add tasks' },
+  { day: 4, icon: 'person2', title: 'Friday', detail: 'Reviews due by midnight' },
   { day: 5, icon: 'trophy', title: 'Saturday', detail: 'Results are in' },
 ]
 

@@ -1,5 +1,6 @@
 // Help, behind the "?" on every tab's root screen: how Stakes works in a two-minute read, with the
-// week at a glance on top. It ends with the intro, replayed as a full-screen cover.
+// week at a glance on top. It ends with the intro, replayed as a full-screen cover. The "How Stakes
+// Works" rows in the Profile sheet and space settings push the same content, so there is one text.
 import { useCallback } from 'react'
 import { AVATAR_COLORS } from '../../domain/ids.ts'
 import { GlassButton, Icon, Row, Screen, Section, cx, useSheet } from '../../ui/index.ts'
@@ -18,9 +19,18 @@ const TILE: Record<HelpSection['id'], string> = {
   reminders: AVATAR_COLORS[4],
 }
 
-/** Opens Help. Its last row swaps it for the intro, shown as a full-screen cover. */
+/** Plays the intro again as a full-screen cover. Replaying it doesn't touch the device's flag. */
+function useShowIntro(): () => void {
+  const { present } = useSheet()
+  return useCallback(() => {
+    present((done) => <IntroScreen onDone={done} />, { presentation: 'fullScreen', 'aria-label': 'Introduction' })
+  }, [present])
+}
+
+/** Opens Help. Its last row swaps it for the intro. */
 export function useHelp(): () => void {
   const { present } = useSheet()
+  const showIntro = useShowIntro()
   return useCallback(() => {
     present(
       (close) => (
@@ -28,13 +38,13 @@ export function useHelp(): () => void {
           close={close}
           onShowIntro={() => {
             close()
-            present((done) => <IntroScreen onDone={done} />, { presentation: 'fullScreen', 'aria-label': 'Introduction' })
+            showIntro()
           }}
         />
       ),
       { 'aria-label': 'Help' },
     )
-  }, [present])
+  }, [present, showIntro])
 }
 
 /** The round "?" at the leading edge of every tab's root screen. */
@@ -51,7 +61,25 @@ export function HelpSheet({ close, onShowIntro }: { close: () => void; onShowInt
       className="hp"
       trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={close} />}
     >
-      <Section header="Your week at a glance">
+      <HelpContent onShowIntro={onShowIntro} />
+    </Screen>
+  )
+}
+
+/** The same, pushed from a settings row; `timezone` names the city a space's deadlines run on. */
+export function HelpScreen({ timezone }: { timezone?: string }) {
+  const showIntro = useShowIntro()
+  return (
+    <Screen title="How Stakes Works" subtitle="Everything, in a two-minute read." className="hp">
+      <HelpContent onShowIntro={showIntro} timezone={timezone} />
+    </Screen>
+  )
+}
+
+function HelpContent({ onShowIntro, timezone }: { onShowIntro: () => void; timezone?: string }) {
+  return (
+    <>
+      <Section header="Your week at a glance" footer={timezone ? `Every deadline in this space runs on ${timezone} time.` : undefined}>
         <WeekGlance />
       </Section>
       {helpSections().map((section) => (
@@ -60,7 +88,7 @@ export function HelpSheet({ close, onShowIntro }: { close: () => void; onShowInt
       <Section>
         <Row icon="sparkles" iconBackground="var(--system-gray)" title="Show the Intro Again" onPress={onShowIntro} />
       </Section>
-    </Screen>
+    </>
   )
 }
 

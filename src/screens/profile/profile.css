@@ -1,0 +1,249 @@
+/* ---------- Profile photo: the avatar button in the Profile sheet ---------- */
+
+.p-avatar {
+  position: relative;
+  display: block;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.2s var(--ease-out);
+}
+.p-avatar[data-pressed] {
+  transform: scale(0.96);
+}
+.p-avatar__clip {
+  position: relative;
+  /* Flex, so the inline avatar brings no line box: the circle is exactly the avatar's size. */
+  display: flex;
+  overflow: hidden;
+  border-radius: 50%;
+}
+/* "Edit" across the bottom of the circle, like the photo in Settings. A circle filled only at the
+   bottom (no backdrop blur: Chromium draws a blur past a rounded clip). */
+.p-avatar__band {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 4px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom, transparent 75%, rgba(0, 0, 0, 0.45) 75%);
+  color: #fff;
+  font: 600 11px/13px var(--font);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.p-avatar__busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  pointer-events: none;
+}
+.p-avatar[aria-busy] .p-avatar__band {
+  opacity: 0;
+}
+
+/* ---------- Move and Scale ---------- */
+
+/* Always dark, like the photo editors on iPhone: the photo is the only color on screen. The glass
+   buttons and slider read these tokens, so they get their dark look in light mode too. */
+.p-crop {
+  color-scheme: dark;
+  --label: #ffffff;
+  --on-label: #000000;
+  --secondary-label: rgba(235, 235, 245, 0.6);
+  --tertiary-label: rgba(235, 235, 245, 0.3);
+  --system-fill: rgba(120, 120, 128, 0.36);
+  --system-gray5: #2c2c2e;
+  --glass-tint: rgba(44, 44, 48, 0.56);
+  --glass-rim: rgba(255, 255, 255, 0.3);
+  --glass-edge: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --glass-solid: #2c2c2e;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: var(--label);
+  /* A pinch that starts on the bars must not zoom the page behind the editor. */
+  touch-action: none;
+}
+
+/* The bars float over the photo, which runs on under them (dimmed) like in Photos. */
+.p-crop__top,
+.p-crop__bottom {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+/* Only the controls take touches; a drag that starts between them still moves the photo. */
+.p-crop__slider,
+.p-crop__action {
+  pointer-events: auto;
+}
+.p-crop__top {
+  flex-shrink: 0;
+  padding: calc(var(--ui-safe-top) + 14px) calc(16px + var(--ui-safe-right)) 4px calc(16px + var(--ui-safe-left));
+  text-align: center;
+}
+.p-crop__title {
+  margin: 0;
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.35);
+}
+
+.p-crop__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grab;
+}
+.p-crop__stage.is-moving {
+  cursor: grabbing;
+}
+.p-crop__stage:focus-visible {
+  outline: none;
+}
+.p-crop__stage:focus-visible .p-crop__ring {
+  box-shadow: inset 0 0 0 2px var(--label);
+}
+
+.p-crop__photo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+.p-crop__photo > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Everything outside the circle goes dark; less so while you move it, so you can see what's there. */
+.p-crop__dim,
+.p-crop__ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.p-crop__dim {
+  box-shadow: 0 0 0 200vmax #000;
+  opacity: 0.66;
+  transition: opacity 0.3s var(--ease-out);
+}
+.p-crop__stage.is-moving .p-crop__dim {
+  opacity: 0.45;
+}
+.p-crop__ring {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.p-crop__bottom {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px calc(16px + var(--ui-safe-right)) max(16px, calc(var(--ui-safe-bottom) + 4px)) calc(16px + var(--ui-safe-left));
+}
+
+.p-crop__zoom {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 400px;
+  padding: 0 8px;
+}
+.p-crop__zoom-icon {
+  flex-shrink: 0;
+  color: var(--secondary-label);
+}
+
+/* An iOS slider: a thin track, white up to a round white knob. --t is the position, 0…1. */
+.p-crop__slider {
+  --t: 0;
+  --knob: 28px;
+  --fill: calc(var(--knob) / 2 + (100% - var(--knob)) * var(--t));
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.p-crop__slider:disabled {
+  cursor: default;
+}
+.p-crop__slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--label) var(--fill), var(--system-fill) var(--fill));
+}
+.p-crop__slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--label) var(--fill), var(--system-fill) var(--fill));
+}
+.p-crop__slider::-webkit-slider-thumb {
+  width: var(--knob);
+  height: var(--knob);
+  margin-top: calc(2px - var(--knob) / 2);
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0.5px 4px rgba(0, 0, 0, 0.12),
+    0 6px 13px rgba(0, 0, 0, 0.12);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.p-crop__slider::-moz-range-thumb {
+  width: var(--knob);
+  height: var(--knob);
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0.5px 4px rgba(0, 0, 0, 0.12),
+    0 6px 13px rgba(0, 0, 0, 0.12);
+}
+.p-crop__slider:focus-visible {
+  outline: none;
+}
+.p-crop__slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.45);
+}
+
+.p-crop__actions {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 560px;
+}
+.p-crop__action {
+  min-width: 104px;
+}

@@ -12,6 +12,7 @@ import { formatScore, monthName, wholePercent } from './components/format.ts'
 import { currentMonth } from './components/month.ts'
 import { spaceStatus } from './components/status.ts'
 import { deadlineDay } from './components/zone.ts'
+import { HelpButton } from './help/HelpSheet.tsx'
 import { EarningsChart } from './money/EarningsChart.tsx'
 import { moneyWeekId, weekLabel } from './money/format.ts'
 import { SpaceScreen } from './SpaceScreen.tsx'
@@ -57,7 +58,7 @@ export function OverviewScreen() {
   const names = useMemo(() => Object.fromEntries((list ?? []).map((s) => [s.id, s.name])), [list])
 
   return (
-    <Screen title="Overview" subtitle={`Week of ${formatWeekRange(moneyWeekId(nowMs))}`}>
+    <Screen title="Overview" subtitle={`Week of ${formatWeekRange(moneyWeekId(nowMs))}`} leading={<HelpButton />}>
       {list === undefined ? (
         spaces.error ? (
           <EmptyState icon="info" title="Can’t load your spaces" message={spaces.error.message} />

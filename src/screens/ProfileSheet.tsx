@@ -1,11 +1,12 @@
-// Your account: name, reminders on this device, sign out, delete account.
+// Your account: photo, name, reminders on this device, sign out, delete account.
 import { useEffect, useRef, useState } from 'react'
 import { deleteMyAccount, signOut, updateMyName, useAuth } from '../data/api.ts'
 import { disablePush, enablePush, isPushEnabled, preloadPushConfig, pushSupport } from '../push/index.ts'
 import type { UID } from '../domain/types.ts'
-import { Avatar, Button, GlassButton, NavigationStack, Row, Screen, Section, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
+import { Button, GlassButton, NavigationStack, Row, Screen, Section, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
-import { RulesScreen } from './RulesScreen.tsx'
+import { HelpScreen } from './help/HelpSheet.tsx'
+import { ProfilePhoto } from './profile/ProfilePhoto.tsx'
 
 interface Props {
   close: () => void
@@ -83,7 +84,7 @@ function ProfileHome({ close, onInstallGuide }: Props) {
       trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={close} />}
     >
       <div className="s-profile-hero">
-        <Avatar name={name || savedName || '?'} color={auth.profile?.color ?? 'var(--system-gray)'} size={84} />
+        <ProfilePhoto name={name || savedName || '?'} color={auth.profile?.color ?? 'var(--system-gray)'} photo={auth.profile?.photo} />
         <div className="s-profile-hero__name">{savedName || 'No name yet'}</div>
         <div className="s-profile-hero__email">{auth.email}</div>
       </div>
@@ -109,7 +110,7 @@ function ProfileHome({ close, onInstallGuide }: Props) {
       {auth.uid && <NotificationsSection uid={auth.uid} onInstallGuide={onInstallGuide} />}
 
       <Section>
-        <Row icon="info" title="How Stakes Works" chevron onPress={() => nav.push(<RulesScreen />, { title: 'How Stakes Works' })} />
+        <Row icon="info" title="How Stakes Works" chevron onPress={() => nav.push(<HelpScreen />, { title: 'How Stakes Works' })} />
       </Section>
 
       <Section>

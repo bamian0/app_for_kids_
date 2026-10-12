@@ -21,6 +21,7 @@ import type { StatusContext, StatusLine } from './components/status.ts'
 import { firstTime, readLocal, writeLocal } from './components/storage.ts'
 import { deadlineDay } from './components/zone.ts'
 import { CreateSpaceSheet } from './CreateSpaceSheet.tsx'
+import { HelpButton } from './help/HelpSheet.tsx'
 import { InstallGuideSheet } from './InstallGuide.tsx'
 import { JoinSheet } from './JoinSheet.tsx'
 import { ProfileSheet } from './ProfileSheet.tsx'
@@ -94,6 +95,7 @@ export function SpacesScreen() {
   return (
     <Screen
       title="Spaces"
+      leading={<HelpButton />}
       trailing={
         <>
           <GlassButton icon="plus" aria-label="New space or join" onClick={addMenu} />

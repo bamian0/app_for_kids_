@@ -1,7 +1,8 @@
 // The third round's first batch end to end, in iPhone-sized browsers against the emulators with the
-// real rules: the intro (once per phone, signed out before Welcome and as a cover for someone already
-// signed in), Help behind the "?" on every tab, and a profile photo chosen, moved and scaled, seen by a
-// friend on their screens, and removed again. Accounts, the space and the week are seeded.
+// real rules: the intro (once per phone, signed out before Welcome but not again in the installed app,
+// and as a cover for someone already signed in), Help behind the "?" on every tab, and a profile photo
+// chosen, moved and scaled, seen by a friend on their screens, and removed again. Accounts, the space
+// and the week are seeded.
 //
 // Run with the other specs (see flow.spec.ts), or alone:
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test batch1"
@@ -23,6 +24,7 @@ const CODE = 'FCRW2345'
 
 const INTRO_TITLES = ['Welcome to Stakes', 'Plan by Monday at midnight', 'Friday is review day', 'Hit 90% and they owe you', 'Your money stays yours']
 const PHOTO = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true })
 /** The one "?" on screen: other tabs stay mounted, hidden from the accessibility tree. */
@@ -157,6 +159,53 @@ test('the intro shows once on a new phone, before Welcome and before an invite',
     await c.context.close()
   })
 
+  await test.step('The installed app skips it signed out (Safari showed it), and signing in brings no cover', async () => {
+    const d = await phone(browser, { intro: true, installed: true })
+    await d.page.goto('/')
+    // The installed app's Welcome, where signing in comes first.
+    await expect(d.page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible()
+    await expect(d.page.getByRole('heading', { name: INTRO_TITLES[0] })).toHaveCount(0)
+    expect(await introSeen(d.page)).toBe('1')
+    await snap(d.page, 'b18-installed-welcome')
+    await d.page.getByRole('button', { name: 'Sign In', exact: true }).click()
+    await d.page.getByLabel('Email').fill(MARCO.email)
+    await d.page.getByLabel('Password').fill(MARCO.password)
+    await d.page.getByRole('button', { name: 'Sign In', exact: true }).click()
+    await expect(tab(d.page, 'Spaces')).toHaveAttribute('aria-selected', 'true')
+    await expect(shown(d.page, SPACE.name)).toBeVisible()
+    await expect(d.page.getByRole('dialog')).toHaveCount(0)
+    expect(d.errors).toEqual([])
+    await d.context.close()
+  })
+
+  await test.step('With Reduce Motion each picture is finished from the start', async () => {
+    const e = await phone(browser, { intro: true })
+    await e.page.emulateMedia({ reducedMotion: 'reduce' })
+    await e.page.goto('/')
+    const opacity = (selector: string) => e.page.locator(selector).evaluateAll((els) => els.map((el) => getComputedStyle(el).opacity))
+    // Well before any delay the motion version has (friends pop in from 0.3 s, the stakes from 0.9 s).
+    await expect(e.page.getByRole('img', { name: 'Page 1 of 5' })).toBeVisible()
+    await e.page.waitForTimeout(150)
+    expect(await opacity('.intro-v__friend')).toEqual(['1', '1', '1', '1'])
+    await snap(e.page, 'b19-intro-reduced-1', 300)
+    await e.page.getByRole('button', { name: 'Continue', exact: true }).click()
+    await expect(e.page.getByRole('img', { name: 'Page 2 of 5' })).toBeVisible()
+    // The stepped task rests partly done: a full ring would look like a plain check. (Pictures are hidden from VoiceOver.)
+    const ring = e.page.locator('.intro .tk-ring')
+    await expect(ring).toHaveAttribute('aria-label', '2 of 3 steps done')
+    await expect(ring).not.toHaveClass(/is-complete/)
+    await snap(e.page, 'b20-intro-reduced-2', 300)
+    for (const n of [3, 4]) {
+      await e.page.getByRole('button', { name: 'Continue', exact: true }).click()
+      await expect(e.page.getByRole('img', { name: `Page ${n} of 5` })).toBeVisible()
+    }
+    await e.page.waitForTimeout(150)
+    expect(await opacity('.intro-owe-wrap')).toEqual(['1'])
+    await snap(e.page, 'b21-intro-reduced-4', 300)
+    expect(e.errors).toEqual([])
+    await e.context.close()
+  })
+
   expect(a.errors).toEqual([])
   await a.context.close()
 })
@@ -263,10 +312,9 @@ test('a profile photo: choose, move and scale, friends see it, remove it', async
 
   await test.step('Marco chooses a photo, moves and scales it, and chooses', async () => {
     await marco.getByRole('button', { name: 'Profile', exact: true }).click()
-    await sheet(marco).getByRole('button', { name: 'Add a photo' }).click()
-    // No photo yet: nothing to remove.
-    await expect(marco.getByRole('button', { name: 'Remove Photo', exact: true })).toHaveCount(0)
-    const [chooser] = await Promise.all([marco.waitForEvent('filechooser'), marco.getByRole('button', { name: 'Choose Photo', exact: true }).click()])
+    // On an iPhone, with nothing to remove, the tap opens the system's photo menu (it has Take Photo) at once.
+    const [chooser] = await Promise.all([marco.waitForEvent('filechooser'), sheet(marco).getByRole('button', { name: 'Add a photo' }).click()])
+    await expect(marco.getByRole('button', { name: 'Choose Photo', exact: true })).toHaveCount(0)
     await chooser.setFiles({ name: 'IMG_0420.jpg', mimeType: 'image/jpeg', buffer: upload })
 
     const crop = marco.getByRole('dialog', { name: 'Move and Scale' })
@@ -290,6 +338,20 @@ test('a profile photo: choose, move and scale, friends see it, remove it', async
       box = now
       if (still) break
     }
+    // One finger on the title, where the photo doesn't reach yet: the editor never drags like a sheet.
+    const title = (await crop.getByRole('heading', { name: 'Move and Scale' }).boundingBox())!
+    const top = async () => (await crop.boundingBox())!.y
+    const top0 = await top()
+    let moved = 0
+    await touch('touchStart', [[title.x + title.width / 2, title.y + title.height / 2]])
+    for (let i = 1; i <= 12; i++) {
+      await touch('touchMove', [[title.x + title.width / 2, title.y + title.height / 2 + i * 15]])
+      await marco.waitForTimeout(16)
+      moved = Math.max(moved, Math.abs((await top()) - top0))
+    }
+    await touch('touchEnd', [])
+    expect(moved).toBe(0)
+
     const cx = box.x + box.width / 2
     const cy = box.y + box.height / 2
     await touch('touchStart', [[cx - 40, cy], [cx + 40, cy]])
@@ -339,6 +401,10 @@ test('a profile photo: choose, move and scale, friends see it, remove it', async
   await test.step('Remove Photo asks first, then brings back his initials everywhere', async () => {
     await marco.getByRole('button', { name: 'Profile', exact: true }).click()
     await sheet(marco).getByRole('button', { name: 'Change your photo' }).click()
+    // With a photo: Choose Photo and Remove Photo. iOS's own menu behind Choose Photo has Take Photo.
+    await expect(marco.getByRole('button', { name: 'Choose Photo', exact: true })).toBeVisible()
+    await expect(marco.getByRole('button', { name: 'Take Photo', exact: true })).toHaveCount(0)
+    await snap(marco, 'b22-photo-menu')
     await marco.getByRole('button', { name: 'Remove Photo', exact: true }).click()
     const confirm = marco.getByRole('alertdialog')
     await expect(confirm.getByText('Remove your photo?')).toBeVisible()
@@ -350,6 +416,17 @@ test('a profile photo: choose, move and scale, friends see it, remove it', async
     await expect(stack.locator(`.ui-avatar[aria-label="${MARCO.name}"] img`)).toHaveCount(0)
     // Small avatars show one initial.
     await expect(stack.locator(`.ui-avatar[aria-label="${MARCO.name}"]`)).toHaveText('M')
+  })
+
+  await test.step('On other phones the avatar opens our menu, with Take Photo', async () => {
+    const c = await phone(browser, { userAgent: ANDROID })
+    await signIn(c.page, LENA)
+    await c.page.getByRole('button', { name: 'Profile', exact: true }).click()
+    await sheet(c.page).getByRole('button', { name: 'Change your photo' }).click()
+    for (const name of ['Choose Photo', 'Take Photo', 'Remove Photo']) await expect(c.page.getByRole('button', { name, exact: true })).toBeVisible()
+    await c.page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    expect(c.errors).toEqual([])
+    await c.context.close()
   })
 
   expect(a.errors).toEqual([])

@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { updateMyPhoto } from '../../data/api.ts'
+import { isIOS } from '../../push/index.ts'
 import { ActivityIndicator, Avatar, useAlert, useSheet, useToast } from '../../ui/index.ts'
 import type { DialogAction } from '../../ui/index.ts'
 import { usePress } from '../../ui/press.ts'
@@ -85,9 +86,16 @@ export function ProfilePhoto({ name, color, photo, size = 84 }: ProfilePhotoProp
 
   const menu = async () => {
     if (busy) return
+    // iOS answers a photo input with its own menu, which already has Take Photo. With nothing to remove,
+    // the tap opens it straight away (still inside the tap, so Safari allows it) rather than stacking two.
+    const ios = isIOS()
+    if (ios && !shown) {
+      library.current?.click()
+      return
+    }
     // The pickers open from inside the tap (onPress), or Safari refuses to open them.
     const actions: DialogAction[] = [{ label: CHOOSE, onPress: () => library.current?.click() }]
-    if (hasCamera()) actions.push({ label: TAKE, onPress: () => camera.current?.click() })
+    if (!ios && hasCamera()) actions.push({ label: TAKE, onPress: () => camera.current?.click() })
     if (shown) actions.push({ label: REMOVE, style: 'destructive' })
     const choice = await actionSheet({ actions })
     if (choice !== REMOVE) return

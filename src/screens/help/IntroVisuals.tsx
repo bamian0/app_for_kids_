@@ -38,13 +38,15 @@ function useSequence(play: boolean, delays: readonly number[]): number {
 
 /** Pops in with a soft spring, after `delay` seconds. */
 function PopIn({ play, delay = 0, className, style, children }: { play: boolean; delay?: number; className?: string; style?: CSSProperties; children: ReactNode }) {
+  // Reduce Motion makes only movement instant, not a delayed fade; here the whole pop is.
+  const reduced = usePrefersReducedMotion()
   return (
     <motion.div
       className={className}
       style={style}
       initial={{ opacity: 0, scale: 0.6 }}
       animate={play ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.6 }}
-      transition={{ ...springs.bouncy, delay, opacity: { duration: 0.25, delay } }}
+      transition={reduced ? { duration: 0 } : { ...springs.bouncy, delay, opacity: { duration: 0.25, delay } }}
     >
       {children}
     </motion.div>
@@ -61,6 +63,7 @@ const FRIENDS: { name: string; color: string; x: number; y: number; badge?: Icon
 ]
 
 export function WelcomeVisual({ play }: VisualProps) {
+  const reduced = usePrefersReducedMotion()
   return (
     <div className="intro-v">
       <svg className="intro-v__orbit" viewBox="0 0 320 300" aria-hidden>
@@ -71,7 +74,7 @@ export function WelcomeVisual({ play }: VisualProps) {
           pathLength={1}
           initial={{ pathLength: 0, opacity: 0 }}
           animate={play ? { pathLength: 1, opacity: 1 } : undefined}
-          transition={{ duration: 1.1, ease: [0.22, 1, 0.36, 1], delay: 0.15 }}
+          transition={reduced ? { duration: 0 } : { duration: 1.1, ease: [0.22, 1, 0.36, 1], delay: 0.15 }}
         />
         <circle cx="160" cy="150" r="84" className="intro-v__orbit-inner" />
       </svg>
@@ -94,11 +97,12 @@ export function WelcomeVisual({ play }: VisualProps) {
 
 // ---------- 2. Plan: this week's list ----------
 
-const PLAN_STEPS = [400, 850, 1300, 1800] as const
+// The stepped task stops at 2 of 3, so the resting frame shows a partly filled ring (a full one is a check).
+const PLAN_STEPS = [400, 850, 1400] as const
 
 export function PlanVisual({ play }: VisualProps) {
   const step = useSequence(play, PLAN_STEPS)
-  const stepsDone = step >= 3 ? 3 : step >= 2 ? 2 : 1
+  const stepsDone = step >= 2 ? 2 : 1
   return (
     <div className="intro-v">
       <Pill icon="lock" className="intro-v__pill">
@@ -110,7 +114,7 @@ export function PlanVisual({ play }: VisualProps) {
         <TaskLine lead={<StepRing done={stepsDone} total={3} />} title="Edit the short film" sub={`${stepsDone} of 3 steps`} />
         <motion.div
           initial={{ opacity: 0, y: 10 }}
-          animate={step >= 4 ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
+          animate={step >= 3 ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
           transition={springs.snappy}
         >
           <TaskLine lead={<CheckCircle checked={false} onChange={noop} />} title="Call the bank" badge={<TaskBadge icon="plusCircle">Added Wed</TaskBadge>} />
@@ -136,10 +140,11 @@ function TaskLine({ lead, title, sub, badge }: { lead: ReactNode; title: string;
 // ---------- 3. Review: Friday, blind ----------
 
 const REVIEW_STEPS = [600, 1100, 1600] as const
+// Lena's own list, not yours from the page before: you mark a friend's tasks.
 const REVIEWED: { title: string; mark: Mark }[] = [
-  { title: 'Morning run', mark: 1 },
-  { title: 'Finish the edit', mark: 0.5 },
-  { title: 'Call the bank', mark: 0 },
+  { title: 'Gym three times', mark: 1 },
+  { title: 'Send invoices', mark: 0.5 },
+  { title: 'Book the dentist', mark: 0 },
 ]
 
 export function ReviewVisual({ play }: VisualProps) {
@@ -192,7 +197,7 @@ export function MonthVisual({ play }: VisualProps) {
         className="intro-owe-wrap"
         initial={{ opacity: 0, y: 8 }}
         animate={play ? { opacity: 1, y: 0 } : undefined}
-        transition={{ ...springs.banner, delay: 0.9 }}
+        transition={reduced ? { duration: 0 } : { ...springs.banner, delay: 0.9 }}
       >
         <Shimmer trigger={shine > 0 ? 'shine' : undefined} radius={999} inline>
           <span className="intro-owe">

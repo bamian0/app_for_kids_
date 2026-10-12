@@ -137,7 +137,7 @@ export function introPages(rules: HelpRules = RULES): IntroPage[] {
     {
       id: 'review',
       title: 'Friday is review day',
-      text: 'Everyone marks each other’s tasks: Done, Half or Not done. It’s blind until everyone is in.',
+      text: 'Everyone marks each other’s tasks: Done, Half or Not done. It’s blind until everyone has submitted, or Friday ends.',
     },
     {
       id: 'month',

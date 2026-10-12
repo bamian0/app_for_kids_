@@ -1,9 +1,10 @@
 // App shell: picks the flow from the auth state (setup, launch, intro, welcome, or the signed-in tabs)
 // and crossfades between them. Everything else is navigation stacks and sheets from the design system.
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useAuth } from './data/api.ts'
 import { isConfigured } from './firebase/config.ts'
+import { isIOS, isStandalone } from './push/index.ts'
 import { NavigationStack, Sheet, TabView, UIProvider } from './ui/index.ts'
 import type { Tab } from './ui/index.ts'
 import { LaunchScreen, NotConfiguredScreen } from './screens/SystemScreens.tsx'
@@ -49,8 +50,15 @@ function Session() {
     markIntroSeen()
     setIntro(false)
   }, [])
+  // The Home Screen app starts with its own empty storage, but it can only be added from a Safari tab,
+  // which already played the intro: signed out there it goes straight to Welcome, and counts as seen.
+  const skipIntro = auth.status === 'signedOut' && isIOS() && isStandalone()
+  const showIntro = intro && !skipIntro
+  useEffect(() => {
+    if (intro && skipIntro) finishIntro()
+  }, [intro, skipIntro, finishIntro])
   // A new key per account resets navigation, so nobody lands inside someone else's screens.
-  const key = auth.status === 'signedIn' ? `in:${auth.uid}` : auth.status === 'signedOut' && intro ? 'intro' : auth.status
+  const key = auth.status === 'signedIn' ? `in:${auth.uid}` : auth.status === 'signedOut' && showIntro ? 'intro' : auth.status
   return (
     <AnimatePresence initial={false}>
       <motion.div
@@ -64,7 +72,7 @@ function Session() {
         {auth.status === 'loading' ? (
           <LaunchScreen />
         ) : auth.status === 'signedOut' ? (
-          intro ? <IntroScreen onDone={finishIntro} /> : <NavigationStack root={<WelcomeScreen />} />
+          showIntro ? <IntroScreen onDone={finishIntro} /> : <NavigationStack root={<WelcomeScreen />} />
         ) : (
           <SignedIn intro={intro} onIntroDone={finishIntro} />
         )}

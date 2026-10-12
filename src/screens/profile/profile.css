@@ -88,7 +88,8 @@
   z-index: 1;
   pointer-events: none;
 }
-/* Only the controls take touches; a drag that starts between them still moves the photo. */
+/* Only the controls take touches; between them a drag moves the photo where it runs under the bars,
+   and otherwise nothing (the editor never drags). */
 .p-crop__slider,
 .p-crop__action {
   pointer-events: auto;

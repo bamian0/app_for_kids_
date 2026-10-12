@@ -79,6 +79,8 @@ describe('intro pages', () => {
     expect(introText).toContain('Monday at midnight')
     expect(introText).toContain('Thursday at midnight')
     expect(introText).toContain('Done, Half or Not done')
+    // Blind until everyone has submitted or the deadline, whichever comes first (§1).
+    expect(introText).toContain('blind until everyone has submitted, or Friday ends')
     expect(introText).toContain('90%')
   })
 })

@@ -9,10 +9,16 @@ const WIDTHS = (process.env.E2E_WIDTHS ?? '')
   .map(Number)
   .filter((w) => w > 0)
 
-/** `intro`: a phone that has never seen the intro. Otherwise it was seen long ago, as on most phones. */
-export async function phone(browser: Browser, opts: { intro?: boolean } = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
-  const context = await browser.newContext(iPhone)
+/** `intro`: a phone that has never seen the intro. Otherwise it was seen long ago, as on most phones.
+ *  `installed`: the app opened from the Home Screen. `userAgent`: another kind of phone. */
+export async function phone(
+  browser: Browser,
+  opts: { intro?: boolean; installed?: boolean; userAgent?: string } = {},
+): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
+  const context = await browser.newContext({ ...iPhone, userAgent: opts.userAgent ?? iPhone.userAgent })
   if (!opts.intro) await context.addInitScript(() => localStorage.setItem('stakes.introSeen', '1'))
+  // How iOS tells a page it runs as a Home Screen app.
+  if (opts.installed) await context.addInitScript(() => Object.defineProperty(Navigator.prototype, 'standalone', { get: () => true }))
   // Counts every mount of the Siri-style edge glow (it is gone again a few seconds later).
   await context.addInitScript(() => {
     const w = window as unknown as { __edgeGlows: number }

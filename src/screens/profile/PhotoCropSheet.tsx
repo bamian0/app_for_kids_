@@ -243,7 +243,8 @@ export function PhotoCropSheet({ image, close, onChoose }: PhotoCropSheetProps) 
   const percent = Math.round(100 * MAX_ZOOM ** zoom)
 
   return (
-    <div className="p-crop">
+    // The editor never drags like a sheet, wherever a drag starts (the bars too): only the photo moves.
+    <div className="p-crop" data-sheet-nodrag>
       <header className="p-crop__top">
         <h2 className="p-crop__title">Move and Scale</h2>
       </header>
@@ -251,7 +252,6 @@ export function PhotoCropSheet({ image, close, onChoose }: PhotoCropSheetProps) 
       <div
         ref={stageRef}
         className={cx('p-crop__stage', moving && 'is-moving')}
-        data-sheet-nodrag
         tabIndex={0}
         role="group"
         aria-roledescription="photo"

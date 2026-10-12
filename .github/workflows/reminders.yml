@@ -3,9 +3,10 @@ name: Reminders
 # Hourly push reminders (scripts/reminders.ts, docs/SPEC.md §4).
 #
 # Scheduled workflows only run from the default branch (main): this file has to be on main for
-# the hourly schedule to fire. GitHub can delay scheduled runs or drop some under load; the job
-# catches up on the next run without sending anything twice. In a public repository GitHub
-# pauses schedules after 60 days without commits; re-enable it from the Actions tab.
+# the hourly schedule to fire. It checks out the branch the app is deployed from (below), so main
+# only needs updating when this file changes. GitHub can delay scheduled runs or drop some under
+# load; the job catches up on the next run without sending anything twice. In a public repository
+# GitHub pauses schedules after 60 days without activity; re-enable it from the Actions tab.
 #
 # Setup: add the Firebase service account key (Firebase console → Project settings → Service
 # accounts → Generate new private key) as the repository secret FIREBASE_SERVICE_ACCOUNT, pasting
@@ -44,8 +45,12 @@ jobs:
             echo "::notice::The FIREBASE_SERVICE_ACCOUNT secret is not set, so no reminders were sent."
           fi
 
+      # The schedule fires from main, but the app ships from its own branch: run the reminders code
+      # that is live (repository variable APP_BRANCH overrides it).
       - uses: actions/checkout@v7
         if: steps.check.outputs.enabled == 'true'
+        with:
+          ref: ${{ vars.APP_BRANCH || 'claude/task-rating-app-feasibility-abixvp' }}
 
       - uses: actions/setup-node@v7
         if: steps.check.outputs.enabled == 'true'

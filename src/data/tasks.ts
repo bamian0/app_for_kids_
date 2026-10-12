@@ -42,17 +42,31 @@ function decodeSubs(v: unknown, taken: Set<string>): Subtask[] {
 /**
  * A plan's `tasks` and `added` as domain tasks. `toMs` reads a stored time (null if it isn't one).
  * Tasks without steps or an add time come out as plain { id, title }, exactly as before steps existed.
+ * The rules can't keep task ids unique, and marks and check-offs go by id, so a repeated id would
+ * share one mark and count twice: only the first task with an id is kept. It was on the list before
+ * any append (appends go at the end), so an `added` entry for a repeated id belongs to the copy.
  */
 export function decodeTasks(tasks: unknown, added: unknown, toMs: (v: unknown) => number | null): Task[] {
   if (!Array.isArray(tasks)) return []
-  const plain = tasks.map((t: unknown) => ({ id: str(record(t).id), title: str(record(t).title), subs: record(t).subs })).filter((t) => t.id !== '')
-  const taken = new Set(plain.map((t) => t.id))
+  const plain: { id: string; title: string; subs: unknown }[] = []
+  const taken = new Set<string>()
+  const repeated = new Set<string>()
+  for (const t of tasks as unknown[]) {
+    const id = str(record(t).id)
+    if (id === '') continue
+    if (taken.has(id)) {
+      repeated.add(id)
+      continue
+    }
+    taken.add(id)
+    plain.push({ id, title: str(record(t).title), subs: record(t).subs })
+  }
   const addedAt = record(added)
   return plain.map(({ id, title, subs }) => {
     const task: Task = { id, title }
     const steps = decodeSubs(subs, taken)
     if (steps.length > 0) task.subtasks = steps
-    const at = Object.hasOwn(addedAt, id) ? toMs(addedAt[id]) : null
+    const at = Object.hasOwn(addedAt, id) && !repeated.has(id) ? toMs(addedAt[id]) : null
     if (at !== null) task.addedAt = at
     return task
   })

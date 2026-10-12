@@ -4,7 +4,7 @@ import { useAuth, useCurrency, useEarnings, useMonth, useMySpaces } from '../dat
 import { earnedByWeek, earnedInMonth, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
 import { computeMonth, computeWeek, joinedAfterLock } from '../domain/scoring.ts'
 import { addWeeks, formatWeekRange, monthIdForWeek, weekBounds, weekIdFor } from '../domain/time.ts'
-import type { Earning, Space, UID } from '../domain/types.ts'
+import type { CurrencyCode, Earning, Space, UID } from '../domain/types.ts'
 import { EmptyState, Icon, Row, ScoreRing, Screen, Section, cx, useNav, useTabBar } from '../ui/index.ts'
 import { Loading, MiniScore } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
@@ -26,6 +26,8 @@ interface WeekTally {
 
 const CHART_WEEKS = 8
 const TOP_EARNINGS = 3
+/** From here a stat goes compact ('$123K', '֏5.3M'): three columns can't hold more digits on a phone. */
+const COMPACT_FROM = 100_000
 
 export function OverviewScreen() {
   const nav = useNav()
@@ -152,7 +154,8 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
         nextLock: deadlineDay(weekBounds(addWeeks(weekId, 1), space.timezone).lockAt, space.timezone),
       })
     : null
-  const showsScore = !!me?.participating && result?.phase !== 'planning'
+  // From Monday 00:00 ticks count, like the ring above; a list that's still empty has no score to show.
+  const showsScore = !!me?.participating && (me.score != null || me.taskCount > 0)
   const score = showsScore ? (me.score ?? me.provisionalScore) : null
   const revealed = me?.score != null
 
@@ -169,7 +172,7 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
           'Loading…'
         )
       }
-      accessory={<MiniScore value={score} threshold={space.threshold} caption={score == null ? undefined : revealed ? 'Score' : 'So far'} iridescent={revealed} />}
+      accessory={<MiniScore value={score} threshold={space.threshold} caption={score == null ? undefined : revealed ? 'Score' : 'Provisional'} iridescent={revealed} />}
       chevron
       onPress={onOpen}
     />
@@ -237,7 +240,7 @@ function MoneySection({ names }: { names: Record<string, string> }) {
             <Icon name="banknote" size={28} weight={1.7} />
           </span>
           <span className="m-note__title">See what your work earns</span>
-          <span className="m-note__text">Open one of your tasks, turn on Generates revenue and enter what it pays. When you tick it off, the money shows up here.</span>
+          <span className="m-note__text">In Spaces, tap ⓘ next to one of your tasks, turn on Generates revenue and enter what it pays. When you tick it off, the money shows up here.</span>
         </div>
         {goalsRow}
       </Section>
@@ -256,9 +259,9 @@ function MoneySection({ names }: { names: Record<string, string> }) {
         <div className="m-earned__label">Earned in {monthName(monthId)}</div>
         <div className="m-earned__value t-tabular">{formatMoney(earnedInMonth(all, monthId), currency)}</div>
         <div className="m-stats">
-          <Stat label="This week" value={formatMoney(byWeek[thisWeek] ?? 0, currency)} />
-          <Stat label="Pending" value={formatMoney(pendingIn(all, [thisWeek, addWeeks(thisWeek, 1)]), currency)} />
-          <Stat label="All time" value={formatMoney(totalEarned(all), currency)} />
+          <Stat label="This week" amount={byWeek[thisWeek] ?? 0} currency={currency} />
+          <Stat label="Pending" amount={pendingIn(all, [thisWeek, addWeeks(thisWeek, 1)])} currency={currency} />
+          <Stat label="All time" amount={totalEarned(all)} currency={currency} />
         </div>
       </div>
       <div className="m-chart-block">
@@ -274,11 +277,17 @@ function MoneySection({ names }: { names: Record<string, string> }) {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/** A big amount goes compact rather than being cut off; VoiceOver still reads it in full. */
+function Stat({ label, amount, currency }: { label: string; amount: number; currency: CurrencyCode }) {
+  const exact = formatMoney(amount, currency)
+  const compact = Math.abs(amount) >= COMPACT_FROM
   return (
     <div className="m-stat">
       <span className="m-stat__label">{label}</span>
-      <span className="m-stat__value t-tabular">{value}</span>
+      <span className="m-stat__value t-tabular" title={compact ? exact : undefined} aria-hidden={compact || undefined}>
+        {compact ? formatMoney(amount, currency, { compact: true }) : exact}
+      </span>
+      {compact && <span className="ui-visually-hidden">{exact}</span>}
     </div>
   )
 }

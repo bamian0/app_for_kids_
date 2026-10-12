@@ -162,7 +162,7 @@ export function PlanEditor({ space, weekId, tasks: server, done, canCheck, onTog
                 <div className="s-task">
                   <span className="s-task__lead">
                     {canCheck && steps.length > 0 ? (
-                      <StepRing done={ticked} total={steps.length} />
+                      <StepRing done={ticked} total={steps.length} onPress={() => openSheet(task.id)} />
                     ) : canCheck ? (
                       <CheckCircle checked={!!done[task.id]} onChange={(v) => onToggleDone(task.id, v)} aria-label={task.title} />
                     ) : (

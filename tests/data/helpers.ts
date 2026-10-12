@@ -30,13 +30,16 @@ const authAt = hostPort(process.env.FIREBASE_AUTH_EMULATOR_HOST, 9199)
 
 let env: RulesTestEnvironment | null = null
 
+/** The real rules, as deployed. */
+export const RULES = readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8')
+
 /** Points the app at the test emulators, loads the real rules and wipes all data. */
 export async function setupEmulators(): Promise<void> {
   if (!env) {
     setEmulatorPorts({ host: firestoreAt.host, firestorePort: firestoreAt.port, authPort: authAt.port })
     env = await initializeTestEnvironment({
       projectId: PROJECT,
-      firestore: { host: firestoreAt.host, port: firestoreAt.port, rules: readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8') },
+      firestore: { host: firestoreAt.host, port: firestoreAt.port, rules: RULES },
     })
   }
   // Retried: right after another test file the emulator sometimes answers 500 once.
@@ -51,6 +54,13 @@ export async function setupEmulators(): Promise<void> {
   }
   const res = await fetch(`http://${authAt.host}:${authAt.port}/emulator/v1/projects/${PROJECT}/accounts`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Could not clear auth emulator: ${res.status}`)
+}
+
+/** Swaps the rules the emulator enforces, e.g. for older rules still live while a new client ships; RULES puts the real ones back. */
+export async function loadRules(rules: string): Promise<void> {
+  const url = `http://${firestoreAt.host}:${firestoreAt.port}/emulator/v1/projects/${PROJECT}:securityRules`
+  const res = await fetch(url, { method: 'PUT', body: JSON.stringify({ rules: { files: [{ content: rules }] } }) })
+  if (!res.ok) throw new Error(`Could not load rules: ${await res.text()}`)
 }
 
 export async function teardownEmulators(): Promise<void> {

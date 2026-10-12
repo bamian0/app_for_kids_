@@ -29,7 +29,7 @@ import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
 import { isMark, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
-import { earnedAtChange, earningRef, inBackground, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
+import { earnedAtChange, earningRef, inBackground, keepsEarned, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
 import { requireUser } from './session.ts'
 import { peek, type Emit, type Start } from './store.ts'
 import { encodeTask, oneLine, TASK_ID } from './tasks.ts'
@@ -439,6 +439,8 @@ export async function savePlan(space: Space, weekId: WeekId, tasks: Task[]): Pro
 }
 
 export interface NewTaskInput {
+  /** The new task's id, made once per add so trying again after an error can't add it twice. */
+  id?: string
   title: string
   /** Step titles in order; blank ones are dropped. */
   subtasks?: string[]
@@ -457,7 +459,8 @@ export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewT
   const steps = (input.subtasks ?? []).map(oneLine).filter((step) => step !== '')
   if (steps.length > MAX_SUBTASKS) throw new Error(TOO_MANY_STEPS)
   if (steps.some((step) => step.length > MAX_TITLE)) throw new Error(LONG_STEP)
-  const task: Task = { id: newTaskId(), title }
+  if (input.id !== undefined && !TASK_ID.test(input.id)) throw new Error(MSG.generic)
+  const task: Task = { id: input.id ?? newTaskId(), title }
   if (steps.length > 0) task.subtasks = steps.map((step) => ({ id: newTaskId(), title: step }))
   const ref = planRef(space.id, weekId, uid)
   try {
@@ -471,6 +474,9 @@ export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewT
       // Everything already stored goes back exactly as it is: the rules compare it item by item.
       const stored: unknown = snap.get('tasks')
       const existing = Array.isArray(stored) ? stored : []
+      // Already there: an earlier attempt went through though its answer was lost (the SDK retries
+      // the transaction, or the user tries again). Done, rather than refused or added twice.
+      if (existing.some((t) => (t as { id?: unknown } | null)?.id === task.id)) return
       if (existing.length >= MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a week.`)
       const added: unknown = snap.get('added')
       tx.set(ref, {
@@ -485,12 +491,28 @@ export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewT
   return { ...task, addedAt: Date.now() }
 }
 
+/** Check-offs in progress, by user and week (see setTaskDone). */
+const ticking = new Map<string, Promise<void>>()
+
 /**
  * Self check-off (until deadlineAt). `id` is a task id or a step id. The task's earning, if it has one,
  * follows: earned when the task becomes done (its last step, or the task itself), not when it isn't.
  */
 export async function setTaskDone(space: Space, weekId: WeekId, id: string, done: boolean): Promise<void> {
   const uid = requireUser().uid
+  // One check-off of a week at a time, until its write is issued: each decides from what the one
+  // before wrote, so ticking the last two steps quickly still earns the task. Issued, not confirmed:
+  // a write the server hasn't answered (offline) never holds up the next tick.
+  const key = `${uid}|${space.id}|${weekId}`
+  const previous = ticking.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const mine = previous.then(() => gate)
+  ticking.set(key, mine)
+  void mine.then(() => {
+    if (ticking.get(key) === mine) ticking.delete(key)
+  })
+  await previous
   try {
     if (now() >= (await boundsOf(space, weekId)).deadlineAt) throw new Error(MSG.closed)
     if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
@@ -502,25 +524,35 @@ export async function setTaskDone(space: Space, weekId: WeekId, id: string, done
     const taskDone = task && local.done ? isTaskDone(task, { ...local.done, [id]: done }) : undefined
     const earning = task ? earningId(space.id, weekId, task.id) : null
     const known = earning ? await knownEarning(uid, earning) : null
-    const change = known && taskDone !== undefined ? earnedAtChange(known.earned, taskDone) : undefined
+    // Money earned before the balance was set stays earned, or ticking again would count it twice.
+    const keep = !!known?.earned && taskDone === false && (await keepsEarned(uid, known.earnedAt))
+    const change = known && taskDone !== undefined ? earnedAtChange(known.earned, taskDone, keep) : undefined
     if (change && earning) {
       const batch = writeBatch(getFirebase().db)
       batch.set(ref, progress, { merge: true })
       batch.update(earningRef(uid, earning), change)
+      // The write is in this device's cache once issued, so the next check-off can go.
+      const commit = batch.commit()
+      release()
       try {
-        await batch.commit()
+        await commit
         return
       } catch (e) {
         // The earning may be gone (switched off on another device): the check-off still counts.
         if (!isDenied(e) && errorCode(e) !== 'not-found') throw e
       }
     }
-    await setDoc(ref, progress, { merge: true })
+    const write = setDoc(ref, progress, { merge: true })
+    release()
+    await write
     // Whatever this device couldn't tell is settled from the server afterwards.
     if (earning && taskDone !== undefined && known === undefined) settleLater(space.id, weekId, uid, id, { earning, done: taskDone })
     else if (!local.tasks || (task && known !== null && taskDone === undefined)) settleLater(space.id, weekId, uid, id)
   } catch (e) {
     throw humanError(e)
+  } finally {
+    // A check-off refused before writing (closed week, not in it) mustn't hold up the next.
+    release()
   }
 }
 

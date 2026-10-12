@@ -170,7 +170,9 @@ export function toEarning(snap: Snap): Earning {
 
 export function toMove(snap: Snap): MoneyMove {
   const d = data(snap)
-  return { id: snap.id, kind: d.kind === 'spend' ? 'spend' : 'add', amount: amount(d.amount), note: str(d.note), at: ms(d.at) }
+  const move: MoneyMove = { id: snap.id, kind: d.kind === 'spend' ? 'spend' : 'add', amount: amount(d.amount), note: str(d.note), at: ms(d.at) }
+  if (d.goal === true) move.goal = true
+  return move
 }
 
 export function toGoal(snap: Snap): Goal {

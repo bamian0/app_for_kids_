@@ -186,6 +186,8 @@ export interface MoneyMove {
   /** 0–80 characters, e.g. "Rent". */
   note: string
   at: number
+  /** A goal marked as bought (a spend of its cost): left out of the pace. Absent on other moves. */
+  goal?: boolean
 }
 
 /** users/{uid}/goals/{id}: something to save for. The balance fills goals in `order` (lowest first). */

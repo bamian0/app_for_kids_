@@ -1,30 +1,28 @@
 // An amount as a form row, like a price field in Settings: label on the left, the amount on the right
 // with its currency symbol, decimal keypad. The typed text stays as typed; the parent gets the number.
 import { useId, useState } from 'react'
-import type { ReactElement } from 'react'
-import { currencySymbol, parseAmount } from '../../domain/money.ts'
+import type { ReactElement, Ref } from 'react'
+import { currencySymbol, editableAmount, parseAmount } from '../../domain/money.ts'
 import type { CurrencyCode } from '../../domain/types.ts'
 import { cx } from '../../ui/index.ts'
 import '../tasks.css'
 
 export interface MoneyFieldProps {
   value: number | null
-  onChange: (value: number | null) => void
+  /** `value` is null for an empty field and for text that isn't an amount; `invalid` tells them apart. */
+  onChange: (value: number | null, invalid: boolean) => void
   currency: CurrencyCode
   /** Row label on the left, e.g. "Amount". */
   label: string
   placeholder?: string
   autoFocus?: boolean
+  inputRef?: Ref<HTMLInputElement>
 }
 
-/** The text a stored amount is edited as: grouped, cents only when there are some ('1,250', '1,250.50'). */
-function editText(value: number | null): string {
-  if (value === null) return ''
-  const cents = Math.round(value * 100) % 100 !== 0
-  return value.toLocaleString('en-US', { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2 })
-}
+/** The text a stored amount is edited as: '1250', '1250.50', never grouped (see editableAmount). */
+const editText = (value: number | null): string => (value === null ? '' : editableAmount(value))
 
-export function MoneyField({ value, onChange, currency, label, placeholder = '0', autoFocus }: MoneyFieldProps): ReactElement {
+export function MoneyField({ value, onChange, currency, label, placeholder = '0', autoFocus, inputRef }: MoneyFieldProps): ReactElement {
   const id = useId()
   const [text, setText] = useState(() => editText(value))
   const [shown, setShown] = useState(value)
@@ -46,6 +44,7 @@ export function MoneyField({ value, onChange, currency, label, placeholder = '0'
           </span>
           <span className="tk-money__sizer" data-text={text || placeholder}>
             <input
+              ref={inputRef}
               id={id}
               className="tk-money__input"
               type="text"
@@ -64,13 +63,13 @@ export function MoneyField({ value, onChange, currency, label, placeholder = '0'
                 const amount = parseAmount(next)
                 setText(next)
                 setShown(amount)
-                onChange(amount)
+                onChange(amount, next.trim() !== '' && amount === null)
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
               }}
               onBlur={() => {
-                // Tidy what was typed ('1250.5' → '1,250.50'); a typo stays so it can be fixed.
+                // Tidy what was typed ('1250.5' → '1250.50', '1,250' → '1250'); a typo stays so it can be fixed.
                 const amount = parseAmount(text)
                 if (amount !== null) setText(editText(amount))
               }}

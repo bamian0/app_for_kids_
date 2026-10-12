@@ -21,7 +21,7 @@ import {
   type DocumentSnapshot,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
-import { defaultCurrency, earningId, MAX_AMOUNT, nextGoalOrder, roundMoney } from '../domain/money.ts'
+import { defaultCurrency, earningId, inBaseline, MAX_AMOUNT, nextGoalOrder, roundMoney } from '../domain/money.ts'
 import type { CurrencyCode, Earning, Goal, MoneyMove, MoneyState, Space, Task, UID, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
@@ -157,6 +157,26 @@ async function read(ref: DocumentReference): Promise<DocumentSnapshot | null> {
   }
 }
 
+/** The money state as this device has it (live, else cached); undefined when it can't tell. */
+async function localMoneyState(uid: UID): Promise<MoneyState | null | undefined> {
+  const live = peek<MoneyState | null>(moneyKeys.state(uid)).data
+  if (live !== undefined) return live
+  try {
+    const snap = await getDocFromCache(stateRef(uid))
+    return snap.exists() ? toMoneyState(snap) : null
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Whether un-doing a task keeps its earning earned, as this device knows the balance: money earned
+ * before the balance was set is already in it (see inBaseline). false when it can't tell.
+ */
+export async function keepsEarned(uid: UID, earnedAt: number | null): Promise<boolean> {
+  return earnedAt !== null && inBaseline((await localMoneyState(uid)) ?? null, earnedAt)
+}
+
 /** Amounts as the rules take them: finite, rounded to cents, within MAX_AMOUNT (more than 0 for `positive`). */
 function checkAmount(value: number, opts: { positive?: boolean; negative?: boolean } = {}): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Enter an amount.')
@@ -225,7 +245,8 @@ export async function setBaseline(amount: number): Promise<void> {
 /**
  * Switches a task's "generates revenue" on (with `amount`, 0 for no amount yet) or off (null). Any
  * week, before or after the lock. `done` is whether the task is done now: a done task keeps the
- * time it was earned, or is earned now.
+ * time it was earned, or is earned now. A task that isn't done keeps it too when that money is
+ * already in the balance the user set (keepsEarned). Switching off and on again earns it anew.
  */
 export async function setTaskRevenue(space: Space, weekId: WeekId, task: Pick<Task, 'id' | 'title'>, amount: number | null, done: boolean): Promise<void> {
   const uid = requireUser().uid
@@ -241,39 +262,43 @@ export async function setTaskRevenue(space: Space, weekId: WeekId, task: Pick<Ta
     if (!title) throw new Error('Give the task a title first.')
     const write = (earnedAt: unknown) =>
       setDoc(ref, { spaceId: space.id, weekId, taskId: task.id, title, amount: value, earnedAt, updatedAt: serverTimestamp() })
+    // A Timestamp from the stored doc is kept as it is (the rules allow it unchanged); a pending one reads as null.
+    const before: unknown = (await read(ref))?.get('earnedAt')
     let earnedAt: unknown = null
-    if (done) {
-      // A Timestamp from the stored doc is kept as it is (the rules allow it unchanged); a pending one reads as null.
-      const before: unknown = (await read(ref))?.get('earnedAt')
-      earnedAt = before instanceof Timestamp ? before : serverTimestamp()
-    }
+    if (done) earnedAt = before instanceof Timestamp ? before : serverTimestamp()
+    else if (before instanceof Timestamp && (await keepsEarned(uid, before.toMillis()))) earnedAt = before
     await write(earnedAt).catch((e: unknown) => {
-      // This device's copy was out of date (changed on another device): then it is earned now.
+      // This device's copy was out of date (changed on another device): then it is earned now, or not at all.
       if (!(earnedAt instanceof Timestamp && isDenied(e))) throw e
-      return write(serverTimestamp())
+      return write(done ? serverTimestamp() : null)
     })
   } catch (e) {
     throw humanError(e, MSG.generic)
   }
 }
 
-/** An earning as this device knows it: whether it is earned, null when there is none, undefined when it can't tell. */
-export async function knownEarning(uid: UID, id: string): Promise<{ earned: boolean } | null | undefined> {
+/** An earning as this device knows it: whether it is earned and when, null when there is none, undefined when it can't tell. */
+export async function knownEarning(uid: UID, id: string): Promise<{ earned: boolean; earnedAt: number | null } | null | undefined> {
   try {
     const snap = await getDocFromCache(earningRef(uid, id))
-    return snap.exists() ? { earned: snap.get('earnedAt', { serverTimestamps: 'estimate' }) != null } : null
+    if (!snap.exists()) return null
+    const at: unknown = snap.get('earnedAt', { serverTimestamps: 'estimate' })
+    return { earned: at != null, earnedAt: at instanceof Timestamp ? at.toMillis() : null }
   } catch {
     // Not cached as a doc; a live list of every earning still tells.
     const list = peek<Earning[]>(moneyKeys.earnings(uid)).data
     if (!list) return undefined
     const found = list.find((e) => e.id === id)
-    return found ? { earned: found.earnedAt !== null } : null
+    return found ? { earned: found.earnedAt !== null, earnedAt: found.earnedAt } : null
   }
 }
 
-/** The earnedAt change that keeps an earning in step with its task: undefined when there is none. */
-export function earnedAtChange(earned: boolean, done: boolean): { earnedAt: unknown; updatedAt: unknown } | undefined {
-  if (earned === done) return undefined
+/**
+ * The earnedAt change that keeps an earning in step with its task: undefined when there is none.
+ * `keep`: the money is already in the balance the user set, so un-doing the task leaves it earned.
+ */
+export function earnedAtChange(earned: boolean, done: boolean, keep = false): { earnedAt: unknown; updatedAt: unknown } | undefined {
+  if (earned === done || (keep && !done)) return undefined
   return { earnedAt: done ? serverTimestamp() : null, updatedAt: serverTimestamp() }
 }
 
@@ -281,7 +306,13 @@ export function earnedAtChange(earned: boolean, done: boolean): { earnedAt: unkn
 export async function settleEarning(uid: UID, id: string, done: boolean): Promise<void> {
   const snap = await getDoc(earningRef(uid, id))
   if (!snap.exists()) return
-  const change = earnedAtChange(snap.get('earnedAt') != null, done)
+  const at: unknown = snap.get('earnedAt')
+  let keep = false
+  if (!done && at instanceof Timestamp) {
+    const state = await getDoc(stateRef(uid))
+    keep = inBaseline(state.exists() ? toMoneyState(state) : null, at.toMillis())
+  }
+  const change = earnedAtChange(at != null, done, keep)
   if (change) await updateDoc(snap.ref, change)
 }
 
@@ -399,12 +430,12 @@ export async function reorderGoals(ids: string[]): Promise<void> {
   }
 }
 
-/** Spends the goal's cost (noted with its name) and removes the goal, in one batch. */
+/** Spends the goal's cost (noted with its name, marked as a goal so the pace leaves it out) and removes the goal, in one batch. */
 export async function markGoalBought(goal: Goal): Promise<void> {
   const cost = checkAmount(goal.cost, { positive: true })
   const uid = requireUser().uid
   const batch = writeBatch(getFirebase().db)
-  batch.set(doc(userCol(uid, 'moves')), { kind: 'spend', amount: cost, note: oneLine(goal.name).slice(0, MAX_NOTE), at: serverTimestamp() })
+  batch.set(doc(userCol(uid, 'moves')), { kind: 'spend', amount: cost, note: oneLine(goal.name).slice(0, MAX_NOTE), at: serverTimestamp(), goal: true })
   batch.delete(doc(userCol(uid, 'goals'), goal.id))
   try {
     await batch.commit()

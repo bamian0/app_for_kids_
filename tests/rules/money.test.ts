@@ -186,7 +186,17 @@ describe('moves', () => {
       'note missing': () => { const { note: _, ...rest } = move(); return setDoc(ref, rest) },
       'at from the client': () => setDoc(ref, move({ at: Timestamp.now() })),
       'extra key': () => setDoc(ref, move({ goalId: 'g1' })),
+      // goal marks a goal bought: a spend, and only ever true.
+      'goal on an add': () => setDoc(ref, move({ kind: 'add', goal: true })),
+      'goal false': () => setDoc(ref, move({ goal: false })),
+      'goal a string': () => setDoc(ref, move({ goal: 'g1' })),
     })
+  })
+
+  test('a goal bought is a spend marked goal: true; a plain spend stays as before', async () => {
+    const alice = db('alice')
+    await allowed(setDoc(moveRef(alice, 'alice', 'g'), move({ goal: true })))
+    await allowed(setDoc(moveRef(alice, 'alice', 'p'), move()))
   })
 })
 
@@ -204,7 +214,7 @@ describe('goals', () => {
     await allowed(getDocs(collection(alice, 'users/alice/goals')))
     // Mark as Bought: the cost goes out as a spend and the goal goes away, in one batch.
     const bought = writeBatch(alice)
-    bought.set(moveRef(alice, 'alice', 'm9'), move({ amount: 4299.99, note: 'Sony FX3 kit' }))
+    bought.set(moveRef(alice, 'alice', 'm9'), move({ amount: 4299.99, note: 'Sony FX3 kit', goal: true }))
     bought.delete(goalRef(alice, 'alice', 'g1'))
     await allowed(bought.commit())
     await allowed(deleteDoc(goalRef(alice, 'alice', 'g2')))

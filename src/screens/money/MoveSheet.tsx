@@ -47,7 +47,9 @@ export function MoveSheet({ kind, currency, balance, close }: MoveSheetProps) {
   const footer = error ? (
     <ErrorText>{error}</ErrorText>
   ) : after !== null ? (
-    `Your balance will be ${formatMoney(after, currency)}.`
+    <>
+      Your balance will be <span className={after < 0 ? 'm-negative' : undefined}>{formatMoney(after, currency)}</span>.
+    </>
   ) : adding ? (
     'Money that came in outside your tasks, like a gift or a sale.'
   ) : (

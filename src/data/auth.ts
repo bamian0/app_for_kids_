@@ -126,8 +126,10 @@ export async function deleteMyAccount(password: string): Promise<void> {
   }
   const { db } = getFirebase()
   try {
-    await leaveAllSpaces(user.uid)
+    // Money first: leaving can't be undone, so anything that can fail goes before it and a retry
+    // finds the user still in their spaces.
     await deleteAllMoney(user.uid)
+    await leaveAllSpaces(user.uid)
     const subs = await getDocs(collection(db, 'users', user.uid, 'push'))
     await Promise.all(subs.docs.map((sub) => deleteDoc(sub.ref)))
     await deleteDoc(profileRef(db, user.uid))

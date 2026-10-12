@@ -44,6 +44,8 @@ interface Revenue {
   on: boolean
   /** null: no amount typed (saved as 0, "revenue, amount to come"). */
   amount: number | null
+  /** The field holds text that isn't an amount: nothing is saved until it is fixed. */
+  invalid?: boolean
 }
 
 const OFF: Revenue = { on: false, amount: null }
@@ -69,6 +71,8 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
   const [focusAmount, setFocusAmount] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Made once, so trying again after an error can't add the task twice.
+  const [addId] = useState(newTaskId)
   const stepRefs = useRef(new Map<string, HTMLTextAreaElement>())
   const titleRef = useRef<HTMLTextAreaElement>(null)
 
@@ -84,7 +88,7 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
   const cleanSteps = () => steps.map((s) => ({ id: s.id, title: s.title.trim() })).filter((s) => s.title !== '')
   const stepsChanged = JSON.stringify(cleanSteps()) !== JSON.stringify(task?.subtasks ?? [])
   const dirty = revenueChanged || (editable && (title.trim() !== (task?.title.trim() ?? '') || stepsChanged))
-  const valid = !editable || title.trim() !== ''
+  const valid = (!editable || title.trim() !== '') && !(revenue.on && revenue.invalid)
 
   const saveRevenue = (target: Pick<Task, 'id' | 'title'>, isDone: boolean) => {
     setTaskRevenue(space, weekId, target, revenue.on ? (revenue.amount ?? 0) : null, isDone).catch((e: unknown) =>
@@ -103,7 +107,7 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
       setBusy(true)
       setError(null)
       try {
-        const added = await addTaskAfterLock(space, weekId, { title, subtasks: steps.map((s) => s.title) })
+        const added = await addTaskAfterLock(space, weekId, { id: addId, title, subtasks: steps.map((s) => s.title) })
         if (revenue.on) saveRevenue(added, false)
         haptic()
         close()
@@ -117,7 +121,9 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
     const clean = cleanSteps()
     if (clean.length > 0) next.subtasks = clean
     onSave?.(next)
-    if (revenueChanged) saveRevenue(next, isTaskDone(next, done))
+    // Steps added or deleted after check-offs (Monday) can make the task done or not: its earning follows.
+    const nowDone = isTaskDone(next, done)
+    if (revenueChanged || (week.data && stored && (stored.earnedAt !== null) !== nowDone)) saveRevenue(next, nowDone)
     close()
   }
 
@@ -186,10 +192,12 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
               placeholder="Title"
               aria-label="Title"
               autoFocus={mode.kind !== 'edit'}
-              enterKeyHint={steps.length > 0 ? 'next' : 'done'}
+              enterKeyHint={steps.length > 0 || mode.kind === 'new' ? 'next' : 'done'}
               onEnter={() => {
                 const first = steps[0]
                 if (first) stepRefs.current.get(first.id)?.focus()
+                // Opened from Add Task with Steps: Return starts the first step, like Reminders.
+                else if (mode.kind === 'new' && title.trim()) addStep()
                 else titleRef.current?.blur()
               }}
             />
@@ -290,7 +298,8 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
           toggle={revenue.on}
           disabled={storedRevenue === null}
           onToggle={(on) => {
-            setRevenueDraft({ ...revenue, on })
+            // A typo in a field that goes away doesn't hold up Done; switching back on starts the field afresh.
+            setRevenueDraft({ ...revenue, on, invalid: false })
             setFocusAmount(on)
           }}
         />
@@ -304,7 +313,13 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
               exit={{ height: 0, opacity: 0 }}
               transition={transitionFor('snappy')}
             >
-              <MoneyField label="Amount" value={revenue.amount} onChange={(amount) => setRevenueDraft({ on: true, amount })} currency={currency} autoFocus={focusAmount} />
+              <MoneyField
+                label="Amount"
+                value={revenue.amount}
+                onChange={(amount, invalid) => setRevenueDraft({ on: true, amount, invalid })}
+                currency={currency}
+                autoFocus={focusAmount}
+              />
             </motion.div>
           )}
         </AnimatePresence>

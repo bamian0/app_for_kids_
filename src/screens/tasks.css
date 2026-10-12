@@ -128,6 +128,26 @@
   stroke-dashoffset: 0;
   transition: stroke-dashoffset 0.3s cubic-bezier(0.55, 0, 0.35, 1) 0.32s;
 }
+/* Your own ring sits where every check circle is, so it answers a tap: it opens the task. A 44pt
+   target that doesn't make the row any taller, pressed down like the check circle. */
+.tk-ring-press {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin: -10px;
+  -webkit-tap-highlight-color: transparent;
+}
+.tk-ring-press .tk-ring {
+  transition: transform 0.18s var(--ease-out);
+}
+.tk-ring-press:active .tk-ring {
+  transform: scale(0.86);
+  transition: none;
+}
+
 /* Someone else's progress: gray, like their check dots. */
 .tk-ring--muted .tk-ring__arc,
 .tk-ring--muted .tk-ring__fill {
@@ -141,6 +161,7 @@
   stroke: #fff;
 }
 @media (prefers-reduced-motion: reduce) {
+  .tk-ring-press .tk-ring,
   .tk-ring__arc,
   .tk-ring__fill,
   .tk-ring__tick,

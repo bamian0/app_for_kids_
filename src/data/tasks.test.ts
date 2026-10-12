@@ -50,6 +50,19 @@ describe('decodeTasks', () => {
     expect(many.subtasks?.map((s) => s.id)).toEqual(['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7'])
   })
 
+  it('keeps only the first task with an id, and no add time for an id that repeats', () => {
+    // t1 was on the list at the lock; a crafted append repeated its id with an add time.
+    const tasks = decodeTasks(
+      [{ id: 't0', title: 'Finish the edit' }, { id: 't1', title: 'Call the client' }, { id: 't1', title: 'Call the client', subs: ['x|Copy'] }],
+      { t1: 2_000 },
+      toMs,
+    )
+    expect(tasks).toStrictEqual([
+      { id: 't0', title: 'Finish the edit' },
+      { id: 't1', title: 'Call the client' },
+    ])
+  })
+
   it('reads add times from the added map', () => {
     const tasks = decodeTasks([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }], { b: 1_000, c: 'not a time', z: 5 }, toMs)
     expect(tasks).toStrictEqual([

@@ -95,7 +95,7 @@ export function MemberCard({
     const marks = Object.entries(task.reviewerMarks)
     let lead: ReactNode
     if (checkable && steps.length > 0) {
-      lead = <StepRing done={ticked} total={steps.length} />
+      lead = <StepRing done={ticked} total={steps.length} onPress={onOpenTask ? () => onOpenTask(task.taskId) : undefined} />
     } else if (checkable) {
       lead = <CheckCircle checked={task.selfDone} onChange={(v) => onToggleDone?.(task.taskId, v)} aria-label={task.title} />
     } else if (scored) {

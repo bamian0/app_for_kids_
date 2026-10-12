@@ -87,6 +87,10 @@
 .m-status .ui-icon {
   flex-shrink: 0;
 }
+/* Beside a score ring the line can wrap: never leave one word alone ("2" / "tasks"). */
+.m-status > span {
+  text-wrap: pretty;
+}
 
 .m-amount {
   color: var(--label);
@@ -229,6 +233,11 @@
 .m-chart__svg .m-chart__value {
   font: 600 13px/16px var(--font);
   fill: var(--label);
+  /* A halo in the card's color, so a gridline behind the amount doesn't strike it through. */
+  paint-order: stroke;
+  stroke: var(--secondary-system-grouped-background);
+  stroke-width: 4px;
+  stroke-linejoin: round;
 }
 .m-chart__svg .is-selected .m-chart__label {
   font-weight: 600;
@@ -293,6 +302,10 @@
   overflow-wrap: anywhere;
 }
 .m-balance__value.is-negative {
+  color: var(--system-red);
+}
+/* A balance that would go below zero, as the Remove Money sheet previews it. */
+.m-negative {
   color: var(--system-red);
 }
 .m-balance__earned {

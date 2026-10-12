@@ -1,6 +1,6 @@
 // A goal: its name and cost, and for one that exists, where it sits in the order, Delete, and once
 // the money is there, Mark as Bought (spends its cost and removes it).
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { deleteGoal, markGoalBought, reorderGoals, saveGoal, useEarnings, useGoals, useMoneyState, useMoves } from '../../data/api.ts'
 import { balanceOf, formatMoney, fundGoals, weeklyPace } from '../../domain/money.ts'
 import type { CurrencyCode, Goal } from '../../domain/types.ts'
@@ -26,6 +26,7 @@ export function GoalSheet({ goal, currency, close }: GoalSheetProps) {
   const [cost, setCost] = useState<number | null>(goal?.cost ?? null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const costRef = useRef<HTMLInputElement>(null)
 
   const clean = name.trim()
   const valid = clean.length > 0 && cost !== null && cost > 0
@@ -67,8 +68,11 @@ export function GoalSheet({ goal, currency, close }: GoalSheetProps) {
           autoCapitalize="sentences"
           autoFocus={!goal}
           enterKeyHint="next"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) costRef.current?.focus()
+          }}
         />
-        <MoneyField label="Cost" value={cost} onChange={setCost} currency={currency} />
+        <MoneyField label="Cost" value={cost} onChange={setCost} currency={currency} inputRef={costRef} />
       </Section>
       {goal && <GoalActions goal={goal} currency={currency} close={close} />}
     </Screen>

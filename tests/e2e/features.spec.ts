@@ -49,9 +49,12 @@ async function signIn(page: Page, who: typeof MARCO): Promise<void> {
 }
 
 /** Types a task into the open task sheet: title, steps (Return adds the next one), and its revenue. */
-async function fillTask(form: Locator, task: { title: string; steps: string[] }, amount: string): Promise<void> {
-  await form.getByLabel('Title', { exact: true }).fill(task.title)
-  await form.getByRole('button', { name: 'Add Step', exact: true }).click()
+async function fillTask(form: Locator, task: { title: string; steps: string[] }, amount: string, opts: { returnStartsSteps?: boolean } = {}): Promise<void> {
+  const title = form.getByLabel('Title', { exact: true })
+  await title.fill(task.title)
+  // From Add Task with Steps, Return on the title starts the first step, like Reminders.
+  if (opts.returnStartsSteps) await title.press('Enter')
+  else await form.getByRole('button', { name: 'Add Step', exact: true }).click()
   for (const [i, step] of task.steps.entries()) {
     const field = form.getByLabel(`Step ${i + 1}`, { exact: true })
     await expect(field).toBeFocused()
@@ -102,7 +105,7 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
 
     await marco.getByRole('button', { name: 'Add Task with Steps', exact: true }).click()
     const form = sheet(marco)
-    await fillTask(form, SHOOT, '800')
+    await fillTask(form, SHOOT, '800', { returnStartsSteps: true })
     await expect(shown(form, '3 of 8', true)).toBeVisible()
     await snap(marco, 'f02-task-sheet-new')
     await form.getByRole('button', { name: 'Done', exact: true }).click()
@@ -143,6 +146,36 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
     expect(await doneOf(marcoUid, thisWeek)).toEqual({ [s1]: true, [s2]: true, [s3]: true })
   })
 
+  await test.step('Steps changed on Monday take the money with the task', async () => {
+    // The ring sits where a check circle would be: a tap opens the task.
+    await marco.getByRole('button', { name: '3 of 3 steps done. Details', exact: true }).click()
+    let form = sheet(marco)
+    const amount = form.getByLabel('Amount in USD')
+    await expect(amount).toHaveValue('800')
+    // Text that isn't an amount is never saved (as 0 or anything else).
+    await amount.fill('8..5')
+    await expect(form.getByRole('button', { name: 'Done', exact: true })).toBeDisabled()
+    await amount.fill('800')
+    await form.getByRole('button', { name: 'Add Step', exact: true }).click()
+    await form.getByLabel('Step 4', { exact: true }).fill('Send the invoice')
+    await form.getByRole('button', { name: 'Done', exact: true }).click()
+    await expect(marco.getByRole('dialog')).toHaveCount(0)
+    // 3 of 4 steps: not done, so not earned.
+    await expect.poll(async () => (await earningOf(marcoUid, thisWeek, shoot.id))?.earnedAt ?? null).toBeNull()
+    await expect(shown(marco, '3/4', true)).toBeVisible()
+    expect((await earningOf(marcoUid, thisWeek, shoot.id))?.amount).toBe(800)
+
+    await marco.getByRole('button', { name: '3 of 4 steps done. Details', exact: true }).click()
+    form = sheet(marco)
+    await form.getByLabel('Step 4', { exact: true }).click()
+    await form.getByRole('button', { name: 'Delete Send the invoice', exact: true }).click()
+    await form.getByRole('button', { name: 'Done', exact: true }).click()
+    await expect(marco.getByRole('dialog')).toHaveCount(0)
+    // Every step ticked again: earned again.
+    await expect.poll(async () => (await earningOf(marcoUid, thisWeek, shoot.id))?.earnedAt ?? null).not.toBeNull()
+    await expect.poll(async () => (await planDoc(marcoUid, thisWeek).get()).get('tasks')).toEqual([shoot])
+  })
+
   await test.step('The earning counts on Overview and Goals', async () => {
     await marco.getByRole('button', { name: 'Back to Spaces' }).click()
     await expect(tabBar(marco)).not.toHaveAttribute('data-hidden')
@@ -150,6 +183,8 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
     await expect(tab(marco, 'Overview')).toHaveAttribute('aria-selected', 'true')
     await expect(marco.locator('.m-earned__value').filter({ visible: true })).toHaveText('$800')
     await expect(shown(marco, '1 of 1 task done', true)).toBeVisible()
+    // Monday: the space's row shows the same check-offs as the ring, labelled like everywhere else.
+    await expect(shown(marco, 'Provisional', true)).toBeVisible()
     await expect(shown(marco, SHOOT.title, true)).toBeVisible()
     await snap(marco, 'f04-overview')
     // The Goals row switches tabs.
@@ -287,6 +322,9 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
       await marco.getByRole('button', { name: 'New goal' }).click()
       const form = sheet(marco)
       await form.getByLabel('Name').fill(goal.name)
+      // Return goes on to the cost.
+      await form.getByLabel('Name').press('Enter')
+      await expect(form.getByLabel('Cost in USD')).toBeFocused()
       await form.getByLabel('Cost in USD').fill(goal.cost)
       if (goal.name === 'Sony FX3') await snap(marco, 'f10-goal-sheet-new')
       await form.getByRole('button', { name: 'Add', exact: true }).click()
@@ -298,6 +336,11 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
         ['Tripod', 400, 0],
         ['Sony FX3', 2500, 1],
       ])
+    // A cost is edited as plain digits, so adding or removing one can't turn into a decimal comma.
+    await marco.getByRole('button', { name: /^Sony FX3/ }).click()
+    await expect(sheet(marco).getByLabel('Cost in USD')).toHaveValue('2500')
+    await sheet(marco).getByRole('button', { name: 'Cancel' }).click()
+    await expect(marco.getByRole('dialog')).toHaveCount(0)
 
     await marco.getByRole('button', { name: 'Add Money', exact: true }).click()
     let form = sheet(marco)
@@ -310,6 +353,9 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
 
     await marco.getByRole('button', { name: 'Remove Money', exact: true }).click()
     form = sheet(marco)
+    // More than there is: the preview says so in red.
+    await form.getByLabel('Amount in USD').fill('5000')
+    await expect(form.locator('.m-negative')).toHaveText('−$3,500')
     await form.getByLabel('Amount in USD').fill('200')
     await form.getByLabel('What for?').fill('Rent')
     await snap(marco, 'f12-remove-money')
@@ -341,7 +387,8 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
     await expect(marco.getByRole('dialog')).toHaveCount(0)
     await expect.poll(async () => (await db.collection(`users/${marcoUid}/goals`).get()).docs.map((d) => d.get('name'))).toEqual(['Sony FX3'])
     const spent = await db.collection(`users/${marcoUid}/moves`).where('note', '==', 'Tripod').get()
-    expect(spent.docs.map((d) => [d.get('kind'), d.get('amount')])).toEqual([['spend', 400]])
+    // Marked as a goal, so the pace toward the camera doesn't drop.
+    expect(spent.docs.map((d) => [d.get('kind'), d.get('amount'), d.get('goal')])).toEqual([['spend', 400, true]])
     await expect(marco.locator('.m-balance__value').filter({ visible: true })).toHaveText('$900')
     await expect(marco.getByRole('progressbar', { name: 'Sony FX3: 36 percent funded' })).toBeVisible()
     await expect(shown(marco, '−$400', true)).toBeVisible()

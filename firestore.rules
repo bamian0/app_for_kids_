@@ -80,8 +80,10 @@ service cloud.firestore {
         && d.updatedAt == request.time;
     }
 
+    // A goal marked as bought is a spend with goal: true, so the pace can leave it out.
     function validMove(d) {
-      return exactKeys(d, ['kind', 'amount', 'note', 'at'])
+      return (exactKeys(d, ['kind', 'amount', 'note', 'at'])
+          || (exactKeys(d, ['kind', 'amount', 'note', 'at', 'goal']) && d.goal == true && d.kind == 'spend'))
         && d.kind in ['add', 'spend']
         && num(d.amount, 0, 1000000000) && d.amount > 0
         && str(d.note, 0, 80)

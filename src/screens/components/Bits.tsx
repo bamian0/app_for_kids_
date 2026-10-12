@@ -110,14 +110,17 @@ export function Block({ children, className }: { children: ReactNode; className?
 }
 
 /** Where a plain task has its check circle, a task with steps has this: a ring that fills step by
- *  step and turns solid with a tick once every step is done. `muted`: someone else's, gray like CheckDot. */
-export function StepRing({ done, total, size = 24, muted }: { done: number; total: number; size?: number; muted?: boolean }) {
+ *  step and turns solid with a tick once every step is done. `muted`: someone else's, gray like CheckDot.
+ *  `onPress`: your own, where people tap to tick; it opens the task (its steps are ticked below it). */
+export function StepRing({ done, total, size = 24, muted, onPress }: { done: number; total: number; size?: number; muted?: boolean; onPress?: () => void }) {
   const fraction = total > 0 ? done / total : 0
-  return (
+  const label = `${done} of ${total} steps done`
+  const ring = (
     <span
       className={cx('tk-ring', muted && 'tk-ring--muted', fraction === 1 && 'is-complete', fraction === 0 && 'is-empty')}
-      role="img"
-      aria-label={`${done} of ${total} steps done`}
+      role={onPress ? undefined : 'img'}
+      aria-label={onPress ? undefined : label}
+      aria-hidden={onPress ? true : undefined}
       style={{ '--ring-size': `${size}px` } as CSSProperties}
     >
       <svg viewBox="0 0 24 24" className="tk-ring__svg" aria-hidden>
@@ -127,6 +130,12 @@ export function StepRing({ done, total, size = 24, muted }: { done: number; tota
         <path className="tk-ring__tick" d="M7.4 12.3l3.15 3.15 6.05-6.7" pathLength={1} />
       </svg>
     </span>
+  )
+  if (!onPress) return ring
+  return (
+    <button type="button" className="tk-ring-press" aria-label={`${label}. Details`} onClick={onPress}>
+      {ring}
+    </button>
   )
 }
 

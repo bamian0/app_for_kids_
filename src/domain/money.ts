@@ -208,6 +208,16 @@ export function parseAmount(text: string): number | null {
   return value > MAX_AMOUNT ? null : value
 }
 
+/**
+ * The text an amount is edited as: digits, '.' and cents only when there are some ('1250', '1250.50').
+ * Not grouped: in '1,250' one more digit ('1,2500') or one less ('1,25') reads as a decimal comma, and
+ * a comma keypad typing ',50' after it gives '1,250,50', which isn't an amount at all.
+ */
+export function editableAmount(value: number): string {
+  const cents = Math.round(value * 100) % 100 !== 0
+  return value.toLocaleString(DEFAULT_LOCALE, { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2, useGrouping: false })
+}
+
 export function earningId(spaceId: string, weekId: WeekId, taskId: string): string {
   return `${spaceId}_${weekId}_${taskId}`
 }
@@ -217,6 +227,16 @@ export function earningId(spaceId: string, weekId: WeekId, taskId: string): stri
 function cutoffOf(state: MoneyState | null): number | null {
   if (state?.baseline == null) return null
   return state.baselineAt ?? Number.POSITIVE_INFINITY
+}
+
+/**
+ * Whether money earned at `earnedAt` is already inside the balance the user set ("I have X now"):
+ * earned at or before baselineAt. Un-doing its task then keeps it earned, or ticking the task again
+ * would earn it after the baseline and count it twice.
+ */
+export function inBaseline(state: MoneyState | null, earnedAt: number | null): boolean {
+  const cutoff = cutoffOf(state)
+  return earnedAt !== null && cutoff !== null && earnedAt <= cutoff
 }
 
 function isEarned(e: Earning): e is Earning & { earnedAt: number } {
@@ -241,12 +261,13 @@ export function balanceOf(state: MoneyState | null, earnings: Earning[], moves: 
   return total / 100
 }
 
-/** Net money in over the last 28 days (earnings + adds − spends) ÷ 4. Anything newer than `nowMs`
- *  counts too, so a server time slightly ahead of the device clock isn't left out. */
+/** Net money in over the last 28 days (earnings + adds − spends) ÷ 4. Goals marked as bought are left
+ *  out: that money was saved earlier, so buying one doesn't slow the pace toward the others. Anything
+ *  newer than `nowMs` counts too, so a server time slightly ahead of the device clock isn't left out. */
 export function weeklyPace(earnings: Earning[], moves: MoneyMove[], nowMs: number): number {
   const since = nowMs - PACE_DAYS * DAY
   let total = 0
-  for (const m of moves) if (m.at > since) total += moveCents(m)
+  for (const m of moves) if (m.at > since && !m.goal) total += moveCents(m)
   for (const e of earnings) if (isEarned(e) && e.earnedAt > since) total += cents(e.amount)
   return total / 100 / (PACE_DAYS / 7)
 }

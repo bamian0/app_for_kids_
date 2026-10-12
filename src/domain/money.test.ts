@@ -8,9 +8,11 @@ import {
   earnedByWeek,
   earnedInMonth,
   earningId,
+  editableAmount,
   etaWeeks,
   formatMoney,
   fundGoals,
+  inBaseline,
   moneyActivity,
   nextGoalOrder,
   parseAmount,
@@ -29,8 +31,8 @@ function earning(taskId: string, amount: number, earnedAt: number | null, weekId
   return { id: earningId(spaceId, weekId, taskId), spaceId, weekId, taskId, title: taskId, amount, earnedAt, updatedAt: 0 }
 }
 
-function move(id: string, kind: 'add' | 'spend', amount: number, at: number, note = ''): MoneyMove {
-  return { id, kind, amount, note, at }
+function move(id: string, kind: 'add' | 'spend', amount: number, at: number, note = '', goal = false): MoneyMove {
+  return goal ? { id, kind, amount, note, at, goal } : { id, kind, amount, note, at }
 }
 
 function goal(id: string, cost: number, order: number, createdAt = 0): Goal {
@@ -263,6 +265,25 @@ describe('parseAmount', () => {
   })
 })
 
+describe('editableAmount', () => {
+  it('is digits and a point, cents only when there are some', () => {
+    expect(editableAmount(1250)).toBe('1250')
+    expect(editableAmount(1250.5)).toBe('1250.50')
+    expect(editableAmount(250000)).toBe('250000')
+    expect(editableAmount(1_000_000_000)).toBe('1000000000')
+    expect(editableAmount(0.07)).toBe('0.07')
+  })
+
+  it('reads back as itself, and after the usual edits as what was meant', () => {
+    for (const value of [0, 0.5, 12, 1250, 1250.5, 4500, 250000, 1_000_000_000]) expect(parseAmount(editableAmount(value))).toBe(value)
+    // One zero missed, one too many, and cents typed on a comma keypad.
+    expect(parseAmount(`${editableAmount(1250)}0`)).toBe(12500)
+    expect(parseAmount(editableAmount(4500).slice(0, -1))).toBe(450)
+    expect(parseAmount(`${editableAmount(250000)}0`)).toBe(2500000)
+    expect(parseAmount(`${editableAmount(1250)},50`)).toBe(1250.5)
+  })
+})
+
 describe('roundMoney', () => {
   it('rounds to cents, half away from zero, without float surprises', () => {
     expect(roundMoney(1.005)).toBe(1.01)
@@ -316,6 +337,30 @@ describe('balanceOf', () => {
   })
 })
 
+describe('inBaseline', () => {
+  it('is money earned at or before the balance was set', () => {
+    const s = state(1500, NOW - DAY)
+    expect(inBaseline(s, NOW - 2 * DAY)).toBe(true)
+    expect(inBaseline(s, NOW - DAY)).toBe(true)
+    expect(inBaseline(s, NOW - DAY + 1)).toBe(false)
+    expect(inBaseline(s, null)).toBe(false)
+    // No balance set: nothing is in it, whatever the currency doc says.
+    expect(inBaseline(null, NOW - 2 * DAY)).toBe(false)
+    expect(inBaseline(state(null, null), NOW - 2 * DAY)).toBe(false)
+    // Set a moment ago, its server time still on the way: everything so far is in it.
+    expect(inBaseline(state(1500, null), NOW)).toBe(true)
+  })
+
+  it('keeping such an earning when its task is un-done keeps the balance right', () => {
+    // Earned Monday, balance set Tuesday (it holds the 500), task un-ticked and ticked again Wednesday.
+    const s = state(1500, NOW - DAY)
+    const kept = earning('t1', 500, NOW - 2 * DAY)
+    expect(balanceOf(s, [kept], [])).toBe(1500)
+    // What clearing and re-earning would have done: the 500 a second time.
+    expect(balanceOf(s, [earning('t1', 500, NOW)], [])).toBe(2000)
+  })
+})
+
 describe('weeklyPace', () => {
   it('is the net money in over the last 28 days, per week', () => {
     const earnings = [earning('t1', 800, NOW - 10 * DAY), earning('t2', 400, null), earning('t3', 1000, NOW - 40 * DAY)]
@@ -332,6 +377,16 @@ describe('weeklyPace', () => {
 
   it('can be negative when more went out than came in', () => {
     expect(weeklyPace([earning('t', 100, NOW)], [move('m', 'spend', 500, NOW)], NOW)).toBe(-100)
+  })
+
+  it('leaves out goals marked as bought: money saved earlier, not a slower pace', () => {
+    const earnings = [earning('t1', 500, NOW - 3 * DAY), earning('t2', 500, NOW - 10 * DAY), earning('t3', 500, NOW - 17 * DAY), earning('t4', 500, NOW - 24 * DAY)]
+    const bought = move('m1', 'spend', 1500, NOW - DAY, 'FX3', true)
+    expect(weeklyPace(earnings, [bought], NOW)).toBe(500)
+    // The purchase still comes off the balance.
+    expect(balanceOf(state(2000, NOW - 60 * DAY), earnings, [bought])).toBe(2500)
+    // A spend recorded by hand still slows the pace, whatever its note says.
+    expect(weeklyPace(earnings, [move('m2', 'spend', 1500, NOW - DAY, 'FX3')], NOW)).toBe(125)
   })
 })
 

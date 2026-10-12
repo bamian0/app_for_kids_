@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { collection, doc, getDoc, getDocs } from 'firebase/firestore'
 import {
   addMove,
+  createSpace,
   deleteGoal,
   deleteMove,
   deleteMyAccount,
@@ -20,7 +21,21 @@ import { forget, peek, watch } from '../../src/data/store.ts'
 import { balanceOf, defaultCurrency, earningId } from '../../src/domain/money.ts'
 import type { Earning, Goal, MoneyMove, MoneyState, Space } from '../../src/domain/types.ts'
 import { getFirebase } from '../../src/firebase/app.ts'
-import { adminGet, adminList, as, createUser, eventually, observe, PASSWORD, rejectsWith, setupEmulators, teardownEmulators, type TestUser } from './helpers.ts'
+import {
+  adminGet,
+  adminList,
+  as,
+  createUser,
+  eventually,
+  loadRules,
+  observe,
+  PASSWORD,
+  rejectsWith,
+  RULES,
+  setupEmulators,
+  teardownEmulators,
+  type TestUser,
+} from './helpers.ts'
 
 const GENERIC = 'Something went wrong. Try again.'
 const NO_ACCESS = "You don't have access to this."
@@ -148,7 +163,7 @@ describe('goals', () => {
     expect(await adminGet(`users/${alex.uid}/goals/${lens.id}`)).toBeUndefined()
     const added = (await adminList(`users/${alex.uid}/moves`)).filter((id) => !before.includes(id))
     expect(added).toHaveLength(1)
-    expect(await adminGet(`users/${alex.uid}/moves/${added[0]}`)).toMatchObject({ kind: 'spend', amount: 1200.5, note: 'Lens' })
+    expect(await adminGet(`users/${alex.uid}/moves/${added[0]}`)).toMatchObject({ kind: 'spend', amount: 1200.5, note: 'Lens', goal: true })
   })
 
   it('checks names and costs', async () => {
@@ -217,5 +232,27 @@ describe('account deletion', () => {
     await rejectsWith(signIn(zoe.email, PASSWORD), 'Wrong email or password.')
     // Someone else's money is untouched.
     expect(await adminList(`users/${alex.uid}/earnings`)).toHaveLength(2)
+  })
+
+  it('a failure while deleting the money leaves the account in its spaces, to try again', async () => {
+    const yan = await createUser('Yan')
+    const crew = await createSpace({ name: 'Crew', reward: 'Dinner on me', penalty: 'Coffee for a week' })
+    await addMove('add', 5, '')
+    // Rules from before money existed (the new app can go live before they are published): the
+    // moves can't be read, so they can't be deleted.
+    const older = RULES.replace('match /moves/{moveId} {\n        allow read, delete: if isUser(uid);', 'match /moves/{moveId} {')
+    expect(older).not.toBe(RULES)
+    await loadRules(older)
+    try {
+      await rejectsWith(deleteMyAccount(PASSWORD), NO_ACCESS)
+    } finally {
+      await loadRules(RULES)
+    }
+    // Nothing that can't be undone has happened: still in the space, profile and sign-in intact.
+    expect((await adminGet(`spaces/${crew.id}`))?.memberIds).toEqual([yan.uid])
+    expect(await adminGet(`users/${yan.uid}`)).toBeDefined()
+    await deleteMyAccount(PASSWORD)
+    expect(await adminList(`users/${yan.uid}/moves`)).toEqual([])
+    expect(await adminGet(`users/${yan.uid}`)).toBeUndefined()
   })
 })

@@ -1,15 +1,18 @@
 // Tasks with steps, tasks added after the lock, and the earnings that follow tasks (SPEC §6.1–§6.3),
 // through the same functions the screens call, against the emulators and the real rules.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { addTaskAfterLock, createSpace, joinSpace, savePlan, setTaskDone, setTaskRevenue } from '../../src/data/api.ts'
-import { moneyKeys, startEarnings } from '../../src/data/money.ts'
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { addTaskAfterLock, createSpace, joinSpace, savePlan, setBaseline, setTaskDone, setTaskRevenue } from '../../src/data/api.ts'
+import { inBackground, moneyKeys, startEarnings, startMoneyState } from '../../src/data/money.ts'
 import { forget, peek, watch } from '../../src/data/store.ts'
 import { startWeek, weekKey } from '../../src/data/weeks.ts'
 import { now } from '../../src/domain/clock.ts'
-import { earningId } from '../../src/domain/money.ts'
+import { newTaskId } from '../../src/domain/ids.ts'
+import { balanceOf, earningId } from '../../src/domain/money.ts'
 import { addedAfterLock, computeWeek } from '../../src/domain/scoring.ts'
 import { addWeeks, weekIdFor } from '../../src/domain/time.ts'
-import type { Earning, Space, Task } from '../../src/domain/types.ts'
+import type { Earning, MoneyState, Space, Task } from '../../src/domain/types.ts'
+import { getFirebase } from '../../src/firebase/app.ts'
 import {
   adminGet,
   as,
@@ -194,6 +197,45 @@ describe('adding tasks after the lock', () => {
     expect(result.members[alex.uid].tasks[1]).toMatchObject({ addedAt: added.addedAt, subtasks: [{ done: false }, { done: false }] })
   })
 
+  it('trying again after an add went through doesn’t add the task twice', async () => {
+    await as(alex)
+    const id = newTaskId()
+    await addTaskAfterLock(space, ACTIVE, { id, title: 'Send the invoice' })
+    // The answer was lost (offline, a retried transaction): the same add again is simply done.
+    await addTaskAfterLock(space, ACTIVE, { id, title: 'Send the invoice' })
+    const stored = await adminGet(`${weekPath(ACTIVE)}/plans/${alex.uid}`)
+    expect(stored?.tasks.filter((t: Task) => t.id === id)).toEqual([{ id, title: 'Send the invoice' }])
+    expect(Object.keys(stored?.added).filter((key) => key === id)).toHaveLength(1)
+    await rejectsWith(addTaskAfterLock(space, ACTIVE, { id: 'not|an id', title: 'X' }), GENERIC)
+  })
+
+  it('a copy of a task from the lock counts once, and doesn’t make the original look added', async () => {
+    const DUP = '2026-08-17'
+    await seed({
+      [weekPath(DUP)]: weekDoc('active', [alex.uid, sam.uid]),
+      [`${weekPath(DUP)}/plans/${alex.uid}`]: { tasks: [{ id: 't0', title: 'Finish the edit' }, { id: 't1', title: 'Call the client' }], updatedAt: ts(Date.now() - 3 * DAY) },
+      [`${weekPath(DUP)}/progress/${alex.uid}`]: { done: { t1: true }, updatedAt: ts(Date.now() - DAY) },
+    })
+    await as(alex)
+    // Written by hand, not by the app: the rules can't tell the id is already on the list.
+    await setDoc(doc(getFirebase().db, `${weekPath(DUP)}/plans/${alex.uid}`), {
+      tasks: [{ id: 't0', title: 'Finish the edit' }, { id: 't1', title: 'Call the client' }, { id: 't1', title: 'Call the client' }],
+      added: { t1: serverTimestamp() },
+      updatedAt: serverTimestamp(),
+    })
+    await as(sam)
+    const live = observe(startWeek(space.id, DUP, sam.uid))
+    const state = await live.until((l) => (l.data?.plans[alex.uid]?.updatedAt ?? 0) > Date.now() - 60_000)
+    live.stop()
+    expect(state.data!.plans[alex.uid].tasks).toStrictEqual([
+      { id: 't0', title: 'Finish the edit' },
+      { id: 't1', title: 'Call the client' },
+    ])
+    const result = computeWeek(state.data!, space, now()).members[alex.uid]
+    expect(result.taskCount).toBe(2)
+    expect(result.provisionalScore).toBe(50)
+  })
+
   it('someone with no list at the lock can start one this way', async () => {
     await as(sam)
     const task = await addTaskAfterLock(space, ACTIVE, { title: 'Color grade' })
@@ -274,6 +316,39 @@ describe('check-offs keep the task’s earning in step', () => {
     }
   })
 
+  it('two quick ticks on the last two steps still earn the task', async () => {
+    const QUICK = '2026-08-24'
+    await seed({
+      [weekPath(QUICK)]: weekDoc('active', [alex.uid, sam.uid]),
+      [`${weekPath(QUICK)}/plans/${alex.uid}`]: { tasks: [{ id: 'd1', title: 'Deliver', subs: ['d1a|Export', 'd1b|Upload'] }], updatedAt: ts(Date.now() - 3 * DAY) },
+    })
+    await as(alex)
+    const releaseWeek = watch(weekKey(alex.uid, space.id, QUICK), startWeek(space.id, QUICK, alex.uid), () => {})
+    const releaseEarnings = watch(moneyKeys.earnings(alex.uid), startEarnings(alex.uid), () => {})
+    try {
+      await eventually(() => peek(weekKey(alex.uid, space.id, QUICK)).data !== undefined)
+      await setTaskRevenue(space, QUICK, { id: 'd1', title: 'Deliver' }, 300, false)
+      await eventually(() => peek<Earning[]>(moneyKeys.earnings(alex.uid)).data?.some((e) => e.taskId === 'd1') === true)
+      // The second tap comes before the first has written anything: it must still see the first.
+      await Promise.all([setTaskDone(space, QUICK, 'd1a', true), setTaskDone(space, QUICK, 'd1b', true)])
+      expect((await adminGet(`${weekPath(QUICK)}/progress/${alex.uid}`))?.done).toEqual({ d1a: true, d1b: true })
+      expect(await earnedAt(alex, QUICK, 'd1')).not.toBeNull()
+    } finally {
+      releaseWeek()
+      releaseEarnings()
+      forget(weekKey(alex.uid, space.id, QUICK))
+      forget(moneyKeys.earnings(alex.uid))
+    }
+  })
+
+  it('a refused check-off doesn’t hold up the next one', async () => {
+    const OVER = '2026-06-29'
+    await seed({ [weekPath(OVER)]: weekDoc('closed', [alex.uid, sam.uid]) })
+    await as(alex)
+    await rejectsWith(setTaskDone(space, OVER, 'x1', true), CLOSED)
+    await rejectsWith(setTaskDone(space, OVER, 'x1', true), CLOSED)
+  })
+
   it('catches up from the server when this device has nothing cached', async () => {
     // Sam's list and earning were written elsewhere (another device): this client has never seen them.
     const id = earningId(space.id, W, 'v1')
@@ -336,6 +411,73 @@ describe('a full list of steps', () => {
     } finally {
       release()
       forget(weekKey(alex.uid, space.id, W))
+    }
+  })
+})
+
+describe('money earned before the balance was set', () => {
+  const W = '2026-09-07'
+
+  it('stays earned when its task is un-done, so ticking again doesn’t count it twice', async () => {
+    await seed({
+      [weekPath(W)]: weekDoc('active', [alex.uid, sam.uid]),
+      [`${weekPath(W)}/plans/${alex.uid}`]: {
+        tasks: [{ id: 'r1', title: 'Wedding' }, { id: 'r2', title: 'Ad', subs: ['r2a|Shoot', 'r2b|Edit'] }],
+        updatedAt: ts(Date.now() - 3 * DAY),
+      },
+    })
+    await as(alex)
+    const keys = { week: weekKey(alex.uid, space.id, W), earnings: moneyKeys.earnings(alex.uid), state: moneyKeys.state(alex.uid) }
+    const releases = [
+      watch(keys.week, startWeek(space.id, W, alex.uid), () => {}),
+      watch(keys.earnings, startEarnings(alex.uid), () => {}),
+      watch(keys.state, startMoneyState(alex.uid), () => {}),
+    ]
+    const stored = async (taskId: string) => (await earnedAt(alex, W, taskId))?.toMillis() ?? null
+    try {
+      await eventually(() => peek(keys.week).data !== undefined && peek(keys.state).data !== undefined)
+      await setTaskRevenue(space, W, { id: 'r1', title: 'Wedding' }, 500, false)
+      await setTaskRevenue(space, W, { id: 'r2', title: 'Ad' }, 300, false)
+      await eventually(() => peek<Earning[]>(keys.earnings).data?.filter((e) => e.weekId === W).length === 2)
+      await setTaskDone(space, W, 'r1', true)
+      await setTaskDone(space, W, 'r2a', true)
+      await setTaskDone(space, W, 'r2b', true)
+      const r1 = await stored('r1')
+      const r2 = await stored('r2')
+      expect(r1).not.toBeNull()
+      expect(r2).not.toBeNull()
+
+      // "I have 1,500 now": both earnings are in it.
+      await setBaseline(1500)
+      const baselineAt = (await adminGet(`users/${alex.uid}/money/state`))?.baselineAt.toMillis()
+      await eventually(() => peek<MoneyState | null>(keys.state).data?.baselineAt === baselineAt)
+
+      // A mis-tap and a fix, from what this device has: the money stays where it was.
+      await setTaskDone(space, W, 'r1', false)
+      expect(await stored('r1')).toBe(r1)
+      await setTaskDone(space, W, 'r1', true)
+      expect(await stored('r1')).toBe(r1)
+      // So does changing the amount of a task that isn't done.
+      await setTaskDone(space, W, 'r1', false)
+      await setTaskRevenue(space, W, { id: 'r1', title: 'Wedding' }, 600, false)
+      expect(await adminGet(earningPath(alex, W, 'r1'))).toMatchObject({ amount: 600 })
+      expect(await stored('r1')).toBe(r1)
+
+      // From the server, when this device has no earnings cached.
+      releases[1]()
+      forget(keys.earnings)
+      await setTaskDone(space, W, 'r2b', false)
+      await setTaskDone(space, W, 'r2b', true)
+      await inBackground(`${alex.uid}|earning|${space.id}|${W}`, async () => {})
+      expect(await stored('r2')).toBe(r2)
+
+      const earnings = observe(startEarnings(alex.uid))
+      const all = (await earnings.until((l) => l.data?.some((e) => e.taskId === 'r1' && e.amount === 600) === true)).data!
+      earnings.stop()
+      expect(balanceOf(peek<MoneyState | null>(keys.state).data ?? null, all, [])).toBe(1500)
+    } finally {
+      releases.forEach((release) => release())
+      Object.values(keys).forEach(forget)
     }
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RULES, WEEK_TIMELINE, WEEKDAY_LETTERS, helpSections, introPages } from './content.ts'
+import { REMINDER_TIMES, RULES, WEEK_TIMELINE, WEEKDAY_LETTERS, helpSections, introPages } from './content.ts'
 
 const sections = helpSections()
 const pages = introPages()
@@ -33,6 +33,11 @@ describe('help content', () => {
     expect(section('scores')).toContain('Settled')
     expect(section('money')).toContain('Only you see this part')
     expect(section('reminders')).toContain('installed app')
+    expect(section('reminders')).toContain('Wednesday evening they nudge you if nothing is ticked yet')
+    expect(section('reminders')).toContain('Thursday evening if tasks are still open')
+    // The profile footer gives the same conditions: Wednesday's nudge only when nothing is ticked.
+    expect(REMINDER_TIMES).toContain('Wednesday evening if nothing is ticked yet')
+    expect(REMINDER_TIMES).toContain('Thursday evening if tasks are still open')
   })
 
   it('takes its numbers from the rules it is given', () => {

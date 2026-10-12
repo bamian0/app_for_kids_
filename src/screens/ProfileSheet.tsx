@@ -5,6 +5,7 @@ import { disablePush, enablePush, isPushEnabled, preloadPushConfig, pushSupport 
 import type { UID } from '../domain/types.ts'
 import { Button, GlassButton, NavigationStack, Row, Screen, Section, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
+import { REMINDER_TIMES } from './help/content.ts'
 import { HelpScreen } from './help/HelpSheet.tsx'
 import { ProfilePhoto } from './profile/ProfilePhoto.tsx'
 
@@ -170,8 +171,6 @@ function NotificationsSection({ uid, onInstallGuide }: { uid: UID; onInstallGuid
       .finally(() => setBusy(false))
   }
 
-  const what = 'Monday evening if your list is empty, Friday to review, and when results are in.'
-
   if (support === 'needs-install') {
     return (
       <Section header="Notifications" footer="iPhone only sends reminders to apps on the Home Screen.">
@@ -194,7 +193,7 @@ function NotificationsSection({ uid, onInstallGuide }: { uid: UID; onInstallGuid
     )
   }
   return (
-    <Section header="Notifications" footer={`On this device: ${what}`}>
+    <Section header="Notifications" footer={`On this device: ${REMINDER_TIMES}`}>
       <Row icon="bell" title="Reminders" toggle={enabled === true} onToggle={toggle} disabled={enabled === null || busy} />
     </Section>
   )

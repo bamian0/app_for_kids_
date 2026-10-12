@@ -217,6 +217,8 @@ Known limits:
   - The job creates the VAPID keys in `_private/vapid` if missing and mirrors the public key to `public/config`.
   - It sends each reminder at most once, tracked by docs under `_private/sent/log/{key}`. Copy gives time left relative to now ("locks in 6 hours", "Due in 15 hours"), so it is right in every member's timezone. Once a week doc exists, its stored bounds decide (no "due in" after the stored deadline).
     - Monday 18:00+ local, until the stored lock: you have no tasks for this week and the list locks in N hours. "Nothing planned = 0%" only for members already in the week doc.
+    - Wednesday 18:00+ local, until Thursday 00:00 local: "Nothing ticked yet", N tasks to go before Friday, to a participant with tasks who hasn't ticked a task or step on their current list (ticks left by deleted tasks, or a stepped task's own key, don't count).
+    - Thursday 18:00+ local, until the stored review opening: "K of N tasks still open", reviews start in H hours, to a participant with a task not done (a task with steps is done once every step is ticked), whether or not they had Wednesday's nudge. Both nudges reach only current members in `week.members`; the job reads just the week doc, the plans of those still waiting with a device, and the progress of those with tasks.
     - Friday 09:00+ local: review your friends, due in N hours. Only current members are reminded, but the friends to rate are everyone counted for the week (`membersAt(space, lockAt)`), including anyone who left after lock (named "a former member" once their profile is gone).
     - Friday 20:00+ local: N hours left, or −5 points per friend.
     - Saturday 09:00+ local: results are in (once the week is revealed).

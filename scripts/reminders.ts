@@ -8,14 +8,15 @@
 //
 // Firestore reads stay small on the free plan: outside a reminder window a run reads only the
 // spaces, and a window's week data is loaded only while someone with a device still waits for it.
+// The midweek nudges read only the week doc and those people's plans, and progress for the ones with tasks.
 import { pathToFileURL } from 'node:url'
 import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app'
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
 import { decodeTasks } from '../src/data/tasks.ts'
-import type { Mark, MonthId, Space, UID, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, offsetToStore, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
+import type { Mark, MonthId, Plan, Progress, Space, UID, Week, WeekData, WeekId } from '../src/domain/types.ts'
+import { dueWindows, isNudge, offsetToStore, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
 
 export const DEFAULT_APP_URL = 'https://bamian0.github.io/app_for_kids_/'
 const FOUR_WEEKS_S = 28 * 24 * 3600
@@ -139,14 +140,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise<WeekData> {
-  const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
-  const ref = db.doc(`spaces/${spaceId}/weeks/${weekId}`)
-  const snap = await ref.get()
-  const d = snap.data()
-  // Plans, progress and reviews can't exist without the week doc (see firestore.rules).
-  if (!d) return data
-  data.week = {
+function toWeek(spaceId: string, weekId: WeekId, d: Record<string, unknown>): Week {
+  return {
     id: weekId,
     spaceId,
     startAt: ms(d.startAt),
@@ -156,15 +151,29 @@ async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise
     members: strings(d.members),
     submittedBy: strings(d.submittedBy),
   }
+}
+
+function toPlan(snap: DocumentSnapshot): Plan {
+  // Steps and mid-week additions decode as in the app, so a task with steps scores by its steps.
+  const tasks = decodeTasks(snap.get('tasks'), snap.get('added'), (v) => (v instanceof Timestamp ? v.toMillis() : null))
+  return { uid: snap.id, tasks, updatedAt: ms(snap.get('updatedAt')) }
+}
+
+function toProgress(snap: DocumentSnapshot): Progress {
+  return { uid: snap.id, done: (snap.get('done') ?? {}) as Record<string, boolean>, updatedAt: ms(snap.get('updatedAt')) }
+}
+
+async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise<WeekData> {
+  const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
+  const ref = db.doc(`spaces/${spaceId}/weeks/${weekId}`)
+  const snap = await ref.get()
+  const d = snap.data()
+  // Plans, progress and reviews can't exist without the week doc (see firestore.rules).
+  if (!d) return data
+  data.week = toWeek(spaceId, weekId, d)
   const [plans, progress, reviews] = await Promise.all(['plans', 'progress', 'reviews'].map((name) => ref.collection(name).get()))
-  for (const p of plans.docs) {
-    // Steps and mid-week additions decode as in the app, so a task with steps scores by its steps.
-    const tasks = decodeTasks(p.get('tasks'), p.get('added'), (v) => (v instanceof Timestamp ? v.toMillis() : null))
-    data.plans[p.id] = { uid: p.id, tasks, updatedAt: ms(p.get('updatedAt')) }
-  }
-  for (const p of progress.docs) {
-    data.progress[p.id] = { uid: p.id, done: (p.get('done') ?? {}) as Record<string, boolean>, updatedAt: ms(p.get('updatedAt')) }
-  }
+  for (const p of plans.docs) data.plans[p.id] = toPlan(p)
+  for (const p of progress.docs) data.progress[p.id] = toProgress(p)
   data.reviews = reviews.docs.map((r) => ({
     id: r.id,
     reviewerId: str(r.get('reviewerId')),
@@ -172,6 +181,31 @@ async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise
     marks: (r.get('marks') ?? {}) as Record<string, Mark>,
     submittedAt: ms(r.get('submittedAt')),
   }))
+  return data
+}
+
+/**
+ * What the midweek nudges need, and only for `uids` (those still waiting for one, with a device): the
+ * week doc, their plans if they take part, and the progress of those with tasks. Everyone else reads
+ * as having no tasks, which the planner never treats as final. No reviews: there are none before Friday.
+ */
+async function loadNudgeWeek(db: Firestore, spaceId: string, weekId: WeekId, uids: UID[]): Promise<WeekData> {
+  const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
+  const ref = db.doc(`spaces/${spaceId}/weeks/${weekId}`)
+  const d = (await ref.get()).data()
+  if (!d) return data
+  const week = toWeek(spaceId, weekId, d)
+  data.week = week
+  const participants = uids.filter((uid) => week.members.includes(uid))
+  if (participants.length === 0) return data
+  for (const snap of await db.getAll(...participants.map((uid) => ref.collection('plans').doc(uid)))) {
+    if (snap.exists) data.plans[snap.id] = toPlan(snap)
+  }
+  const withTasks = participants.filter((uid) => (data.plans[uid]?.tasks.length ?? 0) > 0)
+  if (withTasks.length === 0) return data
+  for (const snap of await db.getAll(...withTasks.map((uid) => ref.collection('progress').doc(uid)))) {
+    if (snap.exists) data.progress[snap.id] = toProgress(snap)
+  }
   return data
 }
 
@@ -336,20 +370,30 @@ export async function runReminders({
     const logged = await db.getAll(...keyed.map(({ key }) => logRef(db, key)))
     const sent = new Set(logged.filter((snap) => snap.exists).map((snap) => snap.id))
 
-    // Load a window's weeks only if someone with a device is still waiting for it.
+    // Load a window's weeks only if someone with a device is still waiting for it. For a nudge, only
+    // what those people need (loadNudgeWeek).
     const weekIds = new Set<WeekId>()
+    const nudged = new Map<WeekId, Set<UID>>()
     for (const window of windows) {
       const waiting = keyed.filter((k) => k.window === window && !sent.has(k.key)).map((k) => k.uid)
       const devices = await Promise.all(waiting.map(devicesOf))
-      if (devices.some((list) => list.length > 0)) window.weekIds.forEach((id) => weekIds.add(id))
+      const reachable = waiting.filter((_, i) => devices[i].length > 0)
+      if (reachable.length === 0) continue
+      for (const id of window.weekIds) {
+        if (isNudge(window.kind)) nudged.set(id, new Set([...(nudged.get(id) ?? []), ...reachable]))
+        else weekIds.add(id)
+      }
     }
-    if (weekIds.size === 0) return
+    if (weekIds.size === 0 && nudged.size === 0) return
 
     const weeks = Object.fromEntries(await Promise.all([...weekIds].map(async (id) => [id, await loadWeek(db, space.id, id)] as const)))
+    // A week loaded whole for another window serves the nudges too.
+    for (const [id, uids] of nudged) if (!weekIds.has(id)) weeks[id] = await loadNudgeWeek(db, space.id, id, [...uids])
     const stakes: NonNullable<SpaceInput['stakes']> = {}
     for (const window of windows) if (window.kind === 'verdict') Object.assign(stakes, await loadStakes(db, space.id, window.period))
-    // Week members too: someone who left after lock is still named as a friend to review.
-    await loadProfiles([...new Set([...space.memberIds, ...Object.values(weeks).flatMap((w) => w.week?.members ?? [])])])
+    // Names are for the review reminders, never the nudges. Week members too: someone who left after
+    // lock is still named as a friend to review.
+    if (weekIds.size > 0) await loadProfiles([...new Set([...space.memberIds, ...[...weekIds].flatMap((id) => weeks[id].week?.members ?? [])])])
     const plan = planSpace({ space, weeks, stakes }, profiles, sent, nowMs)
 
     if (!dryRun) {

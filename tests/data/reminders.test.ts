@@ -1,7 +1,7 @@
 // The hourly reminders job (scripts/reminders.ts) against the data emulator, with a fake push sender.
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { deleteApp, initializeApp } from 'firebase-admin/app'
-import { FieldValue, getFirestore, Timestamp } from 'firebase-admin/firestore'
+import { FieldValue, getFirestore, Timestamp, type DocumentReference, type Firestore } from 'firebase-admin/firestore'
 import { runReminders, type PushKeys, type SendOptions } from '../../scripts/reminders.ts'
 import { weekBounds } from '../../src/domain/time.ts'
 
@@ -54,6 +54,24 @@ function fakePush() {
 }
 
 const quiet = () => {}
+
+/** The database, noting the path of every doc read in a batch (getAll). */
+function recording(): { db: Firestore; paths: string[] } {
+  const paths: string[] = []
+  const proxy = new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'getAll') {
+        return (...refs: DocumentReference[]) => {
+          paths.push(...refs.map((ref) => ref.path))
+          return target.getAll(...refs)
+        }
+      }
+      const value: unknown = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  return { db: proxy, paths }
+}
 
 describe('reminders job', () => {
   it('a push service that never answers costs one delivery, not the run', async () => {
@@ -123,6 +141,93 @@ describe('reminders job', () => {
     const push = fakePush()
     await runReminders({ db, send: push.send, nowMs: at('2026-10-10T09:17:00Z'), log: quiet })
     expect(push.sent.map((p) => `${p.title} | ${p.body}`)).toEqual(['Results are in | You scored 75%. See how s1 did this week.'])
+  })
+
+  it('nudges midweek: nothing ticked on Wednesday, tasks still open on Thursday, each once', async () => {
+    // a: two tasks, and only a tick left by a task deleted before the lock. b: one task with two steps,
+    // one ticked. c: no tasks. d: left after the lock (still in the week). e: joined after the lock.
+    // f: nothing ticked, but no device.
+    const t = ts(at('2026-09-01T00:00:00Z'))
+    await space('s1', ['a', 'b', 'c', 'e', 'f'], {
+      joinedAt: { a: t, b: t, c: t, e: ts(at('2026-10-13T09:00:00Z')), f: t },
+      leftAt: { d: ts(at('2026-10-13T12:00:00Z')) },
+    })
+    const W = '2026-10-12'
+    const b = weekBounds(W, 'UTC')
+    await db.doc(`spaces/s1/weeks/${W}`).set({
+      startAt: ts(b.startAt), lockAt: ts(b.lockAt), reviewOpenAt: ts(b.reviewOpenAt), deadlineAt: ts(b.deadlineAt), members: ['a', 'b', 'c', 'd', 'f'], submittedBy: [],
+    })
+    const plans = {
+      a: [{ id: 'a1', title: 'Shoot' }, { id: 'a2', title: 'Edit' }],
+      b: [{ id: 'b1', title: 'Pitch', subs: ['b1x|Draft', 'b1y|Send'] }],
+      d: [{ id: 'd1', title: 'Run' }],
+      f: [{ id: 'f1', title: 'Read' }],
+    }
+    for (const [uid, tasks] of Object.entries(plans)) await db.doc(`spaces/s1/weeks/${W}/plans/${uid}`).set({ tasks, updatedAt: ts(b.startAt) })
+    await db.doc(`spaces/s1/weeks/${W}/progress/a`).set({ done: { gone: true }, updatedAt: ts(b.startAt) })
+    await db.doc(`spaces/s1/weeks/${W}/progress/b`).set({ done: { b1x: true }, updatedAt: ts(b.lockAt) })
+    for (const uid of ['a', 'b', 'c', 'd', 'e']) await device(uid, 'd', `https://web.push.apple.com/${uid}`, at('2026-10-01T00:00:00Z'))
+    const push = fakePush()
+    const lines = () => push.sent.map((p) => `${p.endpoint.slice(-1)} | ${p.title} | ${p.body}`)
+    const log = async () => Object.fromEntries((await db.collection('_private/sent/log').get()).docs.map((d) => [d.id, d.get('skipped') ? 'skipped' : d.get('title')]))
+
+    // Wednesday 18:17 and an hour later.
+    const wednesday = at('2026-10-14T18:17:00Z')
+    const reads = recording()
+    expect(await runReminders({ db: reads.db, send: push.send, nowMs: wednesday, log: quiet })).toMatchObject({ sent: 1, skipped: 1, errors: 0 })
+    expect(lines()).toEqual(['a | Nothing ticked yet | Halfway through the week in s1. 2 tasks to go before Friday.'])
+    // Only the plans of participants waiting with a device and the progress of those with tasks: none
+    // for c (no tasks), nothing for f (no device), no reviews and no profiles.
+    expect(reads.paths.filter((path) => !path.startsWith('_private/'))).toEqual([
+      `spaces/s1/weeks/${W}/plans/a`,
+      `spaces/s1/weeks/${W}/plans/b`,
+      `spaces/s1/weeks/${W}/plans/c`,
+      `spaces/s1/weeks/${W}/progress/a`,
+      `spaces/s1/weeks/${W}/progress/b`,
+    ])
+    // It lapses at Thursday 00:00, the end of its window.
+    expect(push.sent[0].options).toMatchObject({ TTL: 5 * 3600 + 43 * 60, urgency: 'normal' })
+    // e is outside the week for good; b, c and f can still change, so they aren't logged.
+    expect(await log()).toEqual({ 's1_2026-10-12_no-progress_a': 'Nothing ticked yet', 's1_2026-10-12_no-progress_e': 'skipped' })
+    expect(await runReminders({ db, send: push.send, nowMs: wednesday + 3_600_000, log: quiet })).toMatchObject({ sent: 0, skipped: 0 })
+    expect(push.sent).toHaveLength(1)
+
+    // Thursday 18:17: a gets the second nudge too, and b's half-done task is still open.
+    const thursday = at('2026-10-15T18:17:00Z')
+    expect(await runReminders({ db, send: push.send, nowMs: thursday, log: quiet })).toMatchObject({ sent: 2, errors: 0 })
+    expect(lines().slice(1)).toEqual([
+      'a | 2 of 2 tasks still open | Reviews in s1 start in 6 hours. Finish what you can before then.',
+      'b | 1 of 1 task still open | Reviews in s1 start in 6 hours. Finish what you can before then.',
+    ])
+    expect(await log()).toEqual({
+      's1_2026-10-12_no-progress_a': 'Nothing ticked yet',
+      's1_2026-10-12_no-progress_e': 'skipped',
+      's1_2026-10-12_open-tasks_a': '2 of 2 tasks still open',
+      's1_2026-10-12_open-tasks_b': '1 of 1 task still open',
+      's1_2026-10-12_open-tasks_e': 'skipped',
+    })
+    // A rerun, or a run delayed to the last minute, sends nothing twice.
+    await runReminders({ db, send: push.send, nowMs: thursday, log: quiet })
+    await runReminders({ db, send: push.send, nowMs: at('2026-10-15T23:59:00Z'), log: quiet })
+    expect(push.sent).toHaveLength(3)
+  })
+
+  it('a dry run shows a nudge without sending or logging it', async () => {
+    await space('s1', ['a'])
+    const W = '2026-10-12'
+    const b = weekBounds(W, 'UTC')
+    await db.doc(`spaces/s1/weeks/${W}`).set({
+      startAt: ts(b.startAt), lockAt: ts(b.lockAt), reviewOpenAt: ts(b.reviewOpenAt), deadlineAt: ts(b.deadlineAt), members: ['a'], submittedBy: [],
+    })
+    await db.doc(`spaces/s1/weeks/${W}/plans/a`).set({ tasks: [{ id: 'a1', title: 'Shoot' }], updatedAt: ts(b.startAt) })
+    await device('a', 'd', 'https://web.push.apple.com/a', at('2026-10-01T00:00:00Z'))
+    const push = fakePush()
+    const logs: string[] = []
+    const summary = await runReminders({ db, send: push.send, nowMs: at('2026-10-14T18:17:00Z'), dryRun: true, log: (m) => logs.push(m) })
+    expect(summary).toMatchObject({ sent: 1, errors: 0 })
+    expect(push.sent).toEqual([])
+    expect(logs).toEqual(['[dry run] s1_2026-10-12_no-progress_a → 1 device(s): Nothing ticked yet · Halfway through the week in s1. 1 task to go before Friday.'])
+    expect((await db.collection('_private/sent/log').get()).empty).toBe(true)
   })
 
   it('the verdict quotes the stakes frozen for the month, and spaces get their utcOffsetMin backfilled', async () => {

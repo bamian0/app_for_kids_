@@ -25,6 +25,10 @@ export interface HelpSection {
 
 const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
 
+/** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4). */
+export const REMINDER_TIMES =
+  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in.'
+
 /** The Help sheet, in the order a newcomer meets things. Two minutes of reading, at most. */
 export function helpSections(rules: HelpRules = RULES): HelpSection[] {
   const { threshold, latePenalty, maxMembers, maxSteps } = rules
@@ -92,6 +96,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       paragraphs: [
         'Add Stakes to your Home Screen: in Safari, open the Share menu and tap Add to Home Screen.',
         'Reminders only work from the installed app; turn them on in your profile. They nudge you before your list locks and before reviews are due, and tell you when results are in.',
+        'On Wednesday evening they nudge you if nothing is ticked yet, and on Thursday evening if tasks are still open.',
         'The installed app signs in on its own, separate from Safari. Same email, same password.',
       ],
     },

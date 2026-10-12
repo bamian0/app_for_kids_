@@ -6,9 +6,14 @@
 import { DateTime } from 'luxon'
 import type { MonthId, Space, UID, UserProfile, WeekData, WeekId } from '../src/domain/types.ts'
 import { addMonths, addWeeks, monthIdFor, utcOffsetMinutes, weekBounds, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
-import { computeMonth, computeWeek, membersAt, reviewTargets } from '../src/domain/scoring.ts'
+import { computeMonth, computeWeek, isTaskDone, membersAt, reviewTargets, taskSelfFraction } from '../src/domain/scoring.ts'
 
-export type ReminderKind = 'plan' | 'review' | 'last-call' | 'results' | 'verdict'
+export type ReminderKind = 'plan' | 'no-progress' | 'open-tasks' | 'review' | 'last-call' | 'results' | 'verdict'
+
+/** The midweek nudges: they need only the plans and progress of the members still waiting for one. */
+export function isNudge(kind: ReminderKind): boolean {
+  return kind === 'no-progress' || kind === 'open-tasks'
+}
 
 export interface DueWindow {
   kind: ReminderKind
@@ -62,6 +67,9 @@ export interface PlanResult {
 
 const HOUR = 3_600_000
 const LOCALE = 'en-US'
+/** A newer notification with the same tag replaces the older one: the last call replaces the
+ *  morning's review reminder. Other kinds tag as themselves. */
+const TAG_GROUP: Partial<Record<ReminderKind, string>> = { 'last-call': 'review' }
 
 export function reminderKey(spaceId: string, period: string, kind: ReminderKind, uid: UID): string {
   return `${spaceId}_${period}_${kind}_${uid}`
@@ -91,10 +99,14 @@ export function dueWindows(space: Space, nowMs: number): DueWindow[] {
   const monthId = monthIdFor(nowMs, tz)
   const judged = addMonths(monthId, -1)
   const thisWeek = [weekId]
+  const thursday = localTime(weekId, 3, 0, tz)
 
   const windows: DueWindow[] = [
     // Monday 18:00 until the list locks at midnight.
     { kind: 'plan', period: weekId, weekIds: thisWeek, opensAt: localTime(weekId, 0, 18, tz), closesAt: week.lockAt, expiresAt: week.lockAt },
+    // Wednesday 18:00 until midnight, then Thursday 18:00 until reviews open (the last moment to add tasks).
+    { kind: 'no-progress', period: weekId, weekIds: thisWeek, opensAt: localTime(weekId, 2, 18, tz), closesAt: thursday, expiresAt: thursday },
+    { kind: 'open-tasks', period: weekId, weekIds: thisWeek, opensAt: localTime(weekId, 3, 18, tz), closesAt: week.reviewOpenAt, expiresAt: week.reviewOpenAt },
     // Friday 09:00–20:00, then the louder last call until the deadline.
     { kind: 'review', period: weekId, weekIds: thisWeek, opensAt: localTime(weekId, 4, 9, tz), closesAt: localTime(weekId, 4, 20, tz), expiresAt: week.deadlineAt },
     { kind: 'last-call', period: weekId, weekIds: thisWeek, opensAt: localTime(weekId, 4, 20, tz), closesAt: week.deadlineAt, expiresAt: week.deadlineAt },
@@ -135,6 +147,11 @@ export function hoursFromNow(ms: number): string {
   return hours === 1 ? '1 hour' : 'under an hour'
 }
 
+/** "1 task", "3 tasks". */
+function count(n: number, noun: string): string {
+  return `${n} ${n === 1 ? noun : `${noun}s`}`
+}
+
 function hoursLeftTitle(msLeft: number): string {
   const hours = Math.round(msLeft / HOUR)
   if (hours >= 2) return `${hours} hours left`
@@ -170,6 +187,37 @@ function decide(
         // 0% only holds for those already in it.
         const inWeek = data.week?.members.includes(uid) ?? false
         return { uid, title: 'Lock in your week', body: inWeek ? `${body} Nothing planned = 0%.` : body }
+      })
+    }
+
+    case 'no-progress':
+    case 'open-tasks': {
+      // After lock nobody joins the week, so someone outside it stays out. Tasks can still be added
+      // until reviews open and ticks undone until the deadline, so nothing else is final. A member
+      // whose plan wasn't loaded (the job loads only those still waiting) reads as having no tasks,
+      // which isn't final either.
+      const data = weeks[window.period]
+      const week = data.week
+      return members.map((uid): Decision => {
+        if (!week || !week.members.includes(uid)) return { uid, skip: 'final' }
+        // The stored timeline rules: no nudge once reviews have opened.
+        if (nowMs >= week.reviewOpenAt) return { uid, skip: 'final' }
+        const tasks = data.plans[uid]?.tasks ?? []
+        const done = data.progress[uid]?.done ?? {}
+        if (tasks.length === 0) return { uid, skip: 'not-yet' }
+        if (window.kind === 'no-progress') {
+          // Only the current list counts: a tick left by a task deleted before the lock isn't progress,
+          // and one step ticked is.
+          if (tasks.some((task) => taskSelfFraction(task, done) > 0)) return { uid, skip: 'not-yet' }
+          return { uid, title: 'Nothing ticked yet', body: `Halfway through the week in ${space.name}. ${count(tasks.length, 'task')} to go before Friday.` }
+        }
+        const open = tasks.filter((task) => !isTaskDone(task, done)).length
+        if (open === 0) return { uid, skip: 'not-yet' }
+        return {
+          uid,
+          title: `${open} of ${count(tasks.length, 'task')} still open`,
+          body: `Reviews in ${space.name} start in ${hoursFromNow(week.reviewOpenAt - nowMs)}. Finish what you can before then.`,
+        }
       })
     }
 
@@ -245,8 +293,7 @@ export function planSpace(input: SpaceInput, profiles: PlanInput['profiles'], se
         title: decision.title,
         body: decision.body,
         url: './',
-        // The last call replaces the morning's review reminder.
-        tag: `${window.kind === 'last-call' ? 'review' : window.kind}-${space.id}`,
+        tag: `${TAG_GROUP[window.kind] ?? window.kind}-${space.id}`,
         expiresAt: window.expiresAt,
       })
     }

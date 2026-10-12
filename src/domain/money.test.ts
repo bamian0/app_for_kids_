@@ -97,7 +97,8 @@ describe('formatMoney', () => {
     // Locales put no-break spaces around the symbol.
     expect(formatMoney(1250.5, 'EUR', { locale: 'de-DE' })).toMatch(/^1\.250,50\s€$/)
     expect(formatMoney(-1250.5, 'EUR', { locale: 'de-DE' })).toMatch(/^−1\.250,50\s€$/)
-    expect(formatMoney(1250.5, 'AMD', { locale: 'hy-AM' })).toMatch(/^1\s250,50\s֏$/)
+    // Five digits: Armenian groups only from 10,000 in newer CLDR data (minimum grouping digits 2).
+    expect(formatMoney(12345.5, 'AMD', { locale: 'hy-AM' })).toMatch(/^12\s345,50\s֏$/)
     expect(formatMoney(1250.5, 'AMD')).toBe('֏1,250.50')
     expect(formatMoney(1250, 'GBP', { locale: 'en-GB' })).toBe('£1,250')
   })

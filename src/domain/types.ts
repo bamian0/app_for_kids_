@@ -13,6 +13,9 @@ export interface UserProfile {
   name: string
   /** CSS color used for the avatar. */
   color: string
+  /** Profile photo: a small square JPEG as a data URL ("data:image/jpeg;base64,…", 256×256,
+   *  ≤ 60,000 characters). Missing when the user has none; avatars fall back to initials. */
+  photo?: string
   createdAt: number
 }
 

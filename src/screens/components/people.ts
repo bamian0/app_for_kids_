@@ -19,10 +19,22 @@ export function shortName(profiles: Profiles, uid: UID, me: UID | null): string 
 
 /** Only a plain hex color reaches CSS: anything else in a profile could load a URL from every viewer. */
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
+/** Likewise, only an inline JPEG reaches an <img>, never a link. */
+const INLINE_PHOTO = /^data:image\/jpeg;base64,/
 
-export function personOf(profiles: Profiles, uid: UID) {
-  const color = profiles[uid]?.color
-  return { id: uid, name: nameOf(profiles, uid), color: color && HEX_COLOR.test(color) ? color : colorForUid(uid) }
+export interface Person {
+  id: UID
+  name: string
+  color: string
+  /** Profile photo (a data URL); missing → the avatar shows initials. */
+  photo?: string
+}
+
+export function personOf(profiles: Profiles, uid: UID): Person {
+  const { color, photo } = profiles[uid] ?? {}
+  const person: Person = { id: uid, name: nameOf(profiles, uid), color: color && HEX_COLOR.test(color) ? color : colorForUid(uid) }
+  if (photo && INLINE_PHOTO.test(photo)) person.photo = photo
+  return person
 }
 
 /** "Alex", "Alex and Sam", "Alex, Sam and Kim". */

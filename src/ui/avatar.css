@@ -17,6 +17,25 @@
   user-select: none;
 }
 
+/* Neutral, not the person's color: it shows while the photo decodes and at its antialiased rim. */
+.ui-avatar--photo {
+  overflow: hidden;
+  background: var(--system-gray5);
+}
+.ui-avatar__photo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  /* No alt text flashing over the circle before a broken photo falls back to initials. */
+  color: transparent;
+  /* Taps go to whatever holds the avatar; no "Save Image" callout on a long press. */
+  pointer-events: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+}
+
 .ui-avatar-stack {
   --stack-ring: var(--secondary-system-grouped-background);
   display: inline-flex;

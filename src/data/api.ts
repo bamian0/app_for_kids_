@@ -37,7 +37,7 @@ export function useAuth(): AuthState {
 }
 
 // Errors from these are thrown as `Error` with a human-readable message.
-export { signUp, signIn, sendPasswordReset, signOut, updateMyName, deleteMyAccount } from './auth.ts'
+export { signUp, signIn, sendPasswordReset, signOut, updateMyName, updateMyPhoto, deleteMyAccount } from './auth.ts'
 
 // ---------- Spaces ----------
 

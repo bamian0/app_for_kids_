@@ -355,6 +355,16 @@ const ICONS = {
       </>
     ),
   },
+  /** Help (questionmark). */
+  questionmark: {
+    weight: 2,
+    body: (
+      <>
+        <path d="M8.4 8.6c0-2.55 1.6-4.35 3.75-4.35 2.1 0 3.65 1.55 3.65 3.6 0 1.65-.9 2.6-2.15 3.45-1.05.7-1.65 1.45-1.65 2.75v.75" />
+        {dot(12, 19.1, 1.4)}
+      </>
+    ),
+  },
 } satisfies Record<string, IconDef>
 
 export type IconName = keyof typeof ICONS

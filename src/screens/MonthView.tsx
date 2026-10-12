@@ -181,7 +181,7 @@ function MemberMonth({ space, stakes, result, me, profiles, nowMs, hero, settlem
         </div>
       ) : (
         <Row
-          leading={<Avatar name={person.name} color={person.color} size={36} />}
+          leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={36} />}
           title={<span className="t-semibold">{person.name}</span>}
           subtitle={result.former ? `Left · ${summary}` : summary}
           accessory={<MiniScore value={result.finalScore} threshold={space.threshold} caption={label} />}

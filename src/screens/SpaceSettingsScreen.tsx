@@ -161,7 +161,7 @@ function SettingsContent({ space }: { space: Space }) {
           return (
             <Row
               key={id}
-              leading={<Avatar name={person.name} color={person.color} size={32} />}
+              leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={32} />}
               title={id === uid ? `${person.name} (You)` : person.name}
               subtitle={role}
               onPress={isOwner && id !== uid ? () => void remove(id) : undefined}

@@ -162,7 +162,7 @@ export function MemberCard({
   return (
     <Section footer={footer}>
       <Row
-        leading={<Avatar name={person.name} color={person.color} size={36} />}
+        leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={36} />}
         title={<span className="t-semibold">{isMe ? `${person.name} (You)` : person.name}</span>}
         subtitle={subtitle}
         accessory={score}

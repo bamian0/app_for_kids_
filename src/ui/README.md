@@ -266,8 +266,8 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 - **`ActivityIndicator`**: the iOS 8-spoke spinner. `size: 'medium' | 'large' | px`, `color`.
 - **`ProgressBar`**: `value` 0..1, `tone: 'label' | 'green' | 'iridescent'`.
 - **`EmptyState`**: `icon`, `title`, `message`, `action` (like ContentUnavailableView).
-- **`Avatar`**: `name`, `color` (pass `colorForUid(uid)` or the profile color), `size`. Shows SF Rounded initials (one letter below 32px).
-- **`AvatarStack`**: `people: { id?, name, color }[]`, `max`, `size`. Overlapping, with a "+N" chip.
+- **`Avatar`**: `name`, `color` (pass `colorForUid(uid)` or the profile color), `photo?`, `size`. Shows the photo (cropped to the circle), or SF Rounded initials (one letter below 32px) when there is none or it fails to load; the size is the same either way.
+- **`AvatarStack`**: `people: { id?, name, color, photo? }[]`, `max`, `size`. Overlapping, with a "+N" chip.
 
 ## Light moments (use sparingly)
 - **`useEdgeGlow().play(ms?)`**: a Siri-style prism glow hugging the rounded display edges, then a fade-out. The colors drift gently rather than spinning. In light mode the bands are thin and faint, so white cards near the edges stay white. Use it for the Friday reveal and the month verdict. A standalone `<IridescentEdgeGlow trigger={revealedWeekId} />` replays whenever `trigger` changes to a new truthy value; it also takes `ref.play()`.

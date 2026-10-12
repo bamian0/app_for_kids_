@@ -1,4 +1,4 @@
-// Account lifecycle: sign up / in / out, profile name, account deletion.
+// Account lifecycle: sign up / in / out, profile name and photo, account deletion.
 import {
   createUserWithEmailAndPassword,
   deleteUser,
@@ -10,11 +10,11 @@ import {
   updateProfile,
   type User,
 } from 'firebase/auth'
-import { collection, deleteDoc, getDoc, getDocs, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
+import { collection, deleteDoc, deleteField, getDoc, getDocs, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
 import type { UID, UserProfile } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
-import { toProfile } from './convert.ts'
+import { isProfilePhoto, toProfile } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { deleteAllMoney } from './money.ts'
 import { cleanText, duringSignUp, ensureProfile, newProfile, profileRef, requireUser, startAuth } from './session.ts'
@@ -105,6 +105,22 @@ export async function updateMyName(name: string): Promise<void> {
     const snap = await getDoc(ref)
     await (snap.exists() ? updateDoc(ref, { name: clean }) : setDoc(ref, newProfile(user.uid, clean)))
     await updateProfile(user, { displayName: clean }).catch(() => {})
+  } catch (e) {
+    throw humanError(e, MSG.noAccess)
+  }
+}
+
+/**
+ * Sets your profile photo, a square JPEG data URL from the photo picker (SPEC §7.3), or removes it
+ * with null. Friends see it wherever your avatar shows. Like every write, it shows at once (the local
+ * cache has it) and resolves when the server has it.
+ */
+export async function updateMyPhoto(photo: string | null): Promise<void> {
+  // The rules would refuse it too, but only after the local cache had shown it for a moment.
+  if (photo !== null && !isProfilePhoto(photo)) throw new Error('Try a different photo.')
+  const user = requireUser()
+  try {
+    await updateDoc(profileRef(getFirebase().db, user.uid), { photo: photo ?? deleteField() })
   } catch (e) {
     throw humanError(e, MSG.noAccess)
   }

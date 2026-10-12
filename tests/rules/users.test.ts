@@ -1,12 +1,23 @@
 // users/{uid}, users/{uid}/push/*, public/config, _private/**, unknown paths.
-import { describe, test } from 'vitest'
-import { collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, Timestamp, updateDoc, type DocumentData } from 'firebase/firestore'
+import { describe, expect, test } from 'vitest'
+import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, serverTimestamp, setDoc, Timestamp, updateDoc, type DocumentData } from 'firebase/firestore'
 import { allDenied, allowed, denied, useRulesEnv } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
 
 const profile = (extra: DocumentData = {}): DocumentData => ({ name: 'Alex', color: '#8E8E93', createdAt: serverTimestamp(), ...extra })
-const storedProfile = (name: string): DocumentData => ({ name, color: '#636366', createdAt: Timestamp.fromMillis(Date.UTC(2026, 0, 1)) })
+const storedProfile = (name: string, extra: DocumentData = {}): DocumentData => ({
+  name,
+  color: '#636366',
+  createdAt: Timestamp.fromMillis(Date.UTC(2026, 0, 1)),
+  ...extra,
+})
+
+const JPEG = 'data:image/jpeg;base64,'
+/** The start of a real JPEG, as the photo picker stores it. */
+const PHOTO = `${JPEG}/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==`
+/** A photo data URL exactly `chars` characters long. */
+const photoOf = (chars: number): string => JPEG + 'A'.repeat(chars - JPEG.length)
 
 const sub = (extra: DocumentData = {}): DocumentData => ({
   endpoint: 'https://web.push.apple.com/QGx1c2VyLXN1YnNjcmlwdGlvbg',
@@ -79,6 +90,77 @@ describe('users/{uid}', () => {
     await seed({ 'users/alice': storedProfile('Alice') })
     await denied(deleteDoc(doc(db('bob'), 'users/alice')))
     await allowed(deleteDoc(doc(db('alice'), 'users/alice')))
+  })
+})
+
+describe('users/{uid}.photo', () => {
+  test('owner creates a profile with a photo, then replaces and removes it; friends can read it', async () => {
+    const ref = doc(db('alice'), 'users/alice')
+    await allowed(setDoc(ref, profile({ photo: PHOTO })))
+    await allowed(updateDoc(ref, { photo: `${JPEG}AAAA` }))
+    await allowed(updateDoc(ref, { photo: photoOf(60_000) }))
+    const seen = await getDoc(doc(db('bob'), 'users/alice'))
+    expect(seen.get('photo')).toHaveLength(60_000)
+    await allowed(updateDoc(ref, { photo: deleteField() }))
+    expect((await getDoc(ref)).get('photo')).toBeUndefined()
+  })
+
+  test('only a small inline JPEG is accepted', async () => {
+    const ref = doc(db('alice'), 'users/alice')
+    const bad: Record<string, unknown> = {
+      'too long': photoOf(60_001),
+      'png': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+      'webp': 'data:image/webp;base64,UklGRhYAAABXRUJQ',
+      'mime in capitals': 'data:image/JPEG;base64,/9j/4AAQ',
+      'svg as base64': 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=',
+      'svg as text': 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+      'not base64': 'data:image/jpeg,/9j/4AAQ',
+      'extra parameter': 'data:image/jpeg;charset=utf-8;base64,/9j/4AAQ',
+      'empty body': JPEG,
+      'http URL': 'http://127.0.0.1:4580/p.jpg?u=alice',
+      'https URL': 'https://example.com/me.jpg',
+      'protocol-relative URL': '//example.com/me.jpg',
+      'blob URL': 'blob:https://example.com/0b3c1a9e',
+      'javascript URL': 'javascript:alert(1)',
+      'text after the padding': `${PHOTO}AAAA`,
+      'a quote and more': `${JPEG}AAAA" onerror="alert(1)`,
+      'a newline': `${JPEG}AAAA\nAAAA`,
+      'a space': `${JPEG}AAAA AAAA`,
+      'url-safe base64': `${JPEG}AA-_AA`,
+      'leading space': ` ${PHOTO}`,
+      'empty string': '',
+      'a number': 42,
+      'null': null,
+      'a boolean': true,
+      'a map': { src: PHOTO },
+      'a list': [PHOTO],
+    }
+    await allDenied(Object.fromEntries(Object.entries(bad).map(([name, photo]) => [`create, ${name}`, () => setDoc(ref, profile({ photo }))])))
+    await seed({ 'users/alice': storedProfile('Alice') })
+    await allDenied(Object.fromEntries(Object.entries(bad).map(([name, photo]) => [`update, ${name}`, () => updateDoc(ref, { photo })])))
+  })
+
+  test('nobody else can set, change or remove your photo', async () => {
+    await seed({ 'users/alice': storedProfile('Alice', { photo: PHOTO }) })
+    const bob = doc(db('bob'), 'users/alice')
+    await allDenied({
+      'set': () => updateDoc(bob, { photo: `${JPEG}BBBB` }),
+      'remove': () => updateDoc(bob, { photo: deleteField() }),
+      'replace the profile': () => setDoc(bob, storedProfile('Alice', { photo: `${JPEG}BBBB` })),
+      'signed out': () => updateDoc(doc(db(), 'users/alice'), { photo: `${JPEG}BBBB` }),
+    })
+  })
+
+  test('an older client that knows nothing of photos can still rename you and keeps the photo', async () => {
+    await seed({ 'users/alice': storedProfile('Alice', { photo: PHOTO }) })
+    const ref = doc(db('alice'), 'users/alice')
+    // What updateMyName and sign-up's fallback write: the name alone.
+    await allowed(updateDoc(ref, { name: 'Alice B.' }))
+    await allowed(updateDoc(ref, { color: '#AEAEB2' }))
+    const after = await getDoc(ref)
+    expect(after.get('name')).toBe('Alice B.')
+    expect(after.get('photo')).toBe(PHOTO)
+    await allDenied({ 'rename with a bad photo alongside': () => updateDoc(ref, { name: 'Alice C.', photo: 'https://example.com/me.jpg' }) })
   })
 })
 

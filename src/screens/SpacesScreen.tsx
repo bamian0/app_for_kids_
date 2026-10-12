@@ -87,6 +87,7 @@ export function SpacesScreen() {
   }
 
   const me = auth.profile
+  const mine = personOf(me ? { [me.uid]: me } : {}, auth.uid ?? '')
   const myName = me?.name ?? auth.email ?? 'You'
   const list = spaces.data
 
@@ -97,7 +98,7 @@ export function SpacesScreen() {
         <>
           <GlassButton icon="plus" aria-label="New space or join" onClick={addMenu} />
           <button type="button" className="s-avatar-button" aria-label="Profile" onClick={() => present((close) => <ProfileSheet close={close} onInstallGuide={() => installGuide()} />)}>
-            <Avatar name={myName} color={personOf(me ? { [me.uid]: me } : {}, auth.uid ?? '').color} size={36} />
+            <Avatar name={myName} color={mine.color} photo={mine.photo} size={36} />
           </button>
         </>
       }

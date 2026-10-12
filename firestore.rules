@@ -34,12 +34,20 @@ service cloud.firestore {
 
     // ---------- users ----------
 
+    // The photo is optional, so older clients that never send it keep working (SPEC §7.3).
     function validProfile(d) {
-      return exactKeys(d, ['name', 'color', 'createdAt'])
+      return (exactKeys(d, ['name', 'color', 'createdAt'])
+          || (exactKeys(d, ['name', 'color', 'createdAt', 'photo']) && validPhoto(d.photo)))
         && text(d.name, 40)
         // Only #RRGGBB: the color lands in CSS, where anything else (url(...)) could load a tracker.
         && d.color is string && d.color.matches('^#[0-9A-Fa-f]{6}$')
         && d.createdAt is timestamp;
+    }
+
+    // A small JPEG inline as a data URL (256×256 from the photo picker). Never a remote URL: every
+    // friend's app loads it, so a link could track them. Size first, so the regex never sees a huge string.
+    function validPhoto(p) {
+      return p is string && p.size() <= 60000 && p.matches('^data:image/jpeg;base64,[A-Za-z0-9+/]+=*$');
     }
 
     function validPushSub(d) {

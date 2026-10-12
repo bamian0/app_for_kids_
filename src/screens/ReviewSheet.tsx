@@ -183,7 +183,7 @@ export function ReviewSheet({ space, weekId, close }: Props) {
                   className={cx('s-review-chip', i === index && 'is-current', left === 0 && 'is-done')}
                   onClick={() => go(i)}
                 >
-                  <Avatar name={nameOf(profiles, id)} color={personOf(profiles, id).color} size={30} />
+                  <Avatar name={nameOf(profiles, id)} color={personOf(profiles, id).color} photo={personOf(profiles, id).photo} size={30} />
                   {left === 0 && (
                     <span className="s-review-chip__done" aria-hidden>
                       <Icon name="checkmark" size={10} weight={3.4} />
@@ -215,7 +215,7 @@ export function ReviewSheet({ space, weekId, close }: Props) {
           transition={{ type: 'spring', stiffness: 420, damping: 38 }}
         >
           <div className="s-review-person">
-            <Avatar name={person.name} color={person.color} size={64} />
+            <Avatar name={person.name} color={person.color} photo={person.photo} size={64} />
             <div className="s-review-person__name">{person.name}</div>
             <div className="s-review-person__meta">
               {tasks.length} task{tasks.length === 1 ? '' : 's'} · {checked === 0 ? 'none' : checked === tasks.length ? 'all' : checked} checked off

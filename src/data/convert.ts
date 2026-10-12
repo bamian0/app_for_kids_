@@ -34,9 +34,21 @@ const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
 
+/** The rules' limit for users/{uid}.photo (SPEC §7.3). */
+export const MAX_PHOTO_CHARS = 60_000
+const PHOTO = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/
+
+/** A profile photo as the rules accept it: a small inline JPEG, never a link that could track viewers. */
+export function isProfilePhoto(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= MAX_PHOTO_CHARS && PHOTO.test(v)
+}
+
 export function toProfile(snap: Snap): UserProfile {
   const d = data(snap)
-  return { uid: snap.id, name: str(d.name), color: str(d.color), createdAt: ms(d.createdAt) }
+  const profile: UserProfile = { uid: snap.id, name: str(d.name), color: str(d.color), createdAt: ms(d.createdAt) }
+  // Checked here too, so nothing the rules wouldn't take (a doc written before them) reaches an <img>.
+  if (isProfilePhoto(d.photo)) profile.photo = d.photo
+  return profile
 }
 
 function times(v: unknown): Record<UID, number> {

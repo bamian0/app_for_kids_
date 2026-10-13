@@ -1,12 +1,14 @@
 name: Reminders
 
-# Hourly push reminders (scripts/reminders.ts, docs/SPEC.md §4).
+# Push reminders every 15 minutes (scripts/reminders.ts, docs/SPEC.md §4).
 #
 # Scheduled workflows only run from the default branch (main): this file has to be on main for
-# the hourly schedule to fire. It checks out the branch the app is deployed from (below), so main
-# only needs updating when this file changes. GitHub can delay scheduled runs or drop some under
-# load; the job catches up on the next run without sending anything twice. In a public repository
-# GitHub pauses schedules after 60 days without activity; re-enable it from the Actions tab.
+# the schedule to fire. It checks out the branch the app is deployed from (below), so main only
+# needs updating when this file changes. GitHub delays scheduled runs and drops many under load
+# (an hourly schedule ran about once every 8 hours), so it asks four times an hour, away from the
+# busy top of the hour; any run that gets through sends what is due, and nothing goes out twice.
+# In a public repository GitHub pauses schedules after 60 days without activity; re-enable it from
+# the Actions tab.
 #
 # Setup: add the Firebase service account key (Firebase console → Project settings → Service
 # accounts → Generate new private key) as the repository secret FIREBASE_SERVICE_ACCOUNT, pasting
@@ -14,7 +16,7 @@ name: Reminders
 # https://<owner>.github.io/<repo>/.
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:

@@ -1,7 +1,7 @@
 // Pure reminder planning for scripts/reminders.ts (no Firebase, no network). See docs/SPEC.md §4.
 //
 // Each reminder has a window in the space's local time instead of an exact hour, so a delayed or
-// dropped hourly run still sends it on the next run. The sent log (keys from reminderKey) makes
+// dropped scheduled run still sends it on the next run. The sent log (keys from reminderKey) makes
 // sure each one goes out once.
 import { DateTime } from 'luxon'
 import type { MonthId, Space, UID, UserProfile, WeekData, WeekId } from '../src/domain/types.ts'

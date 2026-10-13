@@ -1,4 +1,4 @@
-// Reminders job (run every 15 minutes by .github/workflows/reminders.yml). See docs/SPEC.md §4.
+// Hourly reminders job (run by .github/workflows/reminders.yml). See docs/SPEC.md §4.
 //
 //   FIREBASE_SERVICE_ACCOUNT='<service account JSON>' APP_URL=https://… node scripts/reminders.ts
 //

@@ -1,4 +1,4 @@
-// The reminders job (scripts/reminders.ts) against the data emulator, with a fake push sender.
+// The hourly reminders job (scripts/reminders.ts) against the data emulator, with a fake push sender.
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { deleteApp, initializeApp } from 'firebase-admin/app'
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type Firestore } from 'firebase-admin/firestore'

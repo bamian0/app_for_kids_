@@ -62,8 +62,14 @@ export function reviewDocId(reviewerId: UID, revieweeId: UID): string {
   return `${reviewerId}_${revieweeId}`
 }
 
-export function settlementDocId(monthId: MonthId, uid: UID): string {
-  return `${monthId}_${uid}`
+/**
+ * A settlement's doc id (SPEC §9.7): `${monthId}_${uid}` (per member, from before batch 2), `${monthId}_${uid}_${other}`
+ * (one pair), `${monthId}_${uid}_${other}_s${tier}` (a streak reward of `tier` months that `other` owes `uid`).
+ * Uids have no `_`, so the shapes never collide. A tier needs `other`.
+ */
+export function settlementDocId(monthId: MonthId, uid: UID, other?: UID, tier?: number): string {
+  if (other === undefined) return `${monthId}_${uid}`
+  return tier === undefined ? `${monthId}_${uid}_${other}` : `${monthId}_${uid}_${other}_s${tier}`
 }
 
 /**

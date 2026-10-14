@@ -533,6 +533,10 @@ describe('computeMonth', () => {
       finalScore: null,
       complete: true,
       passed: null,
+      judged: [],
+      monthly: null,
+      monthlyJudge: false,
+      skippedAsJudge: 0,
     })
   })
 

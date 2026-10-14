@@ -1,6 +1,6 @@
 // Week/month calendar logic in a space's timezone. See docs/SPEC.md §1.
 import { DateTime } from 'luxon'
-import type { MonthId, WeekId } from './types.ts'
+import type { MonthId, Space, WeekId, WeekSchedule } from './types.ts'
 
 export interface WeekBounds {
   startAt: number
@@ -46,15 +46,58 @@ export function weekIdFor(ms: number, tz: string): WeekId {
   return isoDate(date.minus({ days: local.weekday - 1 }))
 }
 
-/** Exact instants for a week in timezone `tz` (DST-correct). */
-export function weekBounds(weekId: WeekId, tz: string): WeekBounds {
+/** The usual times (SPEC §1, §9.2): lists lock Monday at midnight, reviews open Thursday at midnight and are
+ *  due Friday at midnight, in minutes after the week's Monday 00:00. A space or week without `schedule` uses it. */
+export const DEFAULT_SCHEDULE: WeekSchedule = Object.freeze({ lock: 1440, reviewOpen: 5760, deadline: 7200 })
+
+/** Minutes in a week: the latest a deadline can be (Sunday at midnight, the next Monday 00:00). */
+export const WEEK_MINUTES = 10080
+
+const DAY_MINUTES = 1440
+
+/** The week's Monday 00:00 in `tz` (or the first instant of that day where midnight is skipped). */
+function mondayOf(weekId: WeekId, tz: string): DateTime {
   const date = calendarDate(weekId)
   const monday = DateTime.fromObject({ year: date.year, month: date.month, day: date.day }, { zone: tz })
   if (!monday.isValid) throw new RangeError(`Invalid week ${weekId} in zone ${tz}: ${monday.invalidExplanation ?? monday.invalidReason}`)
+  return monday
+}
+
+function momentFrom(monday: DateTime, minutes: number): number {
+  if (!Number.isFinite(minutes)) throw new RangeError(`Invalid minutes ${minutes}`)
+  const days = Math.floor(minutes / DAY_MINUTES)
+  const rest = minutes - days * DAY_MINUTES
   // Calendar days in the zone, so a DST change inside the week moves the instants by ±1h as it should.
   // startOf('day') re-anchors to local midnight (or the first instant of the day where midnight is skipped).
-  const dayStart = (days: number) => monday.plus({ days }).startOf('day').toMillis()
-  return { startAt: dayStart(0), lockAt: dayStart(1), reviewOpenAt: dayStart(4), deadlineAt: dayStart(5) }
+  const day = monday.plus({ days }).startOf('day')
+  if (rest === 0) return day.toMillis()
+  // A wall-clock time on that day, set from the day's start: luxon guesses with the day's first offset, so a
+  // time in a spring-forward gap moves forward by the gap (02:30 → 03:30) and an ambiguous fall-back time
+  // takes its first occurrence.
+  return day.set({ hour: Math.floor(rest / 60), minute: Math.floor(rest % 60), second: 0, millisecond: 0 }).toMillis()
+}
+
+/**
+ * The instant `minutes` after `weekId`'s Monday 00:00 on the wall clock of `tz` (SPEC §9.2). Whole days resolve
+ * through startOf('day') exactly as weekBounds always did (zones that skip midnight are unchanged); other times
+ * through the wall clock (a gap time moves forward, an ambiguous time takes its first occurrence). Minutes < 0 or
+ * ≥ WEEK_MINUTES roll into the neighbouring weeks.
+ */
+export function momentAt(weekId: WeekId, tz: string, minutes: number): number {
+  return momentFrom(mondayOf(weekId, tz), minutes)
+}
+
+/** Exact instants for a week in timezone `tz` (DST-correct) on `schedule` (the usual times by default, which
+ *  give exactly what this always gave). Once a week doc exists its stored bounds rule; see boundsFor in
+ *  schedule.ts. */
+export function weekBounds(weekId: WeekId, tz: string, schedule: WeekSchedule = DEFAULT_SCHEDULE): WeekBounds {
+  const monday = mondayOf(weekId, tz)
+  return {
+    startAt: momentFrom(monday, 0),
+    lockAt: momentFrom(monday, schedule.lock),
+    reviewOpenAt: momentFrom(monday, schedule.reviewOpen),
+    deadlineAt: momentFrom(monday, schedule.deadline),
+  }
 }
 
 /** The zone's UTC offset in minutes at `ms` (e.g. 120 for Berlin in summer, −420 for Los Angeles). */
@@ -105,10 +148,60 @@ export function weekIdsInMonth(monthId: MonthId): WeekId[] {
   return ids
 }
 
-/** deadlineAt of the month's last week: when the month's verdict becomes final. */
-export function monthCompleteAt(monthId: MonthId, tz: string): number {
+/** deadlineAt of the month's last week: when the month's verdict becomes final. With `lastWeek` (that week's
+ *  stored doc), its stored deadline; else computed on `schedule`. A month with a monthly list ends at the later
+ *  of this and the list's deadline (monthEndsAt in scoring.ts). */
+export function monthCompleteAt(
+  monthId: MonthId,
+  tz: string,
+  schedule: WeekSchedule = DEFAULT_SCHEDULE,
+  lastWeek?: Pick<WeekBounds, 'deadlineAt'> | null,
+): number {
+  if (lastWeek && Number.isFinite(lastWeek.deadlineAt)) return lastWeek.deadlineAt
   const weeks = weekIdsInMonth(monthId)
-  return weekBounds(weeks[weeks.length - 1], tz).deadlineAt
+  return weekBounds(weeks[weeks.length - 1], tz, schedule).deadlineAt
+}
+
+/** The weeks that frame a month's list (SPEC §9.5): the first (its start), the second (its lock: the list locks
+ *  with the second week's lists) and the last (its review window). A month has 4 or 5 weeks. */
+export function monthlyWeeks(monthId: MonthId): { first: WeekId; lock: WeekId; last: WeekId } {
+  const weeks = weekIdsInMonth(monthId)
+  return { first: weeks[0], lock: weeks[1], last: weeks[weeks.length - 1] }
+}
+
+/** A month's list timeline from its weeks' bounds: the first week's startAt, the second week's lockAt and the
+ *  last week's review window. `boundsOf` gives each week's stored bounds, else computed ones. */
+export function monthlyBounds(monthId: MonthId, boundsOf: (weekId: WeekId) => WeekBounds): WeekBounds {
+  const { first, lock, last } = monthlyWeeks(monthId)
+  const end = boundsOf(last)
+  return { startAt: boundsOf(first).startAt, lockAt: boundsOf(lock).lockAt, reviewOpenAt: end.reviewOpenAt, deadlineAt: end.deadlineAt }
+}
+
+/** True when `weekId` is its month's last week: its review window also reviews the month's lists. */
+export function isMonthlyReviewWeek(weekId: WeekId): boolean {
+  const weeks = weekIdsInMonth(monthIdForWeek(weekId))
+  return weeks[weeks.length - 1] === weekId
+}
+
+/**
+ * The latest month whose last week is before this week (SPEC §9.8): complete, since a deadline is at most a week
+ * after its Monday 00:00. The caller still checks the stored deadline.
+ */
+export function lastCompleteMonthCandidate(nowMs: number, tz: string): MonthId {
+  const lastWeek = addWeeks(weekIdFor(nowMs, tz), -1)
+  const monthId = monthIdForWeek(lastWeek)
+  return isMonthlyReviewWeek(lastWeek) ? monthId : addMonths(monthId, -1)
+}
+
+/** The month the space was created in (the month of that week's Friday), or null without a usable createdAt.
+ *  No month before it has anything to show or score. */
+export function firstMonthOf(space: Pick<Space, 'timezone' | 'createdAt'>): MonthId | null {
+  if (!(Number.isFinite(space.createdAt) && space.createdAt > 0)) return null
+  try {
+    return monthIdForWeek(weekIdFor(space.createdAt, space.timezone))
+  } catch {
+    return null
+  }
 }
 
 /** Local wall-clock parts of `ms` in `tz` (weekday 1 = Monday … 7 = Sunday). */

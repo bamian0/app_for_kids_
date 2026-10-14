@@ -1,13 +1,22 @@
 rules_version = '2';
 
-// Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2.
+// Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2 and, for batch 2, §9
+// (§9.9 lists every change in file order, with its budget).
 //
 // How to publish: Firebase console > Firestore Database > Rules > paste this whole file > Publish.
 // Test locally first with `npm run test:rules` (Firestore emulator + tests/rules).
+// Before publishing, check that the '2026-10' below (FIRST_RESULTS_MONTH, SPEC §9.8) still names the
+// month you publish in; if the publish slips past that month's last Friday, change it (and the domain's).
 //
 // Anything not matched below is denied. Every server timestamp (createdAt, updatedAt, joinedAt,
-// submittedAt, settledAt, a plan's added[id], earnedAt, baselineAt, a move's at) must be written with
-// serverTimestamp(): the rules compare it to request.time.
+// submittedAt, settledAt, a plan's added[id], earnedAt, baselineAt, a move's at, a note's at, an
+// agreement's at, a pause request's at) must be written with serverTimestamp(): the rules compare it
+// to request.time.
+//
+// Costs to keep in mind: each request may evaluate at most 1000 expressions and read at most 10
+// documents (20 in a batch or transaction). get() of a missing document is null and costs one read;
+// exists() and get() of the same path are two reads, get() and getAfter() of a document the request
+// doesn't write are one. Measured budgets are recorded in the tests (tests/rules/budget.test.ts).
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -28,9 +37,116 @@ service cloud.firestore {
     function isInviteCode(c) { return c is string && c.matches('^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$'); }
     function near(t, target, tol) { return t is timestamp && t >= target - tol && t <= target + tol; }
 
+    // 'YYYY-MM' of a timestamp (UTC).
+    function monthStr(t) {
+      let m = t.month();
+      return string(t.year()) + (m < 10 ? '-0' : '-') + string(m);
+    }
+    // 'YYYY-MM-DD' of a UTC-midnight timestamp: the id of the week starting that Monday.
+    function dateId(t) {
+      let m = t.month();
+      let d = t.day();
+      return string(t.year()) + (m < 10 ? '-0' : '-') + string(m) + (d < 10 ? '-0' : '-') + string(d);
+    }
+
+    // ---------- week schedules (SPEC §9.2) ----------
+
+    // A schedule is three moments in minutes after Monday 00:00 on the space's wall clock. Absent =
+    // the usual one: lists lock Monday at midnight, reviews open Thursday at midnight, due Friday at
+    // midnight (1/4/5 whole days, as every week from before batch 2).
+    function defaultSchedule() { return {'lock': 1440, 'reviewOpen': 5760, 'deadline': 7200}; }
+    function scheduleOf(d) { return d.get('schedule', defaultSchedule()); }
+    // Lists lock before reviews open, reviews get at least 3 hours, and are due by Sunday at
+    // midnight, so a week's deadline is never after the next week's start.
+    function validSchedule(s) {
+      return exactKeys(s, ['lock', 'reviewOpen', 'deadline'])
+        && s.lock is int && s.reviewOpen is int && s.deadline is int
+        && s.lock >= 0 && s.lock < s.reviewOpen
+        && s.reviewOpen + 180 <= s.deadline && s.deadline <= 10080;
+    }
+    // Each bound within 1h of startAt + its minutes and, with utcOffsetMin, of the anchor + its
+    // minutes, so the two hours of slack can't stack. Wall-clock minutes and elapsed time differ by
+    // DST's hour at most. For the usual schedule this is exactly the old 1/4/5-day check.
+    function followsSchedule(d, startAt, anchor, off, s) {
+      let tol = duration.value(1, 'h');
+      let lock = duration.value(s.lock, 'm');
+      let open = duration.value(s.reviewOpen, 'm');
+      let due = duration.value(s.deadline, 'm');
+      return near(d.lockAt, startAt + lock, tol)
+        && near(d.reviewOpenAt, startAt + open, tol)
+        && near(d.deadlineAt, startAt + due, tol)
+        && (off == null || (near(d.lockAt, anchor + lock, tol)
+                            && near(d.reviewOpenAt, anchor + open, tol)
+                            && near(d.deadlineAt, anchor + due, tol)));
+    }
+    // A change of times needs a day's notice: nobody's list can lock within minutes of it.
+    function notice() { return duration.value(1, 'd'); }
+
+    // ---------- paths ----------
+
     function spacePath(spaceId) { return /databases/$(database)/documents/spaces/$(spaceId); }
-    function weekPath(spaceId, weekId) { return /databases/$(database)/documents/spaces/$(spaceId)/weeks/$(weekId); }
+    // A period is a week ('weeks') or a month's list ('monthly'). `coll` is always a literal from the
+    // match blocks below, never anything a request can choose.
+    function periodPath(spaceId, coll, id) { return /databases/$(database)/documents/spaces/$(spaceId)/$(coll)/$(id); }
     function isMember(spaceId) { return signedIn() && request.auth.uid in get(spacePath(spaceId)).data.memberIds; }
+
+    // ---------- judges (SPEC §9.4) ----------
+
+    // Each member decides for themselves whether they only rate. A write may add or drop the given
+    // uids in `judges` (each added once) and nothing else. Absent = nobody judges; older clients never
+    // touch it, so their writes keep passing.
+    function ownJudgeOnly(uids) {
+      let before = existing().get('judges', []).removeAll(uids);
+      let after = incoming().get('judges', []);
+      return after is list && after.removeAll(uids) == before && after.size() <= before.size() + uids.size();
+    }
+
+    // ---------- months (SPEC §9.5, §9.7) ----------
+
+    // Monday (UTC date) of the week holding the first Friday of month m of year y. dayOfWeek() is
+    // Monday 1 … Sunday 7, so (12 − dayOfWeek) % 7 is the days from the 1st to its first Friday.
+    function firstMonday(y, m) {
+      let first = timestamp.date(y, m, 1);
+      return first + duration.value((12 - first.dayOfWeek()) % 7, 'd') - duration.value(4, 'd');
+    }
+    // Monday (UTC date) of a month's last week: the week before the next month's first week.
+    function lastMonday(monthId) {
+      let y = int(monthId[0:4]);
+      let m = int(monthId[5:7]);
+      return (m == 12 ? firstMonday(y + 1, 1) : firstMonday(y, m + 1)) - duration.value(7, 'd');
+    }
+    // A monthly list's anchors in the space's clock: Monday 00:00 of its first week and of its last
+    // week (UTC − utcOffsetMin, required: a space without it gets no monthly list), the ids of its
+    // second week (whose lock it shares) and last week (whose review window it shares), and the
+    // space's schedule.
+    function monthAnchors(space, monthId) {
+      let first = firstMonday(int(monthId[0:4]), int(monthId[5:7]));
+      let last = lastMonday(monthId);
+      let off = duration.value(space.utcOffsetMin, 'm');
+      return {
+        'first': first - off,
+        'last': last - off,
+        'lockId': dateId(first + duration.value(7, 'd')),
+        'lastId': dateId(last),
+        's': scheduleOf(space)
+      };
+    }
+    // Whether month `monthId` was complete at time t: its last week's stored deadline has passed
+    // (with no week doc, its deadline computed on the space's schedule, plus slackMin minutes: −60
+    // where a freeze is allowed, +60 where one is insisted on, covering the anchor's DST hour; a space
+    // without utcOffsetMin counts a month complete 4 days into the next one, in any zone on any
+    // schedule), and so has its monthly list's, if it has one. 2 reads (get of a missing doc is null).
+    function monthCompleteBy(spaceId, space, monthId, t, slackMin) {
+      let last = lastMonday(monthId);
+      let week = get(periodPath(spaceId, 'weeks', dateId(last)));
+      let list = get(periodPath(spaceId, 'monthly', monthId));
+      return (week != null
+          ? t >= week.data.deadlineAt
+          : (space.get('utcOffsetMin', null) is int
+              ? t >= last - duration.value(space.utcOffsetMin, 'm') + duration.value(scheduleOf(space).deadline + slackMin, 'm')
+              : monthStr(t - duration.value(4, 'd')) > monthId))
+        && (list == null || t >= list.data.deadlineAt);
+    }
 
     // ---------- users ----------
 
@@ -186,9 +302,13 @@ service cloud.firestore {
       return text(d.name, 40) && text(d.reward, 120) && text(d.penalty, 120);
     }
 
+    // The creator may also choose to only rate (judges == [self]); older clients send the 12 keys.
+    // New spaces start on the usual times (no schedule).
     function validNewSpace(d) {
-      return exactKeys(d, ['name', 'reward', 'penalty', 'ownerId', 'memberIds', 'joinedAt',
-                           'timezone', 'utcOffsetMin', 'inviteCode', 'threshold', 'latePenalty', 'createdAt'])
+      let base = ['name', 'reward', 'penalty', 'ownerId', 'memberIds', 'joinedAt',
+                  'timezone', 'utcOffsetMin', 'inviteCode', 'threshold', 'latePenalty', 'createdAt'];
+      return (exactKeys(d, base)
+          || (exactKeys(d, base.concat(['judges'])) && (d.judges == [] || d.judges == [request.auth.uid])))
         && validSpaceText(d)
         && d.ownerId == request.auth.uid
         && d.memberIds == [request.auth.uid]
@@ -202,10 +322,41 @@ service cloud.firestore {
         && d.createdAt == request.time;
     }
 
-    function editsSpaceText() {
-      return request.auth.uid in existing().memberIds
-        && changedOnly(['name', 'reward', 'penalty'])
-        && validSpaceText(incoming());
+    // A complete month's house stakes are frozen, in this batch or before: from FIRST_RESULTS_MONTH
+    // ('2026-10') on, by a freeze made at completion (the previous app's freeze at the first lock
+    // doesn't bind and has to be re-frozen first). 3 reads (the last week, the list, the freeze).
+    function frozenIfComplete(spaceId, space, m) {
+      let freeze = getAfter(/databases/$(database)/documents/spaces/$(spaceId)/months/$(m));
+      return !monthCompleteBy(spaceId, space, m, request.time, 60)
+        || (freeze != null && (m < '2026-10' || monthCompleteBy(spaceId, space, m, freeze.data.createdAt, -60)));
+    }
+    // The months that can have completed recently: this UTC calendar month and the one before (a
+    // month completes between its 18th and the next month's 3rd), not before the space existed.
+    function recentMonthsFrozen(spaceId, space) {
+      let c = monthStr(request.time);
+      let p = monthStr(timestamp.date(request.time.year(), request.time.month(), 1) - duration.value(1, 'd'));
+      let since = monthStr(space.createdAt);
+      return (p < since || frozenIfComplete(spaceId, space, p))
+        && (c < since || frozenIfComplete(spaceId, space, c));
+    }
+
+    // The house stakes count between any two people who haven't agreed on their own, so only the owner
+    // changes them; anyone renames. Older clients send all three fields, and unchanged values aren't
+    // changes, so a non-owner's rename still passes. The owner's stakes change may carry a note (who
+    // and when, for everyone's notice; an older client sends none) and must find every recently
+    // completed month frozen first, so nobody can change what a finished month owes. Renames pay nothing.
+    function editsSpaceText(spaceId) {
+      let uid = request.auth.uid;
+      let e = existing();
+      let d = incoming();
+      let changed = d.diff(e).affectedKeys();
+      let stakes = changed.hasAny(['reward', 'penalty']);
+      return uid in e.memberIds
+        && changed.hasOnly(uid == e.ownerId ? ['name', 'reward', 'penalty', 'stakesNote'] : ['name'])
+        && validSpaceText(d)
+        && (!changed.hasAny(['stakesNote'])
+            || (stakes && exactKeys(d.stakesNote, ['by', 'at']) && d.stakesNote.by == uid && d.stakesNote.at == request.time))
+        && (!stakes || recentMonthsFrozen(spaceId, e));
     }
 
     // The owner is a member who joined no later than any other (8 slots: rules have no loops).
@@ -230,18 +381,19 @@ service cloud.firestore {
       return changed.hasOnly([who]) && changed.hasAll([who]) && after[who] == request.time;
     }
 
-    // Leaving removes self from memberIds and joinedAt. An owner who leaves others behind hands the
-    // space to the earliest-joined of them in the same write.
+    // Leaving removes self from memberIds and joinedAt (and may drop self from judges). An owner who
+    // leaves others behind hands the space to the earliest-joined of them in the same write.
     function leavesSpace() {
       let uid = request.auth.uid;
       let e = existing();
       let d = incoming();
       return uid in e.memberIds
-        && changedOnly(['memberIds', 'joinedAt', 'ownerId', 'leftAt'])
+        && changedOnly(['memberIds', 'joinedAt', 'ownerId', 'leftAt', 'judges'])
         && d.memberIds == e.memberIds.removeAll([uid])
         && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([uid])
         && !(uid in d.joinedAt)
         && recordsLeft(uid)
+        && ownJudgeOnly([uid])
         && (uid == e.ownerId && d.memberIds.size() > 0 ? earliestJoined(d) : d.ownerId == e.ownerId);
     }
 
@@ -251,13 +403,14 @@ service cloud.firestore {
       let d = incoming();
       let removed = e.memberIds.removeAll(d.memberIds);
       return request.auth.uid == e.ownerId && request.auth.uid in e.memberIds
-        && changedOnly(['memberIds', 'joinedAt', 'leftAt'])
+        && changedOnly(['memberIds', 'joinedAt', 'leftAt', 'judges'])
         && removed.size() == 1
         && !(request.auth.uid in removed)
         && d.memberIds == e.memberIds.removeAll(removed)
         && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly(removed)
         && !d.joinedAt.keys().hasAny(removed)
-        && recordsLeft(removed[0]);
+        && recordsLeft(removed[0])
+        && ownJudgeOnly(removed);
     }
 
     // Spaces whose owner left before ownership moved with them: the earliest-joined member takes over.
@@ -277,27 +430,168 @@ service cloud.firestore {
     }
 
     // The joins/{uid} doc written in the same batch is the proof of invite. Its code must be the
-    // space's current one, so a rotated-out code is dead even if its invite doc lingers.
+    // space's current one, so a rotated-out code is dead even if its invite doc lingers. The joiner
+    // may set or clear their own judges entry. (Rules evaluate every `let` of a function it calls,
+    // so reads and costly values sit behind cheap checks in a second function: other updates
+    // reaching this branch pay neither.)
     function joinsSpace(spaceId) {
-      let uid = request.auth.uid;
-      let proof = getAfter(/databases/$(database)/documents/spaces/$(spaceId)/joins/$(uid)).data;
-      return !(uid in existing().memberIds)
-        && proof.code == existing().inviteCode
-        && changedOnly(['memberIds', 'joinedAt'])
+      return !(request.auth.uid in existing().memberIds)
+        && changedOnly(['memberIds', 'joinedAt', 'judges'])
+        && joinsWith(spaceId, request.auth.uid,
+                     getAfter(/databases/$(database)/documents/spaces/$(spaceId)/joins/$(request.auth.uid)).data);
+    }
+    function joinsWith(spaceId, uid, proof) {
+      return proof.code == existing().inviteCode
         && incoming().memberIds == existing().memberIds.concat([uid])
         && incoming().memberIds.size() <= 8
         && incoming().joinedAt.diff(existing().joinedAt).affectedKeys().hasOnly([uid])
         && incoming().joinedAt[uid] == request.time
+        && ownJudgeOnly([uid])
         && proof.createdAt == request.time
         && get(/databases/$(database)/documents/invites/$(proof.code)).data.spaceId == spaceId;
     }
 
+    // ----- batch 2 space updates (SPEC §9.2–§9.4), after the ones above so those cost what they did -----
+    // Each branch starts with cheap checks that are plainly false (never an error) for writes it
+    // isn't about, and keeps its lets and reads in a second function behind them: rules evaluate
+    // every let of a called function, and keep evaluating `error && …` to look for a false, so an
+    // unguarded branch would charge every later one. Measured in tests/rules/budget.test.ts.
+
+    // A member switches Only Rate Friends for themselves.
+    function setsOwnJudge() {
+      return request.auth.uid in existing().memberIds
+        && changedOnly(['judges'])
+        && ownJudgeOnly([request.auth.uid]);
+    }
+
+    // The owner sets the space's times (or deletes them: the usual times) with a note for everyone's
+    // notice. fromWeek can't be proved, only kept near the change (a Monday from 8 days back to 15 days
+    // ahead), so a crafted client can't hide the notice behind an old week. Retiming itself guards the
+    // weeks: a week that has locked keeps its times.
+    function setsSchedule() {
+      return request.auth.uid == existing().ownerId && request.auth.uid in existing().memberIds
+        && changedOnly(['schedule', 'scheduleNote'])
+        && setsScheduleTo(existing(), incoming(), incoming().scheduleNote);
+    }
+    function setsScheduleTo(e, d, n) {
+      return (!('schedule' in d) || validSchedule(d.schedule))
+        && scheduleOf(d) != scheduleOf(e)
+        && exactKeys(n, ['by', 'at', 'fromWeek', 'before'])
+        && n.by == request.auth.uid && n.at == request.time
+        && n.before == scheduleOf(e)
+        && n.fromWeek is string && n.fromWeek.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && mondayNearNow(timestamp.date(int(n.fromWeek[0:4]), int(n.fromWeek[5:7]), int(n.fromWeek[8:10])));
+    }
+    function mondayNearNow(t) {
+      return t.dayOfWeek() == 1
+        && t >= request.time - duration.value(8, 'd')
+        && t <= request.time + duration.value(15, 'd');
+    }
+
     match /spaces/{spaceId} {
+
+      // ----- pausing a week (SPEC §9.3): one request at a time in space.pause, completed ones in
+      // space.paused {month: week}. The request's week doc must exist (asking creates it first); it
+      // is read with get(), one read per request. -----
+
+      function pauseWeek(weekId) { return get(periodPath(spaceId, 'weeks', weekId)).data; }
+      // A week's month is its Friday's, as for scores.
+      function monthOfWeek(weekId) {
+        return monthStr(timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10])) + duration.value(4, 'd'));
+      }
+      // Everyone in that week who is still in the space (judges too) said OK. Someone who joined after
+      // its lock isn't in it; someone who left no longer counts.
+      function neededOk(oks, w, memberIds) {
+        return oks.toSet().hasAll(w.members.toSet().intersection(memberIds.toSet()));
+      }
+      // The month's one pause isn't used yet, and the write records it exactly when the request is
+      // complete (a completing write without it is refused, so a pause is never complete but unrecorded).
+      function recordsPauseIf(done, weekId) {
+        let before = existing().get('paused', {});
+        let after = incoming().get('paused', {});
+        let month = monthOfWeek(weekId);
+        return !(month in before)
+          && (done
+              ? changedOnly(['pause', 'paused']) && after.diff(before).affectedKeys().hasOnly([month]) && after[month] == weekId
+              : changedOnly(['pause']));
+      }
+      // No request in play: none, declined or withdrawn, recorded, or past its week's review opening.
+      function requestOver(p) {
+        return p == null || 'declinedBy' in p
+          || existing().get('paused', {}).get(monthOfWeek(p.weekId), '') == p.weekId
+          || request.time >= pauseWeek(p.weekId).reviewOpenAt;
+      }
+
+      // A member asks to pause a week whose reviews haven't opened. Each person asks at most once every
+      // 12 hours (cancelled requests included). Alone (nobody else to ask), it is paused at once.
+      function asksToPause() {
+        return 'pause' in incoming() && changedOnly(['pause', 'paused'])
+          && request.auth.uid in existing().memberIds
+          && asks(request.auth.uid, incoming().pause, existing().get('pause', null));
+      }
+      function asks(uid, p, prev) {
+        return exactKeys(p, ['weekId', 'by', 'at', 'oks'])
+          && p.by == uid && p.at == request.time && p.oks == [uid]
+          && p.weekId is string && p.weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          && (prev == null || prev.by != uid || request.time >= prev.at + duration.value(12, 'h'))
+          && requestOver(prev)
+          && pauses(p, [uid], pauseWeek(p.weekId));
+      }
+      // Reviews of the week haven't opened, and the write records the pause iff `oks` completes it.
+      function pauses(p, oks, w) {
+        return request.time < w.reviewOpenAt
+          && recordsPauseIf(neededOk(oks, w, existing().memberIds), p.weekId);
+      }
+
+      // A member says OK. The OK that completes it records the pause in the same write, so two racing
+      // final OKs record it once (the second sees it recorded and is refused).
+      function oksPause() {
+        return 'pause' in existing() && changedOnly(['pause', 'paused'])
+          && request.auth.uid in existing().memberIds
+          && oks(request.auth.uid, existing().pause, incoming().pause);
+      }
+      function oks(uid, p, q) {
+        return !(uid in p.oks) && !('declinedBy' in p)
+          && exactKeys(q, ['weekId', 'by', 'at', 'oks'])
+          && q.oks == p.oks.concat([uid])
+          && q.weekId == p.weekId && q.by == p.by && q.at == p.at
+          && pauses(p, q.oks, pauseWeek(p.weekId));
+      }
+
+      // Not Now from a member who hasn't said OK, or the asker cancelling (withdrawn). The request
+      // stays, so the asker's 12-hour wait still holds. There is no delete.
+      function declinesPause() {
+        return 'pause' in existing() && changedOnly(['pause'])
+          && request.auth.uid in existing().memberIds
+          && declines(request.auth.uid, existing().pause, incoming().pause);
+      }
+      function declines(uid, p, q) {
+        return exactKeys(q, ['weekId', 'by', 'at', 'oks', 'declinedBy'])
+          && q.declinedBy == uid && !('declinedBy' in p)
+          && (!(uid in p.oks) || uid == p.by)
+          && q.weekId == p.weekId && q.by == p.by && q.at == p.at && q.oks == p.oks
+          && !(monthOfWeek(p.weekId) in existing().get('paused', {}));
+      }
+
+      // Everyone still needed has said OK (the last holdout left the space): any member records it.
+      function finalizesPause() {
+        return 'pause' in existing() && changedOnly(['paused'])
+          && request.auth.uid in existing().memberIds
+          && finalizes(existing().pause, pauseWeek(existing().pause.weekId));
+      }
+      function finalizes(p, w) {
+        return !('declinedBy' in p)
+          && neededOk(p.oks, w, existing().memberIds)
+          && request.time < w.reviewOpenAt
+          && recordsPauseIf(true, p.weekId);
+      }
+
       allow read: if signedIn() && request.auth.uid in existing().memberIds;
       allow create: if signedIn() && validNewSpace(incoming());
       allow update: if signedIn()
-        && (editsSpaceText() || leavesSpace() || joinsSpace(spaceId) || removesMember() || rotatesInviteCode()
-            || claimsOwnership());
+        && (editsSpaceText(spaceId) || leavesSpace() || joinsSpace(spaceId) || removesMember() || rotatesInviteCode()
+            || claimsOwnership() || setsOwnJudge() || setsSchedule() || asksToPause() || oksPause()
+            || declinesPause() || finalizesPause());
 
       match /joins/{uid} {
         allow get: if isUser(uid);
@@ -308,32 +602,34 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/invites/$(incoming().code)).data.spaceId == spaceId;
       }
 
-      // ---------- weeks ----------
+      // ---------- periods: weeks and monthly lists ----------
 
       // weekId 'YYYY-MM-DD' must be a real Monday. timestamp.date() errors (= deny) on impossible dates.
       // The timeline is anchored to the space's offset at creation: Monday 00:00 local is within 1h of
-      // Monday 00:00 UTC − utcOffsetMin (the 1h is DST), and each later bound within 1h of whole days
-      // after it and of the same whole days after the anchor, so the two hours of slack can't add up.
-      // Spaces from before utcOffsetMin keep the old ±14h anchor until the reminders job
-      // backfills their offset (clients can't set it: they could pick any offset).
-      // Created before lockAt only, with every current space member: taking part doesn't depend on
-      // who opens the app.
+      // Monday 00:00 UTC − utcOffsetMin (the 1h is DST), and each later bound within 1h of the space's
+      // schedule after it and after the anchor (followsSchedule). Spaces from before utcOffsetMin keep
+      // the old ±14h anchor until the reminders job backfills their offset (clients can't set it).
+      // A week stores the schedule it follows unless it is the usual one, and the space's judges
+      // unless nobody judges: so an older client's 6-key doc passes exactly as before in a space on
+      // the usual times without judges, and nowhere else (it would make a judge play, or a week
+      // follow the wrong times). After a change of times, no week can lock within a day of it.
+      // Created before lockAt only, with every current space member.
       function validNewWeek(spaceId, weekId, d) {
         let space = get(spacePath(spaceId)).data;
         let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
-        let tol = duration.value(1, 'h');
         let off = space.get('utcOffsetMin', null);
         let anchor = off == null ? monday : monday - duration.value(off, 'm');
+        let s = scheduleOf(space);
+        let judges = space.get('judges', []);
         return weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
           && monday.dayOfWeek() == 1
-          && exactKeys(d, ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy'])
-          && near(d.startAt, anchor, off == null ? duration.value(14, 'h') : tol)
-          && near(d.lockAt, d.startAt + duration.value(1, 'd'), tol)
-          && near(d.reviewOpenAt, d.startAt + duration.value(4, 'd'), tol)
-          && near(d.deadlineAt, d.startAt + duration.value(5, 'd'), tol)
-          && (off == null || (near(d.lockAt, anchor + duration.value(1, 'd'), tol)
-                              && near(d.reviewOpenAt, anchor + duration.value(4, 'd'), tol)
-                              && near(d.deadlineAt, anchor + duration.value(5, 'd'), tol)))
+          && d.keys().hasAll(['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy'])
+          && d.keys().hasOnly(['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'submittedBy', 'schedule', 'judges'])
+          && ('schedule' in d ? d.schedule == s : s == defaultSchedule())
+          && ('judges' in d ? d.judges == judges : judges.size() == 0)
+          && near(d.startAt, anchor, off == null ? duration.value(14, 'h') : duration.value(1, 'h'))
+          && followsSchedule(d, d.startAt, anchor, off, s)
+          && (!('scheduleNote' in space) || d.lockAt >= space.scheduleNote.at + notice())
           && d.submittedBy == []
           && request.time < d.lockAt
           && d.startAt < request.time + duration.value(8, 'd')
@@ -342,7 +638,8 @@ service cloud.firestore {
           && d.members.hasAll(space.memberIds);
       }
 
-      // Before lockAt any member adds current space members who are missing (append only, no duplicates).
+      // Before lockAt any member adds current space members who are missing (append only, no
+      // duplicates). Older clients' fill; new clients use syncsPeriod.
       function addsMembers(spaceId) {
         let e = existing();
         let added = incoming().members.removeAll(e.members);
@@ -356,9 +653,26 @@ service cloud.firestore {
           && space.memberIds.hasAll(added);
       }
 
-      // Someone leaving the space (themselves, or removed by the owner) leaves the week too, but only
+      // New clients keep an unlocked period (week or monthly list) in step with the space: append
+      // members who are missing and copy the space's judges. getAfter: a judge switch and its periods
+      // go in one transaction.
+      function syncsPeriod(spaceId) {
+        let e = existing();
+        let d = incoming();
+        let space = getAfter(spacePath(spaceId)).data;
+        let added = d.members.removeAll(e.members);
+        return changedOnly(['members', 'judges'])
+          && request.time < e.lockAt
+          && request.auth.uid in space.memberIds
+          && d.members == e.members.concat(added)
+          && added.toSet().size() == added.size()
+          && space.memberIds.hasAll(added)
+          && d.judges == space.get('judges', []);
+      }
+
+      // Someone leaving the space (themselves, or removed by the owner) leaves the period too, but only
       // before it locks. The lock is a commitment: from lockAt on, leaving or being removed keeps them in
-      // the week, so they are still reviewed, still scored and still waited for (until the deadline).
+      // it, so they are still reviewed, still scored and still waited for (until the deadline).
       // Nobody can have submitted before lockAt. getAfter: it's in the same batch as the space update.
       function leavesWeek(spaceId) {
         let e = existing();
@@ -384,9 +698,84 @@ service cloud.firestore {
           && isMember(spaceId);
       }
 
+      // The owner changed the times: a week moves to them while its lock is at least a day away, on
+      // both its old and its new times (every later bound follows its lock). A locked week keeps its
+      // timeline forever. Only a week on another schedule can be retimed, so nobody can nudge a week
+      // within the hour of slack. getAfter: the owner's change and the retimes go in one transaction.
+      // startAt, members and submittedBy never change here. Last in the chain: the other branches
+      // cost what they did.
+      function retimesWeek(spaceId, weekId) {
+        let e = existing();
+        let d = incoming();
+        let space = getAfter(spacePath(spaceId)).data;
+        let s = scheduleOf(space);
+        let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
+        let off = space.get('utcOffsetMin', null);
+        let anchor = off == null ? monday : monday - duration.value(off, 'm');
+        return changedOnly(['lockAt', 'reviewOpenAt', 'deadlineAt', 'schedule'])
+          && request.auth.uid in space.memberIds
+          && request.time + notice() <= e.lockAt
+          && request.time + notice() <= d.lockAt
+          && scheduleOf(e) != s && scheduleOf(d) == s
+          && followsSchedule(d, e.startAt, anchor, off, s);
+      }
+
+      // A month's list: created from 8 days before its first week until it locks with the month's
+      // second week's list; reviewed in its last week's review window. Its bounds are anchored to the
+      // month's weeks on the space's schedule (±1h for DST), every current member takes part, and it
+      // snapshots the space's judges.
+      function validNewMonthly(spaceId, monthId, d) {
+        let space = get(spacePath(spaceId)).data;
+        let a = monthAnchors(space, monthId);
+        let tol = duration.value(1, 'h');
+        return monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+          && space.get('utcOffsetMin', null) is int
+          && exactKeys(d, ['startAt', 'lockAt', 'reviewOpenAt', 'deadlineAt', 'members', 'judges', 'submittedBy'])
+          && near(d.startAt, a.first, tol)
+          && near(d.lockAt, a.first + duration.value(10080 + a.s.lock, 'm'), tol)
+          && near(d.reviewOpenAt, a.last + duration.value(a.s.reviewOpen, 'm'), tol)
+          && near(d.deadlineAt, a.last + duration.value(a.s.deadline, 'm'), tol)
+          && d.submittedBy == []
+          && request.time < d.lockAt
+          && d.startAt < request.time + duration.value(8, 'd')
+          && d.members is list
+          && d.members.size() == space.memberIds.size()
+          && d.members.hasAll(space.memberIds)
+          && d.judges == space.get('judges', []);
+      }
+
+      // A change of times moves a monthly list with its weeks, with a day's notice on both the old and
+      // the new time of whichever part moves. The lock is its second week's: that week's stored lock
+      // once its doc exists, else the anchor on the new schedule. The review window is its last week's:
+      // that week's stored window once its doc exists, else the anchors (only while that week could
+      // still be created). Any member may write it: only the right answer passes, so a stale list heals.
+      function retimesMonthly(spaceId, monthId) {
+        let e = existing();
+        let d = incoming();
+        let space = getAfter(spacePath(spaceId)).data;
+        let a = monthAnchors(space, monthId);
+        let tol = duration.value(1, 'h');
+        let lockWeek = getAfter(periodPath(spaceId, 'weeks', a.lockId));
+        let lastWeek = getAfter(periodPath(spaceId, 'weeks', a.lastId));
+        return changedOnly(['lockAt', 'reviewOpenAt', 'deadlineAt'])
+          && request.auth.uid in space.memberIds
+          && (d.lockAt == e.lockAt
+              || (request.time + notice() <= e.lockAt && request.time + notice() <= d.lockAt
+                  && (lockWeek != null
+                      ? d.lockAt == lockWeek.data.lockAt
+                      : near(d.lockAt, a.first + duration.value(10080 + a.s.lock, 'm'), tol))))
+          && ((d.reviewOpenAt == e.reviewOpenAt && d.deadlineAt == e.deadlineAt)
+              || (request.time + notice() <= e.reviewOpenAt && request.time + notice() <= d.reviewOpenAt
+                  && (lastWeek != null
+                      ? d.reviewOpenAt == lastWeek.data.reviewOpenAt && d.deadlineAt == lastWeek.data.deadlineAt
+                      : request.time < a.last + duration.value(a.s.lock - 60, 'm')
+                        && near(d.reviewOpenAt, a.last + duration.value(a.s.reviewOpen, 'm'), tol)
+                        && near(d.deadlineAt, a.last + duration.value(a.s.deadline, 'm'), tol))));
+      }
+
       // A plan of 25 tasks with 8 steps each must stay under the 1000-expression limit, and every node
       // counts (a literal, a field read, an operator), so these checks are written for cost first.
-      // Measured in the emulator: any plan with tasks uses about 890 (tests/rules/plans.test.ts).
+      // Measured in the emulator: see tests/rules/budget.test.ts.
 
       // Exactly {id, title} or {id, title, subs}: size() and the keys read leave no room for others.
       // matches() also rejects non-strings. Titles are 1-120 characters; blank titles are left to the
@@ -418,18 +807,21 @@ service cloud.firestore {
           && validTask(p[20]) && validTask(p[21]) && validTask(p[22]) && validTask(p[23]) && validTask(p[24])));
       }
 
-      // getAfter so that joining the week and writing in the same batch also works. isUser() and
-      // isMember() spelled out: uid is the signed-in user once the first check passes.
-      function canPlan(spaceId, weekId, uid) {
-        let w = getAfter(weekPath(spaceId, weekId)).data;
+      // getAfter so that joining the period and writing in the same batch also works. isUser() and
+      // isMember() spelled out: uid is the signed-in user once the first check passes. Judges have no
+      // list (SPEC §9.4); a doc from before judges has no snapshot, so nobody judges it.
+      function canPlan(spaceId, coll, id, uid) {
+        let w = getAfter(periodPath(spaceId, coll, id)).data;
         return request.auth.uid == uid && request.time < w.lockAt && uid in w.members
+          && !(uid in w.get('judges', []))
           && uid in get(spacePath(spaceId)).data.memberIds;
       }
       // From lockAt until the review window opens, a participant appends one task per write (SPEC §6.2).
       // Everything already on the list stays exactly as it was, and added[id] records when, so friends
       // can see what came late. Without a plan yet, the first such write creates it with that one task.
+      // Weeks only: a monthly list never grows after its lock.
       function appendsTask(spaceId, weekId, uid) {
-        let w = getAfter(weekPath(spaceId, weekId)).data;
+        let w = getAfter(periodPath(spaceId, 'weeks', weekId)).data;
         let d = incoming();
         let before = resource == null ? [] : existing().tasks;
         let addedBefore = resource == null ? {} : existing().get('added', {});
@@ -437,7 +829,7 @@ service cloud.firestore {
         let t = d.tasks[n];
         return isUser(uid)
           && w.lockAt <= request.time && request.time < w.reviewOpenAt
-          && uid in w.members && isMember(spaceId)
+          && uid in w.members && !(uid in w.get('judges', [])) && isMember(spaceId)
           && exactKeys(d, ['tasks', 'added', 'updatedAt'])
           && d.updatedAt == request.time
           && d.tasks is list && d.tasks.size() == n + 1 && n < 25
@@ -448,14 +840,14 @@ service cloud.firestore {
           && d.added is map && d.added.diff(addedBefore).affectedKeys().hasOnly([t.id])
           && d.added[t.id] == request.time;
       }
-      function canTick(spaceId, weekId, uid) {
-        let w = getAfter(weekPath(spaceId, weekId)).data;
+      function canTick(spaceId, coll, id, uid) {
+        let w = getAfter(periodPath(spaceId, coll, id)).data;
         return isUser(uid) && request.time < w.deadlineAt && uid in w.members && isMember(spaceId);
       }
 
-      // Every week member counts, including anyone who left after lock: leaving can't reveal early,
+      // Every period member counts, including anyone who left after lock: leaving can't reveal early,
       // and since they can't submit any more, the deadline reveals. Leaving before lock already took
-      // them out of members.
+      // them out of members. Judges are members, so the reveal waits for them too.
       function revealed(w) {
         return request.time >= w.deadlineAt || w.submittedBy.toSet().hasAll(w.members.toSet());
       }
@@ -463,12 +855,12 @@ service cloud.firestore {
       // Reviews are only written in the submit batch: the reviewer was not in submittedBy before
       // the batch (get) and is after it (getAfter). That already implies the review window (the
       // submittedBy update checks it); the window is still checked here so the rule reads like the spec.
-      // Two access calls per review keep an 8-member batch (7 reviews + the week update) well inside
+      // Two access calls per review keep an 8-member batch (7 reviews + the period update) well inside
       // the 20-call limit.
-      function validReview(spaceId, weekId, rid) {
+      function validReview(spaceId, coll, id, rid) {
         let d = incoming();
         let uid = request.auth.uid;
-        let w = get(weekPath(spaceId, weekId)).data;
+        let w = get(periodPath(spaceId, coll, id)).data;
         return exactKeys(d, ['reviewerId', 'revieweeId', 'marks', 'submittedAt'])
           && d.reviewerId == uid
           && d.revieweeId is string && d.revieweeId != uid
@@ -480,7 +872,7 @@ service cloud.firestore {
           && uid in w.members && d.revieweeId in w.members
           && w.reviewOpenAt <= request.time && request.time < w.deadlineAt
           && !(uid in w.submittedBy)
-          && uid in getAfter(weekPath(spaceId, weekId)).data.submittedBy;
+          && uid in getAfter(periodPath(spaceId, coll, id)).data.submittedBy;
       }
 
       // Marks are keyed by task id: at most 25, each shaped like one (keeps a review doc small).
@@ -511,26 +903,28 @@ service cloud.firestore {
       match /weeks/{weekId} {
         allow read: if isMember(spaceId);
         allow create: if isMember(spaceId) && validNewWeek(spaceId, weekId, incoming());
-        allow update: if signedIn() && (addsMembers(spaceId) || submitsReviews(spaceId) || leavesWeek(spaceId));
+        allow update: if signedIn()
+          && (addsMembers(spaceId) || syncsPeriod(spaceId) || submitsReviews(spaceId) || leavesWeek(spaceId)
+              || retimesWeek(spaceId, weekId));
 
         match /plans/{uid} {
           allow read: if isMember(spaceId);
           // Before lockAt the whole list is written ({tasks, updatedAt}: both are read, so hasOnly
           // is enough), and after it tasks are only appended.
-          allow create, update: if (canPlan(spaceId, weekId, uid)
+          allow create, update: if (canPlan(spaceId, 'weeks', weekId, uid)
               && incoming().keys().hasOnly(['tasks', 'updatedAt'])
               && validTasks(incoming().tasks)
               && incoming().updatedAt == request.time)
             || appendsTask(spaceId, weekId, uid);
           // Before lockAt only: added tasks can't be taken back.
-          allow delete: if canPlan(spaceId, weekId, uid);
+          allow delete: if canPlan(spaceId, 'weeks', weekId, uid);
         }
 
         match /progress/{uid} {
           allow read: if isMember(spaceId);
           // setDoc(..., {merge: true}) is validated on the merged document.
-          allow create: if canTick(spaceId, weekId, uid) && validProgress(incoming().done.keys());
-          allow update: if canTick(spaceId, weekId, uid) && validProgress(incoming().done.keys().removeAll(existing().done.keys()));
+          allow create: if canTick(spaceId, 'weeks', weekId, uid) && validProgress(incoming().done.keys());
+          allow update: if canTick(spaceId, 'weeks', weekId, uid) && validProgress(incoming().done.keys().removeAll(existing().done.keys()));
         }
 
         // Blind until revealed. Clients query where('reviewerId', '==', uid) before the reveal
@@ -538,52 +932,198 @@ service cloud.firestore {
         match /reviews/{rid} {
           allow read: if signedIn()
             && (existing().reviewerId == request.auth.uid
-                || (isMember(spaceId) && revealed(get(weekPath(spaceId, weekId)).data)));
-          allow create: if signedIn() && validReview(spaceId, weekId, rid);
+                || (isMember(spaceId) && revealed(get(periodPath(spaceId, 'weeks', weekId)).data)));
+          allow create: if signedIn() && validReview(spaceId, 'weeks', weekId, rid);
         }
+      }
+
+      // A month's list (SPEC §9.5): the same as a week, except that it is never appended to and old
+      // clients never touch it. The collection is `monthly` (`months` holds the frozen house stakes).
+      match /monthly/{monthId} {
+        allow read: if isMember(spaceId);
+        allow create: if isMember(spaceId) && validNewMonthly(spaceId, monthId, incoming());
+        allow update: if signedIn()
+          && (syncsPeriod(spaceId) || submitsReviews(spaceId) || leavesWeek(spaceId) || retimesMonthly(spaceId, monthId));
+
+        match /plans/{uid} {
+          allow read: if isMember(spaceId);
+          allow create, update: if canPlan(spaceId, 'monthly', monthId, uid)
+            && incoming().keys().hasOnly(['tasks', 'updatedAt'])
+            && validTasks(incoming().tasks)
+            && incoming().updatedAt == request.time;
+          allow delete: if canPlan(spaceId, 'monthly', monthId, uid);
+        }
+
+        match /progress/{uid} {
+          allow read: if isMember(spaceId);
+          allow create: if canTick(spaceId, 'monthly', monthId, uid) && validProgress(incoming().done.keys());
+          allow update: if canTick(spaceId, 'monthly', monthId, uid) && validProgress(incoming().done.keys().removeAll(existing().done.keys()));
+        }
+
+        match /reviews/{rid} {
+          allow read: if signedIn()
+            && (existing().reviewerId == request.auth.uid
+                || (isMember(spaceId) && revealed(get(periodPath(spaceId, 'monthly', monthId)).data)));
+          allow create: if signedIn() && validReview(spaceId, 'monthly', monthId, rid);
+        }
+      }
+
+      // ---------- per-person stakes (SPEC §9.7) ----------
+
+      // A per-friend entry holds both texts (kept for switching back); the text of a line that is
+      // per friend is 1-120 characters and not blank.
+      function validPerEntry(p, rewardEach, penaltyEach) {
+        return exactKeys(p, ['reward', 'penalty'])
+          && (rewardEach ? text(p.reward, 120) : str(p.reward, 0, 120))
+          && (penaltyEach ? text(p.penalty, 120) : str(p.penalty, 0, 120));
+      }
+      // At most 7, keyed by current members other than the doc's owner (7 slots: rules have no loops).
+      function validPer(per, uid, memberIds, rewardEach, penaltyEach) {
+        let ks = per.keys();
+        let n = ks.size();
+        return n <= 7 && ks.hasOnly(memberIds) && !(uid in ks)
+          && (n <= 0 || validPerEntry(per[ks[0]], rewardEach, penaltyEach))
+          && (n <= 1 || validPerEntry(per[ks[1]], rewardEach, penaltyEach))
+          && (n <= 2 || validPerEntry(per[ks[2]], rewardEach, penaltyEach))
+          && (n <= 3 || validPerEntry(per[ks[3]], rewardEach, penaltyEach))
+          && (n <= 4 || validPerEntry(per[ks[4]], rewardEach, penaltyEach))
+          && (n <= 5 || validPerEntry(per[ks[5]], rewardEach, penaltyEach))
+          && (n <= 6 || validPerEntry(per[ks[6]], rewardEach, penaltyEach));
+      }
+      function validTier(t) {
+        return exactKeys(t, ['months', 'reward']) && t.months is int && t.months >= 2 && t.months <= 36 && text(t.reward, 120);
+      }
+      // Streak rewards: at most 5, strictly ascending by months (so no length repeats).
+      function validTiers(ts) {
+        let n = ts.size();
+        return n <= 5
+          && (n <= 0 || validTier(ts[0]))
+          && (n <= 1 || (validTier(ts[1]) && ts[1].months > ts[0].months))
+          && (n <= 2 || (validTier(ts[2]) && ts[2].months > ts[1].months))
+          && (n <= 3 || (validTier(ts[3]) && ts[3].months > ts[2].months))
+          && (n <= 4 || (validTier(ts[4]) && ts[4].months > ts[3].months));
+      }
+      // Each line (reward, penalty) is the same for everyone ('group', its text required) or different
+      // per friend ('each', its text may be '' and each friend's is required).
+      function validStakes(uid, d, memberIds) {
+        return exactKeys(d, ['rewardMode', 'penaltyMode', 'reward', 'penalty', 'per', 'tiers', 'agreed', 'updatedAt'])
+          && d.rewardMode in ['group', 'each'] && d.penaltyMode in ['group', 'each']
+          && (d.rewardMode == 'group' ? text(d.reward, 120) : str(d.reward, 0, 120))
+          && (d.penaltyMode == 'group' ? text(d.penalty, 120) : str(d.penalty, 0, 120))
+          && d.per is map && validPer(d.per, uid, memberIds, d.rewardMode == 'each', d.penaltyMode == 'each')
+          && d.tiers is list && validTiers(d.tiers)
+          && d.agreed is map
+          && d.updatedAt == request.time;
+      }
+
+      // The owner edits their terms. `agreed` is not in the list, so the owner can never write, forge or
+      // clear an agreement.
+      function editsOwnStakes(spaceId, uid) {
+        let members = get(spacePath(spaceId)).data.memberIds;
+        return isUser(uid) && uid in members
+          && changedOnly(['rewardMode', 'penaltyMode', 'reward', 'penalty', 'per', 'tiers', 'updatedAt'])
+          && validStakes(uid, incoming(), members);
+      }
+
+      // A friend agrees, for themselves only, to exactly the terms this doc holds now (terms that changed
+      // a moment earlier refuse the write), stamped with the server time. An unchanged re-agree is
+      // refused; a new one moves the previous agreement, stamped with its own time, to the end of past
+      // (oldest first, at most 5 kept). No month check: the time is the server's, and which month it
+      // counts for is the domain's.
+      function agreesToStakes(spaceId, owner) {
+        let me = request.auth.uid;
+        let d = incoming();
+        let a = d.agreed[me];
+        let t = a.terms;
+        let old = existing().agreed.get(me, null);
+        let kept = old == null ? [] : (old.past.size() < 5 ? old.past : old.past[1:5]);
+        let n = kept.size();
+        let s = a.past[n];
+        return me != owner
+          && changedOnly(['agreed'])
+          && d.agreed.diff(existing().agreed).affectedKeys().hasOnly([me])
+          && exactKeys(a, ['at', 'terms', 'past'])
+          && a.at == request.time
+          && exactKeys(t, ['rewardMode', 'penaltyMode', 'reward', 'penalty', 'tiers'])
+          && t.rewardMode == d.rewardMode && t.penaltyMode == d.penaltyMode
+          && ((d.rewardMode == 'group' && d.penaltyMode == 'group') || me in d.per)
+          && t.reward == (d.rewardMode == 'group' ? d.reward : d.per[me].reward)
+          && t.penalty == (d.penaltyMode == 'group' ? d.penalty : d.per[me].penalty)
+          && t.tiers == d.tiers
+          && a.past is list
+          && (old == null
+              ? a.past == []
+              : t != old.terms
+                && a.past.size() == n + 1 && a.past == kept.concat([s])
+                && s.diff(old.terms).affectedKeys().hasOnly(['at']) && s.at == old.at)
+          && me in get(spacePath(spaceId)).data.memberIds;
+      }
+
+      // The doc id is its owner's uid; created on first Save with no agreements; never deleted (months
+      // already played need it, former members' too).
+      match /stakes/{uid} {
+        allow read: if isMember(spaceId);
+        allow create: if isUser(uid) && isMember(spaceId)
+          && validStakes(uid, incoming(), get(spacePath(spaceId)).data.memberIds)
+          && incoming().agreed == {};
+        allow update: if signedIn() && (editsOwnStakes(spaceId, uid) || agreesToStakes(spaceId, uid));
+      }
+
+      // Month results and streaks (SPEC §9.8), written once per month by the reminders job (admin).
+      match /results/{monthId} {
+        allow read: if isMember(spaceId);
       }
 
       // ---------- month stakes ----------
 
-      function monthStr(t) {
-        let m = t.month();
-        return string(t.year()) + (m < 10 ? '-0' : '-') + string(m);
-      }
-
-      // The first member to open a month freezes the space's stakes for it, so editing them later only
-      // changes months not frozen yet. Only for the month in play: the current week's month (its Friday)
-      // or the calendar month, in any timezone, which is always within [now − 3d, now + 5d].
+      // A month's house stakes are frozen once the month is complete (its last week's stored deadline,
+      // or the computed one, and its monthly list's), copying the space's stakes as they were before
+      // this request (get: so the owner's edit batch freezes the old ones), for recent months only.
+      // An earlier freeze (the previous app froze at a month's first lock) is refused.
       function validMonthStakes(spaceId, monthId) {
         let d = incoming();
         let space = get(spacePath(spaceId)).data;
         return monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
-          && monthId >= monthStr(request.time - duration.value(3, 'd'))
-          && monthId <= monthStr(request.time + duration.value(5, 'd'))
+          && monthId >= monthStr(request.time - duration.value(62, 'd'))
           && exactKeys(d, ['reward', 'penalty', 'createdAt'])
           && d.reward == space.reward
           && d.penalty == space.penalty
-          && d.createdAt == request.time;
+          && d.createdAt == request.time
+          && monthCompleteBy(spaceId, space, monthId, request.time, -60);
       }
 
-      // Create only: a frozen month never changes.
+      // Created once the month is complete, never deleted. The only update: from FIRST_RESULTS_MONTH
+      // ('2026-10') on, the previous app's early freeze (made before the month was complete) is
+      // overwritten at completion. The new createdAt is after completion, so it happens once.
       match /months/{monthId} {
         allow read: if isMember(spaceId);
         allow create: if isMember(spaceId) && validMonthStakes(spaceId, monthId);
+        allow update: if isMember(spaceId) && monthId >= '2026-10' && validMonthStakes(spaceId, monthId)
+          && !monthCompleteBy(spaceId, get(spacePath(spaceId)).data, monthId, existing().createdAt, -60);
       }
 
       // ---------- settlements ----------
 
-      // Members settle up for current and former members (someone who left still owes or is owed).
+      // Members settle up for current and former members (someone who left still owes or is owed):
+      // per pair ({monthId}_{uid}_{other}), per streak reward ({monthId}_{uid}_{other}_s{months}), or,
+      // from older clients, per member ({monthId}_{uid}). Honor system: any member may mark.
       function validSettlement(spaceId, sid) {
         let d = incoming();
         let space = get(spacePath(spaceId)).data;
         let members = space.memberIds;
-        return exactKeys(d, ['monthId', 'uid', 'settled', 'settledBy', 'settledAt'])
+        let left = space.get('leftAt', {});
+        let pair = 'other' in d;
+        let tier = 'tier' in d;
+        return (exactKeys(d, ['monthId', 'uid', 'settled', 'settledBy', 'settledAt'])
+            || exactKeys(d, ['monthId', 'uid', 'other', 'settled', 'settledBy', 'settledAt'])
+            || exactKeys(d, ['monthId', 'uid', 'other', 'tier', 'settled', 'settledBy', 'settledAt']))
           && d.monthId is string && d.monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
           && d.uid is string
-          && sid == d.monthId + '_' + d.uid
+          && (!pair || (d.other is string && d.other != d.uid && (d.other in members || d.other in left)))
+          && (!tier || (d.tier is int && d.tier >= 2 && d.tier <= 36))
+          && sid == d.monthId + '_' + d.uid + (pair ? '_' + d.other : '') + (tier ? '_s' + string(d.tier) : '')
           && request.auth.uid in members
-          && (d.uid in members || d.uid in space.get('leftAt', {}))
+          && (d.uid in members || d.uid in left)
           && d.settled is bool
           && d.settledBy == request.auth.uid
           && d.settledAt == request.time;

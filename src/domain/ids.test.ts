@@ -88,6 +88,14 @@ describe('doc ids', () => {
     expect(reviewDocId('alice', 'bob')).toBe('alice_bob')
     expect(settlementDocId('2026-10', 'alice')).toBe('2026-10_alice')
   })
+  it('settlements: per member (legacy), per pair, and a streak reward per pair', () => {
+    expect(settlementDocId('2026-10', 'marco', 'lena')).toBe('2026-10_marco_lena')
+    expect(settlementDocId('2026-10', 'marco', 'lena', 3)).toBe('2026-10_marco_lena_s3')
+    expect(settlementDocId('2026-10', 'marco', undefined, 3)).toBe('2026-10_marco')
+    // The three shapes never collide (uids have no underscore).
+    const ids = new Set([settlementDocId('2026-10', 'a'), settlementDocId('2026-10', 'a', 'b'), settlementDocId('2026-10', 'a', 'b', 12), settlementDocId('2026-10', 'b', 'a')])
+    expect(ids.size).toBe(4)
+  })
 })
 
 describe('colorForUid', () => {

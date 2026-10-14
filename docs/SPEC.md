@@ -732,6 +732,12 @@ For the usual schedule this is exactly today's windows in every zone (a frozen c
 
 **Workflow keepalive**: `.github/workflows/reminders.yml` (on `main`) gains a step that keeps GitHub from disabling the schedule after 60 days without repository activity, since streaks now depend on the job. It never commits (a commit to `main` would deploy `main`'s old build): it calls `gh api -X PUT repos/$GITHUB_REPOSITORY/actions/workflows/reminders.yml/enable` with `GH_TOKEN: ${{ github.token }}`, the workflow's `permissions` gaining `actions: write`, and it never fails the run.
 
+As built:
+- **Results target**: the writer starts from `resultsTarget(space, now, known)` (`scripts/reminders-plan.ts`), not `lastCompleteMonthCandidate` alone: when this week is its month's last week and that month is already complete (stored last week and list, else computed times), it targets this week's month, so results (and streaks) come in the first run after a month ends rather than the following Monday, and the verdict on the 1st can quote tier rewards. Otherwise it is `lastCompleteMonthCandidate`. The stored deadlines are still checked before writing.
+- **Freeze timestamp**: the writer's freeze stamps `createdAt` with the run's own clock (`Timestamp.fromMillis(now)`), not the server timestamp. In production they are the same; under `REMINDERS_NOW` (emulator only) the server time would make the freeze look early and get redone every run.
+- **Summary**: the run's log line adds `results` (month results docs written; in a dry run, that would have been) and `reads` (docs read as Firestore bills them: each doc fetched, one for a missing doc or an empty query).
+- **Reads measured** (a 4-person space): steady night run 2; steady daytime run 3 (spaces, the newest results doc, the stakes query); month end with results written plus the verdict and results pushes 120; a rerun the same day 15.
+
 Profile footer (`REMINDER_TIMES`): "Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK."
 
 ### 9.12 Help and intro

@@ -254,7 +254,7 @@ describe('adding tasks after the lock', () => {
     await rejectsWith(addTaskAfterLock(space, ACTIVE, { title: 'Big', subtasks: Array.from({ length: 9 }, (_, i) => `Step ${i}`) }), 'A task can have up to 8 steps.')
     await rejectsWith(addTaskAfterLock(space, ACTIVE, { title: 'Long', subtasks: ['x'.repeat(121)] }), 'Keep each step under 120 characters.')
     await rejectsWith(addTaskAfterLock(space, nextWeek(), { title: 'Early' }), 'Your list hasn’t locked yet. Add the task to it instead.')
-    await rejectsWith(addTaskAfterLock(space, REVIEW, { title: 'Late' }), 'Adding tasks closes when reviews open on Friday.')
+    await rejectsWith(addTaskAfterLock(space, REVIEW, { title: 'Late' }), 'Adding tasks closed when reviews opened.')
     await rejectsWith(addTaskAfterLock(space, FULL, { title: 'One more' }), 'You can plan up to 25 tasks a week.')
     await rejectsWith(addTaskAfterLock({ ...space, memberIds: [sam.uid] }, ACTIVE, { title: 'Gone' }), 'You’re no longer in this space.')
     await as(sam)

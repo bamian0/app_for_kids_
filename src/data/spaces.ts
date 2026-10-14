@@ -480,6 +480,8 @@ interface FreezeDecision {
 async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record<'name' | 'reward' | 'penalty', string>>): Promise<void> {
   await requireServer(me)
   const { db } = getFirebase()
+  /** What the latest run of the transaction decided (a transaction may run more than once). */
+  let decided: FreezeDecision[] = []
   const attempt = (flip: Set<MonthId>) =>
     runTransaction(db, async (tx) => {
       const snap = await tx.get(spaceRef(spaceId))
@@ -488,7 +490,6 @@ async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record
       if (fresh.ownerId !== me || !fresh.memberIds.includes(me)) throw new Error(ONLY_OWNER_STAKES)
       const at = now()
       const decisions: FreezeDecision[] = []
-      const writes: MonthId[] = []
       for (const monthId of houseFreezeMonths(fresh, at)) {
         const weeks = weekIdsInMonth(monthId)
         const [frozenSnap, lastSnap, listSnap] = await Promise.all([
@@ -501,59 +502,36 @@ async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record
         const frozen = frozenSnap.exists() ? toMonthStakes(frozenSnap) : null
         const freezeAt = houseFreezeAt(fresh, monthId, lastWeek, list)
         const completeAt = monthEndsAtFor(fresh, monthId, lastWeek, list)
-        let freeze = needsHouseFreeze(monthId, frozen, freezeAt, completeAt, at)
-        if (flip.has(monthId)) freeze = !freeze
+        // A binding freeze stays; otherwise the month is frozen once complete. On the retry, a month whose
+        // completion is within minutes of this device's clock goes the other way (the server's clock decides).
+        const binding = !needsHouseFreeze(monthId, frozen, -Infinity, completeAt, at)
+        const complete = at >= freezeAt
+        const freeze = !binding && (flip.has(monthId) ? !complete : complete)
         decisions.push({ monthId, freeze, freezeAt })
-        if (freeze) writes.push(monthId)
       }
+      decided = decisions
       const invite = fresh.inviteCode ? await tx.get(doc(db, 'invites', fresh.inviteCode)) : null
       // The freeze copies the stakes as they are before this change (the rules compare with the stored space).
-      for (const monthId of writes) {
-        tx.set(doc(db, 'spaces', spaceId, 'months', monthId), { reward: fresh.reward, penalty: fresh.penalty, createdAt: serverTimestamp() })
+      for (const { monthId, freeze } of decisions) {
+        if (freeze) tx.set(doc(db, 'spaces', spaceId, 'months', monthId), { reward: fresh.reward, penalty: fresh.penalty, createdAt: serverTimestamp() })
       }
       const next = { name: clean.name ?? fresh.name, reward: clean.reward ?? fresh.reward, penalty: clean.penalty ?? fresh.penalty }
       tx.update(spaceRef(spaceId), { ...next, stakesNote: { by: me, at: serverTimestamp() } })
       if (invite?.exists()) tx.update(invite.ref, { spaceName: next.name, reward: next.reward, penalty: next.penalty })
-      return decisions
     })
-  let decisions: FreezeDecision[] = []
   try {
     await attempt(new Set())
     return
   } catch (e) {
     if (!isDenied(e)) throw humanError(e, STAKES_FAILED)
   }
+  const edge = new Set(decided.filter((d) => Math.abs(d.freezeAt - now()) <= FREEZE_EDGE_MS).map((d) => d.monthId))
+  if (edge.size === 0) throw new Error(STAKES_FAILED)
   try {
-    // The decisions as the first attempt would make them now, to find the months at the edge.
-    decisions = await peekDecisions(spaceId)
-    const edge = new Set(decisions.filter((d) => Math.abs(d.freezeAt - now()) <= FREEZE_EDGE_MS).map((d) => d.monthId))
-    if (edge.size === 0) throw new Error(STAKES_FAILED)
     await attempt(edge)
   } catch (e) {
     throw humanError(e, STAKES_FAILED)
   }
-}
-
-/** The freeze decisions an attempt would make now, read outside a transaction (for the retry). */
-async function peekDecisions(spaceId: string): Promise<FreezeDecision[]> {
-  const { db } = getFirebase()
-  const snap = await getDoc(spaceRef(spaceId))
-  if (!snap.exists()) return []
-  const fresh = toSpace(snap)
-  const at = now()
-  const out: FreezeDecision[] = []
-  for (const monthId of houseFreezeMonths(fresh, at)) {
-    const weeks = weekIdsInMonth(monthId)
-    const [lastSnap, listSnap] = await Promise.all([
-      getDoc(weekRef(spaceId, weeks[weeks.length - 1] as WeekId)).catch(() => null),
-      getDoc(periodRef(spaceId, 'monthly', monthId)).catch(() => null),
-    ])
-    const lastWeek = lastSnap?.exists() ? toWeek(lastSnap, spaceId) : null
-    const list = listSnap?.exists() ? toMonthly(listSnap, spaceId) : null
-    void db
-    out.push({ monthId, freeze: false, freezeAt: houseFreezeAt(fresh, monthId, lastWeek, list) })
-  }
-  return out
 }
 
 /**

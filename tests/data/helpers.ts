@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, setLogLevel, Timestamp, type DocumentData, type Firestore } from 'firebase/firestore'
 import { initClockFromUrl } from '../../src/domain/clock.ts'
+import { decodeSpaceExtras } from '../../src/domain/decode.ts'
 import { getFirebase, setEmulatorPorts } from '../../src/firebase/app.ts'
 import { signIn, signOut, signUp } from '../../src/data/api.ts'
 import type { Live } from '../../src/data/api.ts'
@@ -111,7 +112,8 @@ export async function adminSpace(spaceId: string): Promise<Space> {
   }
   if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
   if (d.leftAt) space.leftAt = millisById(d.leftAt)
-  return space
+  // Batch 2's fields (schedule, its note, pause, judges, the house-stakes note), decoded as the app does.
+  return Object.assign(space, decodeSpaceExtras(d, millis))
 }
 
 /** Everything stored for one week, every review included (revealed or not), read with rules disabled. */
@@ -233,5 +235,82 @@ export async function eventually(check: () => boolean | Promise<boolean>, timeou
   while (!(await check())) {
     if (Date.now() > end) throw new Error('Condition not met in time')
     await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+// ---------- Batch 2 helpers ----------
+
+/**
+ * The real rules with every time comparison shifted by `offsetMs`: `request.time` reads as `request.time +
+ * offset`, except where a written time must equal it (`== request.time`, a server timestamp, stays real). The
+ * emulator's clock can't move, so this is how a test runs at another moment of the calendar (with setClock
+ * moved by the same offset). Times stored by the server stay real, so tests that compare them with the
+ * calendar (a freeze's createdAt, a pause's cooldown) run on the real rules instead.
+ */
+export function shiftedRules(offsetMs: number): string {
+  const secs = Math.round(offsetMs / 1000)
+  const shifted = secs >= 0 ? `(request.time + duration.value(${secs}, 's'))` : `(request.time - duration.value(${-secs}, 's'))`
+  return RULES.replace(/(==\s*)?request\.time/g, (match: string, equals: string | undefined) => (equals ? match : shifted))
+}
+
+/** Moves the app clock and the rules' clock (not the server's timestamps) to `ms`. */
+export async function travelTo(ms: number): Promise<void> {
+  await loadRules(shiftedRules(ms - Date.now()))
+  setClock(ms)
+}
+
+/** Back to the real time and the real rules. */
+export async function travelBack(): Promise<void> {
+  await loadRules(RULES)
+  resetClock()
+}
+
+/** Another signed-in client (rules apply), for writes racing the app's own. */
+export function clientFor(uid: string): Firestore {
+  return env!.authenticatedContext(uid).firestore() as unknown as Firestore
+}
+
+/** A space doc as the app writes it (tz UTC unless given), for seeding. */
+export function spaceDoc(opts: {
+  ownerId: string
+  memberIds: string[]
+  joinedAt?: number
+  createdAt?: number
+  timezone?: string
+  utcOffsetMin?: number | null
+  inviteCode?: string
+  reward?: string
+  penalty?: string
+  extra?: DocumentData
+}): DocumentData {
+  const joined = ts(opts.joinedAt ?? Date.now() - 20 * DAY)
+  const d: DocumentData = {
+    name: 'Film Club',
+    reward: opts.reward ?? 'Dinner on me',
+    penalty: opts.penalty ?? 'Coffee for a week',
+    ownerId: opts.ownerId,
+    memberIds: opts.memberIds,
+    joinedAt: Object.fromEntries(opts.memberIds.map((m) => [m, joined])),
+    timezone: opts.timezone ?? 'UTC',
+    inviteCode: opts.inviteCode ?? 'FILMCLUB',
+    threshold: 90,
+    latePenalty: 5,
+    createdAt: ts(opts.createdAt ?? Date.now() - 30 * DAY),
+    ...opts.extra,
+  }
+  if (opts.utcOffsetMin !== null) d.utcOffsetMin = opts.utcOffsetMin ?? 0
+  return d
+}
+
+/** A week doc on its computed bounds (as the app creates it), for seeding. */
+export function boundsDoc(bounds: { startAt: number; lockAt: number; reviewOpenAt: number; deadlineAt: number }, members: string[], extra: DocumentData = {}): DocumentData {
+  return {
+    startAt: ts(bounds.startAt),
+    lockAt: ts(bounds.lockAt),
+    reviewOpenAt: ts(bounds.reviewOpenAt),
+    deadlineAt: ts(bounds.deadlineAt),
+    members,
+    submittedBy: [],
+    ...extra,
   }
 }

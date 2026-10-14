@@ -59,6 +59,12 @@ function localTime(date: string, days: number, hour: number, tz: string): number
 
 /** The reminder windows open at `nowMs` for a space in `tz`, exactly as the job computed them before batch 2. */
 export function legacyDueWindows(tz: string, nowMs: number): LegacyWindow[] {
+  return legacyWindowsAround(tz, nowMs).filter((w) => w.opensAt <= nowMs && nowMs < w.closesAt)
+}
+
+/** The same windows before the filter (they depend on `nowMs` only through its week and month), so a sweep can
+ *  compute them once per week. */
+export function legacyWindowsAround(tz: string, nowMs: number): LegacyWindow[] {
   const weekId = weekIdFor(nowMs, tz)
   const week = weekBounds(weekId, tz)
   const nextWeekStart = weekBounds(addWeeks(weekId, 1), tz).startAt
@@ -83,5 +89,5 @@ export function legacyDueWindows(tz: string, nowMs: number): LegacyWindow[] {
       expiresAt: localTime(`${monthId}-01`, 2, 0, tz),
     },
   ]
-  return windows.filter((w) => w.opensAt <= nowMs && nowMs < w.closesAt)
+  return windows
 }

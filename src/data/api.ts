@@ -1,6 +1,7 @@
 // Data layer API used by the screens. Signatures are the contract (docs/SPEC.md §2).
 // Writes live in sibling modules; this file holds the React hooks and re-exports everything.
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { now } from '../domain/clock.ts'
 import { weekIdsInMonth } from '../domain/time.ts'
 import type {
   MemberStakes,
@@ -17,7 +18,7 @@ import type {
   WeekId,
 } from '../domain/types.ts'
 import { mergeProfiles, startProfile } from './auth.ts'
-import { startMonthly, monthlyKey } from './monthly.ts'
+import { monthDataKey, monthListCounts, monthlyKey, startMonthData, startMonthly } from './monthly.ts'
 import { ensureSpace, startMonthStakes } from './months.ts'
 import { startLatestResults, startResults } from './results.ts'
 import { authState, startAuth } from './session.ts'
@@ -57,13 +58,17 @@ export { signUp, signIn, sendPasswordReset, signOut, updateMyName, updateMyPhoto
 
 // ---------- Spaces ----------
 
-/**
- * Runs ensureSpace for each space when it first loads and when its members change (cheap when nothing to do).
- * batch2: TODO the signature also covers the schedule, judges and pause request (SPEC §9.10), so a change
- * to any of them re-runs the upkeep (retimes, judge snapshots, finalizing a pause).
- */
+/** What ensureSpace reads from a space: a change to any of it (members, zone, times, judges, the pause request,
+ *  the owner) re-runs the upkeep (retimes, judge snapshots, finalizing a pause). */
+function upkeepSignature(s: Space): string {
+  const schedule = s.schedule ? `${s.schedule.lock}/${s.schedule.reviewOpen}/${s.schedule.deadline}` : ''
+  const pause = s.pause ? `${s.pause.weekId}/${s.pause.oks.join(',')}/${s.pause.declinedBy ?? ''}` : ''
+  return [s.id, s.memberIds.join(','), s.timezone, schedule, (s.judges ?? []).join(','), pause, s.ownerId].join(':')
+}
+
+/** Runs ensureSpace for each space when it first loads and whenever what the upkeep reads changes (cheap when nothing to do). */
 function useEnsure(spaces: (Space | null | undefined)[]): void {
-  const signature = spaces.map((s) => (s ? `${s.id}:${s.memberIds.join(',')}:${s.timezone}` : '')).join('|')
+  const signature = spaces.map((s) => (s ? upkeepSignature(s) : '')).join('|')
   useEffect(() => {
     for (const space of spaces) if (space) void ensureSpace(space)
     // `signature` covers what ensureSpace reads.
@@ -186,16 +191,14 @@ export function useMonth(space: Space, monthId: MonthId): Live<WeekData[]> {
  * The month's weeks and, from the computed start of the month's last week on (before that it can't
  * count yet), its monthly list: what computeMonth(space, monthId, data.weeks, nowMs, data.monthly)
  * needs. Space cards and Overview use this; MonthView passes useMonthly's list instead, to show it all
- * month. Store key `${uid}|month|${spaceId}|${monthId}|m` (weeks shared with useWeek, the list with
- * useMonthly). Does not create docs.
+ * month. Store key `${uid}|month|${spaceId}|${monthId}|m` with the list, `…|w` before it can count (weeks
+ * shared with useWeek, the list with useMonthly). Does not create docs.
  */
 export function useMonthData(space: Space, monthId: MonthId): Live<MonthData> {
-  // batch2: TODO load the monthly list lazily (SPEC §9.10); until then no list, which scores as before.
-  const weeks = useMonth(space, monthId)
-  return useMemo(
-    () => (weeks.data ? { data: { monthId, weeks: weeks.data }, loading: false, error: weeks.error } : { data: undefined, loading: weeks.loading, error: weeks.error }),
-    [weeks, monthId],
-  )
+  const { uid } = useAuth()
+  // Before the month's last week starts, the list can't count yet: only the weeks are loaded.
+  const withList = monthListCounts(space, monthId, now())
+  return useLive(uid ? monthDataKey(uid, space.id, monthId, withList) : null, (emit) => startMonthData(space.id, monthId, uid as UID, withList)(emit))
 }
 
 /**

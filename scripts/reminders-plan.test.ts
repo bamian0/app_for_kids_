@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Mark, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
+import type { Mark, MonthId, MonthlyData, Space, Task, UID, WeekData, WeekId } from '../src/domain/types.ts'
 import { dueWindows, formatPercent, hoursFromNow, isNudge, listNames, offsetToStore, planReminders, planSpace, reminderKey, type PlanResult } from './reminders-plan.ts'
 
 // Europe/Berlin is UTC+2 until Sun 2026-10-25, UTC+1 after. Bounds are written out explicitly.
@@ -64,9 +64,14 @@ function makeWeek(weekId: WeekId, spec: WeekSpec | null, spaceId = 's1', bounds:
   return data
 }
 
+/** Months without a monthly list, loaded (the verdict and a month's last week need their month's list). */
+function noLists(spaceId = 's1', months: MonthId[] = ['2026-09', '2026-10', '2026-11', '2026-12']): Record<MonthId, MonthlyData> {
+  return Object.fromEntries(months.map((monthId) => [monthId, { spaceId, monthId, monthly: null, plans: {}, progress: {}, reviews: [] }]))
+}
+
 function plan(space: Space, weeks: WeekData[], nowMs: number, sent: string[] = []): PlanResult {
   const byId = Object.fromEntries(weeks.map((w) => [w.weekId, w]))
-  return planSpace({ space, weeks: byId }, PROFILES, new Set(sent), nowMs)
+  return planSpace({ space, weeks: byId, monthly: noLists(space.id) }, PROFILES, new Set(sent), nowMs)
 }
 
 const kinds = (space: Space, iso: string) => dueWindows(space, at(iso)).map((w) => w.kind)
@@ -381,7 +386,10 @@ describe('review reminders', () => {
     expect(result.skipped).toEqual(['a', 'b', 'c', 'd'].map((u) => key('review', u)))
     const late = makeWeek(W, { members: ['a', 'b'], plans: { a: 1, b: 1 } })
     late.week!.reviewOpenAt = at('2026-10-16T12:00Z')
-    expect(plan(makeSpace(), [late], at('2026-10-16T08:17Z')).send).toEqual([])
+    // Not yet a review push. (Tasks can be added until the stored opening, so the open-tasks nudge still goes.)
+    const early = plan(makeSpace(), [late], at('2026-10-16T08:17Z'))
+    expect(early.send.filter((r) => r.kind === 'review')).toEqual([])
+    expect(bodies(early).a).toBe('1 of 1 task still open | Reviews in Film Club start in 4 hours. Finish what you can before then.')
   })
 
   it('still asks everyone to review a participant who left after the week locked', () => {
@@ -479,7 +487,13 @@ describe('verdict reminder', () => {
 
   it('uses the stakes frozen for that month, not the space\'s current text', () => {
     const result = planSpace(
-      { space: makeSpace({ memberIds: ['a', 'b', 'c'], penalty: 'A high five' }), weeks: Object.fromEntries(weeks.map((w) => [w.weekId, w])), stakes: { '2026-10': { reward: 'Dinner on me', penalty: 'Coffee for a week' } } },
+      {
+        space: makeSpace({ memberIds: ['a', 'b', 'c'], penalty: 'A high five' }),
+        weeks: Object.fromEntries(weeks.map((w) => [w.weekId, w])),
+        monthly: noLists(),
+        // Frozen once October was complete (SPEC §9.7).
+        stakes: { '2026-10': { reward: 'Dinner on me', penalty: 'Coffee for a week', createdAt: at('2026-10-31T09:00Z') } },
+      },
       PROFILES,
       new Set(),
       nov1,

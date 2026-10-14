@@ -1,25 +1,66 @@
-// Hourly reminders job (run by .github/workflows/reminders.yml). See docs/SPEC.md §4.
+// Hourly reminders job (run by .github/workflows/reminders.yml). See docs/SPEC.md §4 and §9.11.
 //
 //   FIREBASE_SERVICE_ACCOUNT='<service account JSON>' APP_URL=https://… node scripts/reminders.ts
 //
-// FIREBASE_SERVICE_ACCOUNT missing: logs and exits 0. DRY_RUN=1: logs what it would send, sends
-// and records nothing. FIRESTORE_EMULATOR_HOST set: runs against the emulator (project
-// GCLOUD_PROJECT or demo-stakes), where REMINDERS_NOW=<ISO time> may also fake the clock.
+// FIREBASE_SERVICE_ACCOUNT missing: logs and exits 0. DRY_RUN=1: logs what it would send and write, sends
+// and records nothing. FIRESTORE_EMULATOR_HOST set: runs against the emulator (project GCLOUD_PROJECT or
+// demo-stakes), where REMINDERS_NOW=<ISO time> may also fake the clock.
 //
-// Firestore reads stay small on the free plan: outside a reminder window a run reads only the
-// spaces, and a window's week data is loaded only while someone with a device still waits for it.
-// The midweek nudges read only the week doc and those people's plans, and progress for the ones with tasks.
+// Firestore reads stay small on the free plan: outside a reminder window a run reads only the spaces and each
+// space's newest month results doc, and a window's data is loaded only while someone with a device still waits
+// for it. The midweek nudges read only the week doc and those people's plans, and progress for the ones with
+// tasks. Each run first writes the month results (streaks) of months that are complete (ensureResults), and the
+// summary it logs counts every doc it read.
 import { pathToFileURL } from 'node:url'
 import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app'
-import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore'
+import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore, type Query } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
 import { decodeTasks } from '../src/data/tasks.ts'
-import type { Mark, MonthId, Plan, Progress, Space, UID, Week, WeekData, WeekId } from '../src/domain/types.ts'
-import { dueWindows, isNudge, offsetToStore, planSpace, reminderKey, type PlanInput, type Reminder, type SpaceInput } from './reminders-plan.ts'
+import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras } from '../src/domain/decode.ts'
+import { boundsFor } from '../src/domain/schedule.ts'
+import { computeMonth, judgesOf, monthEndsAtFor } from '../src/domain/scoring.ts'
+import { buildMonthResults, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
+import { addMonths, addWeeks, firstMonthOf, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
+import type {
+  LineInForce,
+  Mark,
+  MemberStakes,
+  MonthId,
+  MonthlyData,
+  MonthResults,
+  Plan,
+  Progress,
+  Review,
+  Space,
+  UID,
+  Week,
+  WeekData,
+  WeekId,
+} from '../src/domain/types.ts'
+import {
+  dueWindows,
+  isMuted,
+  isNudge,
+  offsetToStore,
+  planSpace,
+  planWindows,
+  resultsTarget,
+  stakesCandidates,
+  stakesWindow,
+  weekLoad,
+  windowKeys,
+  type DueWindow,
+  type FrozenStakes,
+  type PlanInput,
+  type Reminder,
+  type SpaceInput,
+  type WeekLoad,
+} from './reminders-plan.ts'
 
 export const DEFAULT_APP_URL = 'https://bamian0.github.io/app_for_kids_/'
 const FOUR_WEEKS_S = 28 * 24 * 3600
+const DAY_MS = 24 * 3_600_000
 /** gRPC status of a create() on an existing doc. */
 const ALREADY_EXISTS = 6
 
@@ -43,6 +84,17 @@ export const SPACE_BUDGET_MS = 60_000
 export const MAX_DEVICES = 5
 /** Only real push services, as in firestore.rules (validPushSub). */
 export const PUSH_HOST = /^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.notify\.windows\.com)\//
+/** After a change of times, stored week timelines can differ from computed ones for this long: a week that
+ *  couldn't be retimed locks within 7 days, its deadline is at most 7 days later, then results and the verdict
+ *  take up to 3 more. Within it the job reads last, this and next week's docs first (SPEC §9.11). */
+export const PRELOAD_MS = 21 * DAY_MS
+/** Month results docs written per space and per run (SPEC §9.11): a backfill after an outage spreads over runs. */
+export const RESULTS_PER_SPACE = 2
+export const RESULTS_PER_RUN = 6
+/** How many months back the results writer looks for the newest results doc before giving up. */
+const MAX_RESULTS_WALK = 24
+/** How far back the `stakes` push looks for changed stakes. */
+const STAKES_RECENT_MS = 7 * DAY_MS
 
 /** Delivers one push; rejects with an error carrying `statusCode` when the push service refuses it. */
 export type SendPush = (subscription: PushKeys, payload: string, options: SendOptions) => Promise<unknown>
@@ -71,6 +123,10 @@ export interface RunSummary {
   skippedSpaces: number
   /** Spaces that could not be processed. */
   errors: number
+  /** Month results docs written (in a dry run: that would have been). */
+  results: number
+  /** Docs read, as Firestore bills them: each doc fetched, one for a missing doc or an empty query. */
+  reads: number
 }
 
 interface Device {
@@ -83,6 +139,12 @@ interface Device {
 function ms(value: unknown): number {
   if (value instanceof Timestamp) return value.toMillis()
   return typeof value === 'number' ? value : 0
+}
+
+/** A stored time for the shared decoders (src/domain/decode.ts). */
+function toMs(value: unknown): number | null {
+  if (value instanceof Timestamp) return value.toMillis()
+  return typeof value === 'number' ? value : null
 }
 
 function str(value: unknown): string {
@@ -115,7 +177,8 @@ function toSpace(snap: DocumentSnapshot): Space {
   }
   if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
   if (d.leftAt && typeof d.leftAt === 'object') space.leftAt = times(d.leftAt)
-  return space
+  // Times, pause, judges and the house-stakes note, decoded as the app does (malformed values read as absent).
+  return Object.assign(space, decodeSpaceExtras(d, toMs))
 }
 
 /** Push docs → the newest MAX_DEVICES with a real push service and usable keys. */
@@ -140,9 +203,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-function toWeek(spaceId: string, weekId: WeekId, d: Record<string, unknown>): Week {
-  return {
-    id: weekId,
+/** A week doc, or a monthly list (the same shape, `id` its MonthId), with its schedule and judges. */
+function toPeriod(spaceId: string, id: string, d: Record<string, unknown>): Week {
+  const period: Week = {
+    id,
     spaceId,
     startAt: ms(d.startAt),
     lockAt: ms(d.lockAt),
@@ -151,6 +215,10 @@ function toWeek(spaceId: string, weekId: WeekId, d: Record<string, unknown>): We
     members: strings(d.members),
     submittedBy: strings(d.submittedBy),
   }
+  const extras = decodeWeekExtras(d)
+  if (extras.schedule) period.schedule = extras.schedule
+  if (extras.judges) period.judges = extras.judges
+  return period
 }
 
 function toPlan(snap: DocumentSnapshot): Plan {
@@ -163,51 +231,58 @@ function toProgress(snap: DocumentSnapshot): Progress {
   return { uid: snap.id, done: (snap.get('done') ?? {}) as Record<string, boolean>, updatedAt: ms(snap.get('updatedAt')) }
 }
 
-async function loadWeek(db: Firestore, spaceId: string, weekId: WeekId): Promise<WeekData> {
-  const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
-  const ref = db.doc(`spaces/${spaceId}/weeks/${weekId}`)
-  const snap = await ref.get()
-  const d = snap.data()
-  // Plans, progress and reviews can't exist without the week doc (see firestore.rules).
-  if (!d) return data
-  data.week = toWeek(spaceId, weekId, d)
-  const [plans, progress, reviews] = await Promise.all(['plans', 'progress', 'reviews'].map((name) => ref.collection(name).get()))
-  for (const p of plans.docs) data.plans[p.id] = toPlan(p)
-  for (const p of progress.docs) data.progress[p.id] = toProgress(p)
-  data.reviews = reviews.docs.map((r) => ({
-    id: r.id,
-    reviewerId: str(r.get('reviewerId')),
-    revieweeId: str(r.get('revieweeId')),
-    marks: (r.get('marks') ?? {}) as Record<string, Mark>,
-    submittedAt: ms(r.get('submittedAt')),
-  }))
-  return data
+function toReview(snap: DocumentSnapshot): Review {
+  return {
+    id: snap.id,
+    reviewerId: str(snap.get('reviewerId')),
+    revieweeId: str(snap.get('revieweeId')),
+    marks: (snap.get('marks') ?? {}) as Record<string, Mark>,
+    submittedAt: ms(snap.get('submittedAt')),
+  }
 }
 
-/**
- * What the midweek nudges need, and only for `uids` (those still waiting for one, with a device): the
- * week doc, their plans if they take part, and the progress of those with tasks. Everyone else reads
- * as having no tasks, which the planner never treats as final. No reviews: there are none before Friday.
- */
-async function loadNudgeWeek(db: Firestore, spaceId: string, weekId: WeekId, uids: UID[]): Promise<WeekData> {
-  const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
-  const ref = db.doc(`spaces/${spaceId}/weeks/${weekId}`)
-  const d = (await ref.get()).data()
-  if (!d) return data
-  const week = toWeek(spaceId, weekId, d)
-  data.week = week
-  const participants = uids.filter((uid) => week.members.includes(uid))
-  if (participants.length === 0) return data
-  for (const snap of await db.getAll(...participants.map((uid) => ref.collection('plans').doc(uid)))) {
-    if (snap.exists) data.plans[snap.id] = toPlan(snap)
-  }
-  const withTasks = participants.filter((uid) => (data.plans[uid]?.tasks.length ?? 0) > 0)
-  if (withTasks.length === 0) return data
-  for (const snap of await db.getAll(...withTasks.map((uid) => ref.collection('progress').doc(uid)))) {
-    if (snap.exists) data.progress[snap.id] = toProgress(snap)
-  }
-  return data
+/** spaces/{id}/months/{monthId}: a month's frozen house stakes, with when they were frozen. */
+function toFrozen(snap: DocumentSnapshot): FrozenStakes | null {
+  const reward = snap.get('reward')
+  const penalty = snap.get('penalty')
+  if (!snap.exists || typeof reward !== 'string' || typeof penalty !== 'string') return null
+  const frozen: FrozenStakes = { reward, penalty }
+  const createdAt = toMs(snap.get('createdAt'))
+  if (createdAt !== null) frozen.createdAt = createdAt
+  return frozen
 }
+
+// ---------- domain → Firestore ----------
+
+function lineData(line: LineInForce): Record<string, unknown> {
+  const out: Record<string, unknown> = { text: line.text, together: line.together, source: line.source }
+  if (line.at !== undefined) out.at = Timestamp.fromMillis(line.at)
+  return out
+}
+
+/** A month results doc as stored (SPEC §9.8): times as Timestamps, no undefined values, createdAt the server's. */
+function resultsData(doc: Omit<MonthResults, 'createdAt'>): Record<string, unknown> {
+  const members = Object.fromEntries(
+    Object.entries(doc.members).map(([uid, e]) => [uid, { score: e.score, passed: e.passed, streak: e.streak, ...(e.tierRuns ? { tierRuns: e.tierRuns } : {}) }]),
+  )
+  const out: Record<string, unknown> = { monthId: doc.monthId, completeAt: Timestamp.fromMillis(doc.completeAt), members, createdAt: FieldValue.serverTimestamp() }
+  if (doc.terms) {
+    out.terms = Object.fromEntries(
+      Object.entries(doc.terms).map(([subject, pairs]) => [
+        subject,
+        Object.fromEntries(
+          Object.entries(pairs).map(([other, t]) => [
+            other,
+            { reward: lineData(t.reward), penalty: lineData(t.penalty), tiers: t.tiers.map(({ months, reward }) => ({ months, reward })) },
+          ]),
+        ),
+      ]),
+    )
+  }
+  return out
+}
+
+// ---------- helpers ----------
 
 function logRef(db: Firestore, key: string): DocumentReference {
   return db.doc(`_private/sent/log/${key}`)
@@ -225,6 +300,11 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
+/** The member a sent-log key belongs to: its last part (uids have no `_`). */
+function uidOfKey(key: string): UID {
+  return key.slice(key.lastIndexOf('_') + 1)
+}
+
 /** Creates the log doc; false if another run already did. This is what makes each reminder go out once. */
 async function claim(db: Firestore, key: string, data: Record<string, unknown>): Promise<boolean> {
   try {
@@ -235,6 +315,8 @@ async function claim(db: Firestore, key: string, data: Record<string, unknown>):
     throw e
   }
 }
+
+const LOAD_RANK: Record<WeekLoad, number> = { doc: 0, nudge: 1, full: 2 }
 
 // ---------- VAPID ----------
 
@@ -291,18 +373,33 @@ export async function runReminders({
   spaceBudgetMs = SPACE_BUDGET_MS,
 }: RunOptions): Promise<RunSummary> {
   const summary: RunSummary = {
-    spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0,
+    spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0, results: 0, reads: 0,
   }
   const deviceCache = new Map<UID, Promise<Device[]>>()
   const profiles: PlanInput['profiles'] = {}
+  /** Month results docs this run may still write, across all spaces. */
+  let resultsLeft = RESULTS_PER_RUN
+
+  // Every read goes through these, so the summary can say what a run cost.
+  const readDoc = async (ref: DocumentReference): Promise<DocumentSnapshot> => {
+    summary.reads += 1
+    return ref.get()
+  }
+  const readAll = async (refs: DocumentReference[]): Promise<DocumentSnapshot[]> => {
+    if (refs.length === 0) return []
+    summary.reads += refs.length
+    return db.getAll(...refs)
+  }
+  const readQuery = async (query: Query) => {
+    const snap = await query.get()
+    summary.reads += Math.max(1, snap.size)
+    return snap
+  }
 
   const devicesOf = (uid: UID): Promise<Device[]> => {
     let pending = deviceCache.get(uid)
     if (!pending) {
-      pending = db
-        .collection(`users/${uid}/push`)
-        .get()
-        .then((snap) => pickDevices(snap.docs.map((doc) => ({ ref: doc.ref, data: doc.data() }))))
+      pending = readQuery(db.collection(`users/${uid}/push`)).then((snap) => pickDevices(snap.docs.map((doc) => ({ ref: doc.ref, data: doc.data() }))))
       deviceCache.set(uid, pending)
     }
     return pending
@@ -311,7 +408,7 @@ export async function runReminders({
   const loadProfiles = async (uids: UID[]) => {
     const missing = uids.filter((uid) => !(uid in profiles))
     if (missing.length === 0) return
-    const snaps = await db.getAll(...missing.map((uid) => db.doc(`users/${uid}`)))
+    const snaps = await readAll(missing.map((uid) => db.doc(`users/${uid}`)))
     for (const snap of snaps) profiles[snap.id] = { name: str(snap.get('name')) }
   }
 
@@ -319,13 +416,17 @@ export async function runReminders({
     const devices = await devicesOf(reminder.uid)
     // Left unclaimed: if they turn reminders on later in the window, they still get it.
     if (devices.length === 0) return
+    const keys = reminder.parts ?? [reminder.key]
     if (dryRun) {
-      log(`[dry run] ${reminder.key} → ${devices.length} device(s): ${reminder.title} · ${reminder.body}`)
+      log(`[dry run] ${keys.join(' + ')} → ${devices.length} device(s): ${reminder.title} · ${reminder.body}`)
       summary.sent++
       return
     }
-    const claimed = await claim(db, reminder.key, { kind: reminder.kind, spaceId: reminder.spaceId, uid: reminder.uid, title: reminder.title })
-    if (!claimed) return
+    const record = { kind: reminder.kind, spaceId: reminder.spaceId, uid: reminder.uid, title: reminder.title }
+    if (!(await claim(db, keys[0], record))) return
+    // A push that carries two parts (a week and its month's list) logs both, so neither goes out again.
+    const claimed = [keys[0]]
+    for (const key of keys.slice(1)) if (await claim(db, key, { ...record, part: true })) claimed.push(key)
 
     const payload = JSON.stringify({ title: reminder.title, body: reminder.body, url: reminder.url, tag: reminder.tag })
     const options: SendOptions = {
@@ -357,55 +458,344 @@ export async function runReminders({
     summary.failedDeliveries += failed
     summary.devices += delivered
     if (delivered > 0) summary.sent++
-    // Nothing got through for a temporary reason: release the claim so the next run retries.
-    else if (failed > 0) await logRef(db, reminder.key).delete()
+    // Nothing got through for a temporary reason: release the claims so the next run retries.
+    else if (failed > 0) for (const key of claimed) await logRef(db, key).delete()
+  }
+
+  /** One space's reads, each made at most once per run: week docs and monthly lists (with their plans, progress
+   *  and reviews when needed), results and freeze docs, and the stakes docs. */
+  const makeLoader = (spaceId: string) => {
+    const docs = new Map<string, Promise<DocumentSnapshot>>()
+    const full = new Map<string, Promise<{ period: Week | null; plans: Record<UID, Plan>; progress: Record<UID, Progress>; reviews: Review[] }>>()
+    const results = new Map<MonthId, Promise<MonthResults | null>>()
+    const frozen = new Map<MonthId, Promise<FrozenStakes | null>>()
+    let allStakes: Promise<Record<UID, MemberStakes>> | null = null
+    let recentStakes: Promise<Record<UID, MemberStakes>> | null = null
+    const ref = (coll: 'weeks' | 'monthly', id: string) => db.doc(`spaces/${spaceId}/${coll}/${id}`)
+    const once = <K, V>(map: Map<K, Promise<V>>, key: K, load: () => Promise<V>): Promise<V> => {
+      let pending = map.get(key)
+      if (!pending) {
+        pending = load()
+        map.set(key, pending)
+      }
+      return pending
+    }
+    const doc = (coll: 'weeks' | 'monthly', id: string) => once(docs, `${coll}/${id}`, () => readDoc(ref(coll, id)))
+    const period = async (coll: 'weeks' | 'monthly', id: string): Promise<Week | null> => {
+      const d = (await doc(coll, id)).data()
+      return d ? toPeriod(spaceId, id, d) : null
+    }
+    const whole = (coll: 'weeks' | 'monthly', id: string) =>
+      once(full, `${coll}/${id}`, async () => {
+        const snap = await doc(coll, id)
+        const d = snap.data()
+        const out = { period: null as Week | null, plans: {} as Record<UID, Plan>, progress: {} as Record<UID, Progress>, reviews: [] as Review[] }
+        // Plans, progress and reviews can't exist without the period doc (see firestore.rules).
+        if (!d) return out
+        out.period = toPeriod(spaceId, id, d)
+        const [plans, progress, reviews] = await Promise.all(['plans', 'progress', 'reviews'].map((name) => readQuery(snap.ref.collection(name))))
+        for (const p of plans.docs) out.plans[p.id] = toPlan(p)
+        for (const p of progress.docs) out.progress[p.id] = toProgress(p)
+        out.reviews = reviews.docs.map(toReview)
+        return out
+      })
+    const stakesOf = (snaps: DocumentSnapshot[]) => Object.fromEntries(snaps.map((s) => [s.id, decodeMemberStakes(s.id, s.data(), toMs)]))
+    return {
+      /** A doc read before (the preload), so later loads reuse it. */
+      seed(coll: 'weeks' | 'monthly', id: string, snap: DocumentSnapshot) {
+        docs.set(`${coll}/${id}`, Promise.resolve(snap))
+      },
+      period,
+      async week(weekId: WeekId): Promise<WeekData> {
+        const p = await whole('weeks', weekId)
+        return { spaceId, weekId, week: p.period, plans: p.plans, progress: p.progress, reviews: p.reviews }
+      },
+      async monthly(monthId: MonthId): Promise<MonthlyData> {
+        const p = await whole('monthly', monthId)
+        return { spaceId, monthId, monthly: p.period, plans: p.plans, progress: p.progress, reviews: p.reviews }
+      },
+      /** Just the week doc (a pause request needs only who is in the week), or everything if already loaded. */
+      async weekDoc(weekId: WeekId): Promise<[WeekData, WeekLoad]> {
+        if (full.has(`weeks/${weekId}`)) return [await this.week(weekId), 'full']
+        return [{ spaceId, weekId, week: await period('weeks', weekId), plans: {}, progress: {}, reviews: [] }, 'doc']
+      },
+      /**
+       * What the midweek nudges need, and only for `uids` (those still waiting for one, with a device): the week
+       * doc, their plans if they play in it (judges have no list), and the progress of those with tasks. Everyone
+       * else reads as having no tasks, which the planner never treats as final. No reviews: there are none before
+       * reviews open. A week already loaded whole serves as it is.
+       */
+      async nudgeWeek(weekId: WeekId, uids: UID[]): Promise<[WeekData, WeekLoad]> {
+        if (full.has(`weeks/${weekId}`)) return [await this.week(weekId), 'full']
+        const data: WeekData = { spaceId, weekId, week: null, plans: {}, progress: {}, reviews: [] }
+        const snap = await doc('weeks', weekId)
+        const d = snap.data()
+        if (!d) return [data, 'nudge']
+        const week = toPeriod(spaceId, weekId, d)
+        data.week = week
+        const judges = judgesOf(week)
+        const players = uids.filter((uid) => week.members.includes(uid) && !judges.includes(uid))
+        for (const p of await readAll(players.map((uid) => snap.ref.collection('plans').doc(uid)))) if (p.exists) data.plans[p.id] = toPlan(p)
+        const withTasks = players.filter((uid) => (data.plans[uid]?.tasks.length ?? 0) > 0)
+        for (const p of await readAll(withTasks.map((uid) => snap.ref.collection('progress').doc(uid)))) if (p.exists) data.progress[p.id] = toProgress(p)
+        return [data, 'nudge']
+      },
+      results(monthId: MonthId): Promise<MonthResults | null> {
+        return once(results, monthId, async () => {
+          const snap = await readDoc(db.doc(`spaces/${spaceId}/results/${monthId}`))
+          return snap.exists ? decodeMonthResults(snap.data(), toMs, monthId) : null
+        })
+      },
+      /** A results doc this run wrote (or, dry, would have). */
+      setResults(monthId: MonthId, doc: MonthResults) {
+        results.set(monthId, Promise.resolve(doc))
+      },
+      frozen(monthId: MonthId): Promise<FrozenStakes | null> {
+        return once(frozen, monthId, async () => toFrozen(await readDoc(db.doc(`spaces/${spaceId}/months/${monthId}`))))
+      },
+      setFrozen(monthId: MonthId, value: FrozenStakes) {
+        frozen.set(monthId, Promise.resolve(value))
+      },
+      /** Every member's stakes doc (≤ 8): the verdict's and the results writer's terms. */
+      stakesAll(): Promise<Record<UID, MemberStakes>> {
+        allStakes ??= readQuery(db.collection(`spaces/${spaceId}/stakes`)).then((snap) => stakesOf(snap.docs))
+        return allStakes
+      },
+      /** The stakes changed in the last 7 days (one query), for the `stakes` push; all of them if already read. */
+      stakesRecent(): Promise<Record<UID, MemberStakes>> {
+        if (allStakes) return allStakes
+        recentStakes ??= readQuery(
+          db.collection(`spaces/${spaceId}/stakes`).where('updatedAt', '>', Timestamp.fromMillis(nowMs - STAKES_RECENT_MS)),
+        ).then((snap) => stakesOf(snap.docs))
+        return recentStakes
+      },
+    }
+  }
+  type Loader = ReturnType<typeof makeLoader>
+
+  /**
+   * Freezes a complete month's house stakes if nothing binding holds them yet (SPEC §9.7, §9.11): missing, or the
+   * previous app's early freeze from FIRST_RESULTS_MONTH on. A transaction re-reads the doc, so a member's own
+   * freeze that landed meanwhile wins. Gives the month's house stakes.
+   */
+  const freezeMonth = async (space: Space, load: Loader, monthId: MonthId, completeAt: number): Promise<House> => {
+    const frozen = await load.frozen(monthId)
+    if (frozen && freezeBinds(monthId, frozen, completeAt)) return { reward: frozen.reward, penalty: frozen.penalty }
+    const house: House = { reward: space.reward, penalty: space.penalty }
+    if (dryRun) {
+      log(`[dry run] would freeze spaces/${space.id}/months/${monthId}: ${JSON.stringify(house)}`)
+      return house
+    }
+    const ref = db.doc(`spaces/${space.id}/months/${monthId}`)
+    const kept = await db.runTransaction(async (tx) => {
+      summary.reads += 1
+      const again = toFrozen(await tx.get(ref))
+      if (again && freezeBinds(monthId, again, completeAt)) return again
+      // Stamped with the run's own clock, which just found the month complete (the same as the server's in
+      // production; under REMINDERS_NOW in the emulator it keeps the freeze consistent with the faked time).
+      tx.set(ref, { ...house, createdAt: Timestamp.fromMillis(nowMs) })
+      return null
+    })
+    if (kept) return { reward: kept.reward, penalty: kept.penalty }
+    load.setFrozen(monthId, { ...house, createdAt: nowMs })
+    return house
+  }
+
+  /**
+   * One month's results doc (SPEC §9.8), once the month is complete by its stored deadlines: null (and nothing
+   * written) while it isn't. Freezes its house stakes first when nothing binding holds them, then takes the terms
+   * from the agreements made before it was complete, and the streaks and tier runs from `prev`.
+   */
+  const writeResults = async (space: Space, load: Loader, monthId: MonthId, prev: MonthResults | null): Promise<MonthResults | null> => {
+    const weekIds = weekIdsInMonth(monthId)
+    const last = weekIds[weekIds.length - 1]
+    // Two reads say whether it is complete; only then is the whole month loaded.
+    const [lastWeek, list] = await Promise.all([load.period('weeks', last), load.period('monthly', monthId)])
+    const completeAt = monthEndsAtFor(space, monthId, lastWeek, list)
+    if (nowMs < completeAt) return null
+    const weeks = await Promise.all(weekIds.map((id) => load.week(id)))
+    const monthly = await load.monthly(monthId)
+    const stakes = await load.stakesAll()
+    const month = computeMonth(space, monthId, weeks, nowMs, monthly)
+    const house = await freezeMonth(space, load, monthId, completeAt)
+    const firstLockAt = boundsFor(space, weekIds[0], weeks[0].week).lockAt
+    const terms = monthTerms(space, monthId, month, stakes, house, { completeAt, firstLockAt }, null)
+    const built = buildMonthResults(monthId, completeAt, month, prev, terms)
+    const doc: MonthResults = { ...built, createdAt: nowMs }
+    resultsLeft -= 1
+    summary.results += 1
+    if (dryRun) {
+      log(`[dry run] would write spaces/${space.id}/results/${monthId}: ${JSON.stringify(built.members)}`)
+      load.setResults(monthId, doc)
+      return doc
+    }
+    const ref = db.doc(`spaces/${space.id}/results/${monthId}`)
+    try {
+      await ref.create(resultsData(built))
+      log(`results ${monthId} written for space ${space.id}`)
+    } catch (e) {
+      if (errorCode(e) !== ALREADY_EXISTS) throw e
+      // Another run won: go on from its doc.
+      summary.results -= 1
+      const theirs = decodeMonthResults((await readDoc(ref)).data(), toMs, monthId)
+      if (theirs) {
+        load.setResults(monthId, theirs)
+        return theirs
+      }
+    }
+    load.setResults(monthId, doc)
+    return doc
+  }
+
+  /**
+   * The results writer (SPEC §9.11), before the windows: the newest month to look at (resultsTarget), nothing before
+   * the space's first month or FIRST_RESULTS_MONTH; if its doc is missing, the months back to the newest one with a
+   * doc are written oldest first, at most RESULTS_PER_SPACE per space and RESULTS_PER_RUN per run, stopping at the
+   * first month that isn't complete yet.
+   */
+  const ensureResults = async (space: Space, load: Loader, stored: Record<WeekId, Week>) => {
+    const first = firstMonthOf(space)
+    const floor = first && first > FIRST_RESULTS_MONTH ? first : FIRST_RESULTS_MONTH
+    const target = resultsTarget(space, nowMs, { weeks: stored })
+    if (target < floor || resultsLeft <= 0) return
+    if (await load.results(target)) return
+    const chain: MonthId[] = [target]
+    let prev: MonthResults | null = null
+    for (let month = addMonths(target, -1); month >= floor; month = addMonths(month, -1)) {
+      if (chain.length > MAX_RESULTS_WALK) {
+        log(`space ${space.id}: no month results found within ${MAX_RESULTS_WALK} months of ${target}; not writing any`)
+        return
+      }
+      prev = await load.results(month)
+      if (prev) break
+      chain.unshift(month)
+    }
+    let written = 0
+    for (const monthId of chain) {
+      if (written >= RESULTS_PER_SPACE || resultsLeft <= 0) break
+      const doc = await writeResults(space, load, monthId, prev)
+      // A month that isn't complete yet: the later ones aren't either.
+      if (!doc) break
+      prev = doc
+      written += 1
+    }
   }
 
   const runSpace = async (space: Space) => {
-    const windows = dueWindows(space, nowMs)
-    if (windows.length === 0 || space.memberIds.length === 0) return
-    summary.windows += windows.length
-
-    const keyed = windows.flatMap((window) => space.memberIds.map((uid) => ({ window, uid, key: reminderKey(space.id, window.period, window.kind, uid) })))
-    const logged = await db.getAll(...keyed.map(({ key }) => logRef(db, key)))
-    const sent = new Set(logged.filter((snap) => snap.exists).map((snap) => snap.id))
-
-    // Load a window's weeks only if someone with a device is still waiting for it. For a nudge, only
-    // what those people need (loadNudgeWeek).
-    const weekIds = new Set<WeekId>()
-    const nudged = new Map<WeekId, Set<UID>>()
-    for (const window of windows) {
-      const waiting = keyed.filter((k) => k.window === window && !sent.has(k.key)).map((k) => k.uid)
-      const devices = await Promise.all(waiting.map(devicesOf))
-      const reachable = waiting.filter((_, i) => devices[i].length > 0)
-      if (reachable.length === 0) continue
-      for (const id of window.weekIds) {
-        if (isNudge(window.kind)) nudged.set(id, new Set([...(nudged.get(id) ?? []), ...reachable]))
-        else weekIds.add(id)
-      }
+    const load = makeLoader(space.id)
+    const members = space.memberIds
+    // A space everyone has left has nobody to read its results or get its pushes.
+    if (members.length === 0) return
+    // After a recent change of times, stored timelines decide the windows: read last, this and next week first.
+    const stored: Record<WeekId, Week> = {}
+    const note = space.scheduleNote
+    if (note && nowMs - note.at < PRELOAD_MS) {
+      const thisWeek = weekIdFor(nowMs, space.timezone)
+      const ids = [addWeeks(thisWeek, -1), thisWeek, addWeeks(thisWeek, 1)]
+      const snaps = await readAll(ids.map((id) => db.doc(`spaces/${space.id}/weeks/${id}`)))
+      snaps.forEach((snap, i) => {
+        load.seed('weeks', ids[i], snap)
+        const d = snap.data()
+        if (d) stored[ids[i]] = toPeriod(space.id, ids[i], d)
+      })
     }
-    if (weekIds.size === 0 && nudged.size === 0) return
 
-    const weeks = Object.fromEntries(await Promise.all([...weekIds].map(async (id) => [id, await loadWeek(db, space.id, id)] as const)))
-    // A week loaded whole for another window serves the nudges too.
-    for (const [id, uids] of nudged) if (!weekIds.has(id)) weeks[id] = await loadNudgeWeek(db, space.id, id, [...uids])
-    const stakes: NonNullable<SpaceInput['stakes']> = {}
-    for (const window of windows) if (window.kind === 'verdict') Object.assign(stakes, await loadStakes(db, space.id, window.period))
-    // Names are for the review reminders, never the nudges. Week members too: someone who left after
-    // lock is still named as a friend to review.
-    if (weekIds.size > 0) await loadProfiles([...new Set([...space.memberIds, ...[...weekIds].flatMap((id) => weeks[id].week?.members ?? [])])])
-    const plan = planSpace({ space, weeks, stakes }, profiles, sent, nowMs)
+    // A failure here is logged and counted, but doesn't hold up the space's reminders.
+    await ensureResults(space, load, stored).catch((e: unknown) => {
+      summary.errors++
+      log(`space ${space.id} results failed: ${message(e)}`)
+    })
+
+    // Nothing is sent between 00:00 and 08:00 local: the windows stay open for a later run.
+    if (isMuted(space, nowMs)) return
+    const windows = dueWindows(space, nowMs, { weeks: stored })
+    const stakesOpen = stakesWindow(space, nowMs) !== null
+    if (windows.length === 0 && !stakesOpen) return
+    summary.windows += windows.length + (stakesOpen ? 1 : 0)
+
+    // The sent log for every key these windows decide; `stakes` keys depend on the stakes docs.
+    const recentStakes = stakesOpen ? await load.stakesRecent() : undefined
+    const candidates = recentStakes ? stakesCandidates(space, recentStakes, nowMs) : []
+    const read = new Set<string>()
+    const sent = new Set<string>()
+    const readSent = async (keys: string[]) => {
+      const fresh = [...new Set(keys)].filter((key) => !read.has(key))
+      for (const key of fresh) read.add(key)
+      for (const snap of await readAll(fresh.map((key) => logRef(db, key)))) if (snap.exists) sent.add(snap.id)
+    }
+    const keysOf = (window: DueWindow, uid: UID) => windowKeys(space.id, window, uid)
+    await readSent([...windows.flatMap((w) => members.flatMap((uid) => keysOf(w, uid))), ...candidates.map((c) => c.key)])
+
+    // Load a window's data only if someone with a device is still waiting for it; for a nudge, only what those
+    // people need.
+    const reachable = async (uids: UID[]) => {
+      const devices = await Promise.all(uids.map(devicesOf))
+      return uids.filter((_, i) => devices[i].length > 0)
+    }
+    const need = new Map<WeekId, WeekLoad>()
+    const nudged = new Map<WeekId, Set<UID>>()
+    const lists = new Set<MonthId>()
+    let verdict: MonthId | null = null
+    let named = false
+    for (const window of windows) {
+      const waiting = await reachable(members.filter((uid) => keysOf(window, uid).some((key) => !sent.has(key))))
+      if (waiting.length === 0) continue
+      const kind = weekLoad(window.kind)
+      for (const id of window.weekIds) {
+        const had = need.get(id)
+        if (!had || LOAD_RANK[kind] > LOAD_RANK[had]) need.set(id, kind)
+        if (kind === 'nudge') nudged.set(id, new Set([...(nudged.get(id) ?? []), ...waiting]))
+      }
+      for (const monthId of window.monthIds ?? []) lists.add(monthId)
+      if (window.kind === 'verdict') verdict = window.period
+      if (!isNudge(window.kind)) named = true
+    }
+    const stakesWaiting = (await reachable([...new Set(candidates.filter((c) => !sent.has(c.key)).map((c) => c.friend))])).length > 0
+    if (need.size === 0 && lists.size === 0 && !named && !stakesWaiting) return
+
+    const weeks: Record<WeekId, WeekData> = {}
+    const loads: Record<WeekId, WeekLoad> = {}
+    // Whole weeks first, so a nudge or a pause request on the same week uses them.
+    for (const [id, kind] of [...need].sort((a, b) => LOAD_RANK[b[1]] - LOAD_RANK[a[1]])) {
+      const [data, got]: [WeekData, WeekLoad] =
+        kind === 'full' ? [await load.week(id), 'full'] : kind === 'nudge' ? await load.nudgeWeek(id, [...(nudged.get(id) ?? [])]) : await load.weekDoc(id)
+      weeks[id] = data
+      loads[id] = got
+    }
+    const monthly: Record<MonthId, MonthlyData> = {}
+    for (const monthId of lists) monthly[monthId] = await load.monthly(monthId)
+    const input: SpaceInput = { space, weeks, stored, monthly, loads }
+    if (verdict) {
+      const frozen = await load.frozen(verdict)
+      if (frozen) input.stakes = { [verdict]: frozen }
+      // Written (or found) by ensureResults earlier in this run when it's the month it looked at.
+      input.results = { [verdict]: await load.results(verdict) }
+      input.memberStakes = await load.stakesAll()
+    } else if (stakesWaiting) {
+      input.memberStakes = recentStakes
+    }
+
+    // Windows that only the loaded docs open (stored times later than computed ones): their keys too.
+    const extra = planWindows(input, nowMs).filter((w) => w.kind !== 'stakes')
+    await readSent(extra.flatMap((w) => members.flatMap((uid) => keysOf(w, uid))))
+
+    // Names for everything but the nudges. Period members too: someone who left after lock is still named as a
+    // friend to review.
+    if (named || stakesWaiting) {
+      const periods = [...Object.values(weeks).map((w) => w.week), ...Object.values(monthly).map((m) => m.monthly)]
+      await loadProfiles([...new Set([...members, ...periods.flatMap((p) => p?.members ?? [])])])
+    }
+    const plan = planSpace(input, profiles, sent, nowMs)
 
     if (!dryRun) {
       for (const key of plan.skipped) {
-        const uid = keyed.find((k) => k.key === key)?.uid
-        if (await claim(db, key, { skipped: true, spaceId: space.id, uid })) summary.skipped++
+        if (await claim(db, key, { skipped: true, spaceId: space.id, uid: uidOfKey(key) })) summary.skipped++
       }
     }
     for (const reminder of plan.send) await deliver(reminder)
   }
 
-  const spaces = await db.collection('spaces').get()
+  const spaces = await readQuery(db.collection('spaces'))
   summary.spaces = spaces.size
   for (const snap of spaces.docs) {
     const space = toSpace(snap)
@@ -432,14 +822,6 @@ export async function runReminders({
     }
   }
   return summary
-}
-
-/** Frozen stakes of one month, keyed by month, or nothing if the month was never frozen. */
-async function loadStakes(db: Firestore, spaceId: string, monthId: MonthId): Promise<NonNullable<SpaceInput['stakes']>> {
-  const snap = await db.doc(`spaces/${spaceId}/months/${monthId}`).get()
-  const reward = snap.get('reward')
-  const penalty = snap.get('penalty')
-  return snap.exists && typeof reward === 'string' && typeof penalty === 'string' ? { [monthId]: { reward, penalty } } : {}
 }
 
 /**
@@ -496,6 +878,7 @@ async function main(): Promise<void> {
       // web-push's own socket timeout; runReminders also races each send against the same limit.
       send: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
     })
+    // The summary includes `reads`: the docs this run read (SPEC §9.11).
     console.log(`${new Date(nowMs).toISOString()}${dryRun ? ' (dry run)' : ''}`, JSON.stringify(summary))
     if (summary.errors > 0) process.exitCode = 1
   } finally {

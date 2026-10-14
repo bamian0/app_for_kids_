@@ -2,9 +2,11 @@ name: Deploy
 
 # Builds the app and publishes dist/ to the gh-pages branch.
 # One-time setup: Settings → Pages → Build and deployment → Deploy from a branch → gh-pages / (root).
+# Only the app branches deploy: main carries just the reminders schedule and is behind the app, so a push
+# there must never publish its older build (docs/SPEC.md §9.14).
 on:
   push:
-    branches: [main, 'claude/**']
+    branches: ['claude/**']
   workflow_dispatch:
 
 permissions:

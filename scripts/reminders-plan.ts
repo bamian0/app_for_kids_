@@ -26,6 +26,7 @@ import {
   addMonths,
   addWeeks,
   isMonthlyReviewWeek,
+  lastCompleteMonthCandidate,
   momentAt,
   monthIdFor,
   monthIdForWeek,
@@ -57,8 +58,13 @@ export function isNudge(kind: ReminderKind): boolean {
 
 /** What the job loads for a window's weeks: everything, only what the nudges need, or just the week doc (a pause
  *  request needs only who is in the week). */
-export function weekLoad(kind: ReminderKind): 'full' | 'nudge' | 'doc' {
+export function weekLoad(kind: ReminderKind): WeekLoad {
   return isNudge(kind) ? 'nudge' : kind === 'pause-ask' ? 'doc' : 'full'
+}
+
+/** Whether a week loaded as `have` serves a window that needs `need`. */
+function serves(have: WeekLoad, need: WeekLoad): boolean {
+  return have === 'full' || need === 'doc' || have === need
 }
 
 /** Kinds that, in a month's last week, also carry that month's list as a part with its own key. */
@@ -125,7 +131,12 @@ export interface SpaceInput {
   memberStakes?: Record<UID, MemberStakes>
   /** Month results docs (spaces/{id}/results): the verdict quotes their terms and streaks. */
   results?: Record<MonthId, MonthResults | null>
+  /** How much of each week the job loaded (absent: everything). A window is decided only on weeks loaded as far
+   *  as its kind needs (weekLoad), so a week read just for a pause request never decides its review push. */
+  loads?: Record<WeekId, WeekLoad>
 }
+
+export type WeekLoad = 'full' | 'nudge' | 'doc'
 
 export interface PlanInput {
   nowMs: number
@@ -341,19 +352,80 @@ export function stakesWindow(space: Space, nowMs: number): DueWindow | null {
 }
 
 /**
- * The reminder windows open at `nowMs` for a space: last, this and next week's on their own times (a Sunday
- * midnight deadline puts results on Monday, an early lock puts next week's plan push on Sunday), the previous
- * month's verdict, and the event pushes (but `stakes`, stakesWindow). `known`: stored docs already read (the job's preload, or loaded data),
- * whose bounds and schedules decide; weeks without one are computed on the space's schedule.
+ * Every reminder window around `nowMs` for a space, open or not: last, this and next week's on their own times (a
+ * Sunday-midnight deadline puts results on Monday, an early lock puts next week's plan push on Sunday), the previous
+ * month's verdict, and the event pushes of the moment (not `stakes`: stakesWindow). Apart from the event pushes
+ * (only 09:00–21:00 local), it depends on nowMs only through its week and month. `known`: stored docs already read
+ * (the job's preload, or loaded data), whose bounds and schedules decide; weeks without one are computed on the
+ * space's schedule.
  */
-export function dueWindows(space: Space, nowMs: number, known: KnownDocs = {}): DueWindow[] {
+export function windowsAround(space: Space, nowMs: number, known: KnownDocs = {}): DueWindow[] {
   const thisWeek = weekIdFor(nowMs, space.timezone)
   const windows = [addWeeks(thisWeek, -1), thisWeek, addWeeks(thisWeek, 1)].flatMap((weekId) => {
     const doc = known.weeks?.[weekId]
     return weekWindows(space, weekId, doc && doc.id === weekId ? doc : null)
   })
   windows.push(verdictWindow(space, nowMs, known), ...eventWindows(space, nowMs, known))
-  return windows.filter((w) => w.opensAt <= nowMs && nowMs < w.closesAt)
+  return windows
+}
+
+/** Whether a window is open at `nowMs`. */
+export function isOpen(window: DueWindow, nowMs: number): boolean {
+  return window.opensAt <= nowMs && nowMs < window.closesAt
+}
+
+/** The reminder windows open at `nowMs` for a space (windowsAround, open now). */
+export function dueWindows(space: Space, nowMs: number, known: KnownDocs = {}): DueWindow[] {
+  return windowsAround(space, nowMs, known).filter((w) => isOpen(w, nowMs))
+}
+
+/** The stored docs a space's input knows: preloaded weeks, then loaded weeks and lists. */
+function knownDocs(input: SpaceInput): KnownDocs {
+  const known: KnownDocs = { weeks: { ...input.stored }, lists: {} }
+  for (const data of Object.values(input.weeks)) if (data.week) known.weeks![data.weekId] = data.week
+  for (const data of Object.values(input.monthly ?? {})) if (data.monthly) known.lists![data.monthId] = data.monthly
+  return known
+}
+
+function windowId(w: DueWindow): string {
+  return `${w.kind}|${w.period ?? ''}|${w.weekIds.join(',')}|${(w.monthIds ?? []).join(',')}`
+}
+
+/**
+ * The windows planSpace decides for a space: those open by what the job knew when it chose what to load (its
+ * preloaded `stored` docs, else computed times), and those open only by the docs it then loaded; a window both see
+ * is taken from the loaded docs. Deciding a window the stored bounds have already closed logs its final no-ops
+ * (no plan push after a stored lock), so the job doesn't reload that week every run. Plus `stakes` once the stakes
+ * docs are in.
+ */
+export function planWindows(input: SpaceInput, nowMs: number): DueWindow[] {
+  const loaded = dueWindows(input.space, nowMs, knownDocs(input))
+  const byId = new Map(loaded.map((w) => [windowId(w), w]))
+  const windows: DueWindow[] = []
+  for (const w of dueWindows(input.space, nowMs, { weeks: input.stored ?? {} })) {
+    const id = windowId(w)
+    windows.push(byId.get(id) ?? w)
+    byId.delete(id)
+  }
+  windows.push(...byId.values())
+  const stakes = input.memberStakes ? stakesWindow(input.space, nowMs) : null
+  if (stakes) windows.push(stakes)
+  return windows
+}
+
+/**
+ * The newest month the results writer looks at (SPEC §9.8, §9.11): lastCompleteMonthCandidate, or this week's
+ * month when this week is its last week and the month is already complete by what is known (the stored last week
+ * and list, else computed times), so a month's results come in the first run after it ends rather than the
+ * following Monday. The writer still checks the stored deadlines before writing.
+ */
+export function resultsTarget(space: Space, nowMs: number, known: KnownDocs = {}): MonthId {
+  const thisWeek = weekIdFor(nowMs, space.timezone)
+  if (isMonthlyReviewWeek(thisWeek)) {
+    const monthId = monthIdForWeek(thisWeek)
+    if (nowMs >= monthEndsAtFor(space, monthId, known.weeks?.[thisWeek] ?? null, known.lists?.[monthId] ?? null)) return monthId
+  }
+  return lastCompleteMonthCandidate(nowMs, space.timezone)
 }
 
 // ---------- Copy ----------
@@ -731,7 +803,7 @@ function decideEvent(ctx: Context, window: DueWindow): Outcome[] {
       const note = space.stakesNote!
       // A change made between a month's completion and the next month's first week counts from the next month.
       const weekId = weekIdFor(note.at, space.timezone)
-      const counts = termsMonth(space, note.at, ctx.weeks[weekId]?.week ?? ctx.input.stored?.[weekId] ?? null)
+      const counts = termsMonth(space, note.at, ctx.weeks[weekId]?.week ?? ctx.input.stored?.[weekId] ?? null, ctx.monthly[monthIdForWeek(weekId)]?.monthly ?? null)
       const when = counts === monthIdForWeek(weekId) ? 'now' : `from ${monthName(counts)}`
       const body = `${capital(ctx.name(note.by))} changed them: “${space.reward}” if you hit ${space.threshold}%, “${space.penalty}” if you miss. They count ${when}, where friends haven’t agreed on their own.`
       return space.memberIds.map((uid) => (uid === note.by || !joinedBefore(space, uid, note.at) ? final(uid, key(uid)) : send(uid, `New house stakes in ${space.name}`, body)))
@@ -797,14 +869,11 @@ function decide(ctx: Context, window: DueWindow): Outcome[] {
   }
 }
 
-/** Reminders to send now, and final no-ops to log, for one space. Nothing is sent between 00:00 and 08:00 local
- *  (the windows stay open, so the next run sends it); final no-ops are still logged. */
+/** Reminders to send now, and final no-ops to log, for one space, over planWindows. Nothing is sent between 00:00
+ *  and 08:00 local (the windows stay open, so a later run sends it); final no-ops are still logged. */
 export function planSpace(input: SpaceInput, profiles: PlanInput['profiles'], sent: ReadonlySet<string>, nowMs: number): PlanResult {
   const { space, weeks } = input
   const monthly = input.monthly ?? {}
-  const known: KnownDocs = { weeks: { ...input.stored }, lists: {} }
-  for (const data of Object.values(weeks)) if (data.week) known.weeks![data.weekId] = data.week
-  for (const data of Object.values(monthly)) if (data.monthly) known.lists![data.monthId] = data.monthly
   const members = space.memberIds
   const ctx: Context = {
     input,
@@ -819,11 +888,9 @@ export function planSpace(input: SpaceInput, profiles: PlanInput['profiles'], se
   const muted = isMuted(space, nowMs)
   const result: PlanResult = { send: [], skipped: [] }
   const skipped = new Set<string>()
-  const windows = dueWindows(space, nowMs, known)
-  const stakes = input.memberStakes ? stakesWindow(space, nowMs) : null
-  if (stakes) windows.push(stakes)
-  for (const window of windows) {
-    if (!window.weekIds.every((id) => id in weeks)) continue
+  for (const window of planWindows(input, nowMs)) {
+    const need = weekLoad(window.kind)
+    if (!window.weekIds.every((id) => id in weeks && serves(input.loads?.[id] ?? 'full', need))) continue
     if (!(window.monthIds ?? []).every((id) => id in monthly)) continue
     for (const outcome of decide(ctx, window)) {
       if ('skip' in outcome) {

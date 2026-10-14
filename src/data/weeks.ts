@@ -374,7 +374,7 @@ export function ensureWeek(space: Space, weekId: WeekId): Promise<void> {
 }
 
 /** Bounds as stored Timestamps. */
-function boundsData(b: WeekBounds): Record<'lockAt' | 'reviewOpenAt' | 'deadlineAt', Timestamp> {
+export function boundsData(b: WeekBounds): Record<'lockAt' | 'reviewOpenAt' | 'deadlineAt', Timestamp> {
   return { lockAt: Timestamp.fromMillis(b.lockAt), reviewOpenAt: Timestamp.fromMillis(b.reviewOpenAt), deadlineAt: Timestamp.fromMillis(b.deadlineAt) }
 }
 
@@ -506,11 +506,11 @@ function cleanSteps(task: Task): Task {
   return steps.length > 0 ? { id: task.id, title: task.title, subtasks: steps } : { id: task.id, title: task.title }
 }
 
-export function cleanTasks(tasks: Task[]): Task[] {
+export function cleanTasks(tasks: Task[], period: 'week' | 'month' = 'week'): Task[] {
   // Blank rows are dropped; titles are otherwise stored as typed so autosave can't fight the cursor.
   // addedAt never comes along: before the lock nothing counts as added.
   const out = tasks.filter((t) => t.title.trim() !== '').map(cleanSteps)
-  if (out.length > MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a week.`)
+  if (out.length > MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a ${period}.`)
   if (out.some((t) => t.title.length > MAX_TITLE)) throw new Error(LONG_TASK)
   if (out.some((t) => (t.subtasks?.length ?? 0) > MAX_SUBTASKS)) throw new Error(TOO_MANY_STEPS)
   if (out.some((t) => t.subtasks?.some((step) => step.title.length > MAX_TITLE))) throw new Error(LONG_STEP)

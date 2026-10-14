@@ -4,9 +4,12 @@ name: Reminders
 #
 # Scheduled workflows only run from the default branch (main): this file has to be on main for
 # the hourly schedule to fire. It checks out the branch the app is deployed from (below), so main
-# only needs updating when this file changes. GitHub can delay scheduled runs or drop some under
-# load; the job catches up on the next run without sending anything twice. In a public repository
-# GitHub pauses schedules after 60 days without activity; re-enable it from the Actions tab.
+# only needs updating when this file changes, in a commit whose message contains [skip ci] (main
+# carries only this schedule; it never deploys). GitHub can delay scheduled runs or drop some under
+# load; the job catches up on the next run without sending anything twice. The job also writes each
+# month's results (streaks), so the schedule must keep running: GitHub pauses schedules after 60 days
+# without repository activity, and the first step below re-enables this workflow on every run (an
+# API call, never a commit). If it ever stops anyway, re-enable it from the Actions tab.
 #
 # Setup: add the Firebase service account key (Firebase console → Project settings → Service
 # accounts → Generate new private key) as the repository secret FIREBASE_SERVICE_ACCOUNT, pasting
@@ -24,6 +27,8 @@ on:
 
 permissions:
   contents: read
+  # The keepalive step re-enables this workflow.
+  actions: write
 
 concurrency:
   group: reminders
@@ -34,6 +39,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Keeps GitHub from pausing the schedule after 60 days without activity. Never fails the run.
+      - name: Keep the schedule alive
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/reminders.yml/enable" || echo "::notice::Couldn't re-enable the schedule this time."
+
       - name: Check for the service account secret
         id: check
         env:

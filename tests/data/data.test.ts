@@ -223,8 +223,10 @@ describe('spaces', () => {
     await rejectsWith(joinSpace('FULL-SPCE'), 'This space is full. A space can have up to 8 people.')
   })
 
-  it('edits the space live', async () => {
+  it('edits the space live; only the owner changes the house stakes', async () => {
     await as(sam)
+    await rejectsWith(updateSpace(space.id, { reward: 'Sushi' }), 'Only the owner can change the house stakes.')
+    await as(alex)
     const live = observe(startSpace(space.id))
     await live.until((l) => l.data?.reward === 'Dinner on me')
     await updateSpace(space.id, { reward: 'Sushi' })
@@ -234,7 +236,7 @@ describe('spaces', () => {
   })
 
   it('editing the space keeps its invite preview in step (name and stakes)', async () => {
-    await as(sam)
+    await as(alex)
     expect((await lookupInvite(space.inviteCode))?.reward).toBe('Sushi')
     await updateSpace(space.id, { name: 'Crew Two', penalty: 'Dishes' })
     expect(await lookupInvite(space.inviteCode)).toMatchObject({ spaceName: 'Crew Two', reward: 'Sushi', penalty: 'Dishes' })
@@ -542,7 +544,7 @@ describe('reviews', () => {
 
   it('refuses reviews outside the window before writing', async () => {
     await as(alex)
-    await rejectsWith(submitReviews(space, addWeeks(thisWeek(), 1), []), 'Reviews open on Friday.')
+    await rejectsWith(submitReviews(space, addWeeks(thisWeek(), 1), []), 'Reviews haven’t opened yet.')
   })
 
   it('reveals everyone\'s reviews live at the deadline', async () => {
@@ -681,24 +683,24 @@ describe('months, settlements and profiles', () => {
     expect(await adminGet(weekPath('2026-09-07'))).toBeUndefined()
   })
 
-  it('freezes the month\'s stakes once its first lists lock; later edits only change months not frozen yet', async () => {
+  it('freezes a month\'s house stakes only once it is complete, so an owner\'s edit counts at once for the month in progress', async () => {
     resetClock()
     const month = monthIdForWeek(thisWeek())
-    const started = now() >= weekBounds(weekIdsInMonth(month)[0], space.timezone).lockAt
+    const complete = now() >= weekBounds(weekIdsInMonth(month).at(-1) as string, space.timezone).deadlineAt
     await as(sam)
     await ensureSpace(space)
     const live = observe(startMonthStakes(space.id, month))
-    if (!started) {
-      // Run in the first days of a month: nothing frozen yet, edits still apply to it.
-      expect((await live.until((l) => !l.loading)).data).toBeNull()
+    if (complete) {
+      // Run between a month's end and the next month's first week: it is frozen now.
+      await live.until((l) => l.data?.frozen === true)
       live.stop()
       return
     }
-    await live.until((l) => l.data?.frozen === true)
-    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toMatchObject({ reward: space.reward, penalty: space.penalty })
+    expect((await live.until((l) => !l.loading)).data).toBeNull()
+    await as(alex)
     await updateSpace(space.id, { penalty: 'A high five' })
-    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toMatchObject({ penalty: space.penalty })
-    expect(live.current().data).toEqual({ reward: space.reward, penalty: space.penalty, frozen: true })
+    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toBeUndefined()
+    expect((await adminGet(`spaces/${space.id}`))?.stakesNote).toMatchObject({ by: alex.uid })
     live.stop()
     await updateSpace(space.id, { penalty: space.penalty })
   })

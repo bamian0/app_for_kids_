@@ -1,5 +1,5 @@
 // Honor-system "Settled" toggles: per pair since batch 2 (SPEC §9.7), per member per month before.
-import { collection, doc, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore'
+import { collection, doc, onSnapshot, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore'
 import { settlementDocId } from '../domain/ids.ts'
 import type { MonthId, Settlement, SettlementKey, UID } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
@@ -36,10 +36,18 @@ export async function setSettled(spaceId: string, monthId: MonthId, uid: UID, se
  * settlementDocId(monthId, uid, other, tier). Queues offline like any batch (the toggle shows at once).
  */
 export async function settlePairs(spaceId: string, monthId: MonthId, keys: SettlementKey[], settled: boolean): Promise<void> {
-  void spaceId
-  void monthId
-  void keys
-  void settled
-  // batch2: TODO
-  throw new Error('not implemented: settlePairs')
+  const me = requireUser().uid
+  if (keys.length === 0) return
+  const { db } = getFirebase()
+  const batch = writeBatch(db)
+  for (const { uid, other, tier } of keys) {
+    const data: Record<string, unknown> = { monthId, uid, other, settled, settledBy: me, settledAt: serverTimestamp() }
+    if (tier !== undefined) data.tier = tier
+    batch.set(doc(db, 'spaces', spaceId, 'settlements', settlementDocId(monthId, uid, other, tier)), data)
+  }
+  try {
+    await batch.commit()
+  } catch (e) {
+    throw humanError(e, MSG.noAccess)
+  }
 }

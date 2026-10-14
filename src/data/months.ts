@@ -37,6 +37,11 @@ const freezing = new Map<string, Promise<void>>()
  * Freezes the space's current stakes for the current month once its first task lists have locked:
  * from then on everyone has committed under them, so a later edit only changes months not frozen yet.
  * Before that, edits (a typo right after creating the space) still apply to this month.
+ * batch2: TODO (SPEC §9.7) freeze a month once it is COMPLETE instead (each month of houseFreezeMonths, when
+ * needsHouseFreeze holds by houseFreezeAt on its stored last week and monthly list), so an owner's edit counts
+ * at once for the month in progress; the batch-2 rules refuse a freeze before the month is complete. From
+ * FIRST_RESULTS_MONTH on, the previous app's early freeze (createdAt before completion) doesn't bind and is
+ * re-frozen (set) at completion; toMonthStakes decodes createdAt.
  */
 export function ensureMonthStakes(space: Space): Promise<void> {
   const at = now()

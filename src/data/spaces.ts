@@ -372,6 +372,18 @@ export async function resetInviteCode(spaceId: string): Promise<string> {
   }
 }
 
+/**
+ * Renames the space (anyone) or changes its house stakes (the owner only, SPEC §9.7), keeping the invite's
+ * copy in step.
+ * batch2: TODO a reward/penalty change: "Only the owner can change the house stakes." before writing for
+ * anyone else; then one transaction (fails at once offline) that re-reads the space and, for each month of
+ * houseFreezeMonths (the UTC month and the one before: what the rules check), the months/{monthId} doc, the
+ * month's last week and its monthly list; writes months/{monthId} with the space's current (old) stakes for
+ * each where needsHouseFreeze holds (houseFreezeAt on the stored docs; a create, or the re-freeze of an early
+ * freeze); updates the space (name, reward, penalty, stakesNote: { by: me, at: serverTimestamp() }) and the
+ * invite's copy. The new stakes count at once for the month in progress. On permission-denied, retry once with
+ * the opposite decision for months whose houseFreezeAt is within 10 minutes of the device's time.
+ */
 export async function updateSpace(spaceId: string, patch: Partial<Pick<Space, 'name' | 'reward' | 'penalty'>>): Promise<void> {
   const clean: Partial<Record<'name' | 'reward' | 'penalty', string>> = {}
   if (patch.name !== undefined) clean.name = cleanText(patch.name, 40, 'Space name')

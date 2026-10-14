@@ -106,8 +106,12 @@ export function useProfiles(uids: UID[]): Record<UID, UserProfile> {
  * judge from the start (SPEC §9.4). Without it they write exactly what they wrote before batch 2 (no
  * `judges`), so creating and joining keep working on the old rules. updateSpace: since batch 2 only the
  * owner changes the house stakes (reward, penalty); anyone renames the space ("Only the owner can change
- * the house stakes."). leaveSpace, removeMember and deleteMyAccount also take the user out of this month's
- * and next week's month's monthly lists that haven't locked.
+ * the house stakes."). A house-stakes change counts at once for the month in progress: one transaction
+ * first freezes each month of houseFreezeMonths (the UTC month and the one before, as the rules check) that
+ * is complete and has no binding freeze (months/{monthId} with the old stakes: a create, or the re-freeze of
+ * the previous app's early freeze), then writes the new stakes with `stakesNote` and the invite's copy; the
+ * rules refuse the change while a complete month is unfrozen. It fails at once offline. leaveSpace, removeMember and deleteMyAccount also take the user out of
+ * this month's and next week's month's monthly lists that haven't locked.
  */
 export { createSpace, lookupInvite, joinSpace, leaveSpace, updateSpace, inviteLink, removeMember, resetInviteCode } from './spaces.ts'
 
@@ -220,9 +224,14 @@ const NOTHING: Live<never> = Object.freeze({ data: undefined, loading: false, er
 export { saveMonthlyPlan, setMonthlyTaskDone, submitMonthlyReviews, ensureMonthly } from './monthly.ts'
 
 /**
- * The house stakes for a month: frozen once its first task lists locked (`frozen: true`), else the
- * space's current text (`frozen: false`, so an edit now still applies to this month). Since batch 2
- * they count between two people who haven't agreed on their own stakes (SPEC §9.7).
+ * The house stakes for a month: its months/{monthId} doc (`frozen: true`, with `createdAt`), else the
+ * space's current text (`frozen: false`). Since batch 2 a month is frozen once it is complete (ensureSpace,
+ * the owner's edit, or the reminders job), so an owner's edit counts at once for the month in progress.
+ * Whether a freeze binds is monthHouse's call (domain/stakes.ts): the previous app's early freeze (at the
+ * first lock) of a month from FIRST_RESULTS_MONTH on doesn't, and is replaced when the month completes;
+ * older months keep what they froze. They count between two people who haven't agreed on their own stakes
+ * (SPEC §9.7). The Space screen's stakes card doesn't need it (the month whose terms count now is never
+ * complete, so its house stakes are the space's).
  */
 export function useMonthStakes(space: Space, monthId: MonthId): Live<MonthStakes> {
   const { uid } = useAuth()
@@ -274,11 +283,14 @@ export function useLatestResults(space: Space): Live<MonthResults | null> {
 }
 
 /**
- * saveMyStakes(space, input): saves your own terms (never anyone's agreement). Fails at once offline.
- * agreeToStakes(space, owner, seen) → { from }: agrees to `owner`'s current terms as you saw them;
- * "These stakes just changed. Take another look." when they changed since; resolves without writing when
- * you already agreed to exactly these. Fails at once offline. A member's terms count once everyone has
- * agreed (memberTerms in domain/stakes.ts decides what counts for a month).
+ * saveMyStakes(space, input): saves your own terms (never anyone's agreement); each line (reward, penalty)
+ * is Same for everyone or Different per friend. Fails at once offline.
+ * agreeToStakes(space, owner, seen): agrees to `owner`'s current terms as you saw them, stamped with the
+ * server time; "These stakes just changed. Take another look." when they changed since; resolves without
+ * writing when you already agreed to exactly these. Fails at once offline.
+ * An agreement counts at once for the month in progress; a month's terms are what was agreed before it was
+ * complete, so a finished month never changes. A Same-for-everyone line and the streak rewards wait for
+ * every friend; a per-friend line counts with that friend's own Agree (memberTerms in domain/stakes.ts).
  */
 export { saveMyStakes, agreeToStakes } from './stakes.ts'
 export type { StakesInput } from './stakes.ts'

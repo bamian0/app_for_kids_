@@ -55,6 +55,9 @@ export interface Space {
   /** Members who only rate, as each chose for themselves (§9.4). Order = order of choosing. Entries of
    *  people who left are ignored (spaceJudges in scoring.ts). Absent = nobody judges. */
   judges?: UID[]
+  /** The last change of the house stakes (`reward`, `penalty`), for the notice everyone else sees (§9.7).
+   *  Absent until the owner changes them with a batch-2 app. */
+  stakesNote?: StakesNote
 }
 
 export interface Invite {
@@ -174,13 +177,18 @@ export interface WeekData {
   boundsMismatch?: boolean
 }
 
-/** The house stakes that apply to one month: frozen in spaces/{id}/months/{monthId} once the month's
- *  first task lists have locked, else the space's current text (frozen = false). Since batch 2 they count
- *  between two people who haven't agreed on their own (§9.7). */
+/** The house stakes of one month: frozen in spaces/{id}/months/{monthId} (frozen = true), else the space's
+ *  current text (frozen = false). Since batch 2 a month is frozen once it is complete, so an owner's edit
+ *  counts at once for the month in progress. Months before FIRST_RESULTS_MONTH that the previous app froze
+ *  at their first lock keep what they froze; from FIRST_RESULTS_MONTH on such an early freeze doesn't bind
+ *  and is replaced at completion (monthHouse / freezeBinds in domain/stakes.ts decide, from `createdAt`).
+ *  They count between two people who haven't agreed on their own (§9.7). */
 export interface MonthStakes {
   reward: string
   penalty: string
   frozen: boolean
+  /** Server time of the freeze (frozen only; a pending write reads as the SDK's estimate). */
+  createdAt?: number
 }
 
 // ---------- Batch 2: times, pause, periods (SPEC §9) ----------
@@ -262,7 +270,8 @@ export interface MonthData {
 
 // ---------- Batch 2: per-person stakes and streaks (SPEC §9.7, §9.8) ----------
 
-/** One thing for the whole group, or a separate thing per friend. */
+/** How one line (the reward, or the penalty) works: one thing for the whole group ('group', "Same for
+ *  everyone"), or a separate thing per friend ('each', "Different per friend"). Each line has its own. */
 export type StakesMode = 'group' | 'each'
 
 /** A streak reward: hit the bar `months` months in a row (2–36) and the friends owe `reward`, together. */
@@ -272,39 +281,48 @@ export interface StreakTier {
   reward: string
 }
 
-/** One member's stakes as they apply between them and one friend. */
+/** One member's stakes as they apply between them and one friend: exactly what the friend agrees to. */
 export interface PairTerms {
-  mode: StakesMode
-  /** What the friend owes (group mode: what the friends owe together) when the member hits the bar. */
+  rewardMode: StakesMode
+  penaltyMode: StakesMode
+  /** What the friend owes when the member hits the bar ('group': what the friends owe together). */
   reward: string
-  /** What the member owes the friend (group mode: gives the group) when they miss. */
+  /** What the member owes the friend when they miss ('group': what they give the group). */
   penalty: string
-  /** The member's streak rewards, ascending by months; one list for everyone. */
+  /** The member's streak rewards, ascending by months; one list for the whole group. */
   tiers: StreakTier[]
 }
 
-/** A friend's Agree: these terms count from month `from` on, until a later entry. */
+/** One of a friend's agreements to a member's stakes, with the server time it was made. */
 export interface AgreedTerms extends PairTerms {
-  from: MonthId
+  at: number
 }
 
-/** A friend's agreements to one member's stakes. */
+/**
+ * A friend's agreements to one member's stakes (§9.7). The current one is `terms`, made at `at` (server
+ * time; arrays can't hold server timestamps, so it lives outside `past`). Each new Agree moves the current
+ * one into `past` with its `at`. What counts for a month is decided by the agreements made before the month
+ * was complete (memberTerms in domain/stakes.ts), so a finished month never changes.
+ */
 export interface Agreement {
-  /** Server time of the latest Agree. */
   at: number
-  /** Oldest first, `from` strictly ascending, at most 6 entries. */
-  history: AgreedTerms[]
+  terms: PairTerms
+  /** Earlier agreements, oldest first, `at` strictly ascending and before `at`; at most 5 (6 in all). */
+  past: AgreedTerms[]
 }
 
 /** spaces/{id}/stakes/{uid}: a member's own stakes, and their friends' agreements to them. */
 export interface MemberStakes {
   uid: UID
-  mode: StakesMode
-  /** Group mode: what the friends owe, together. May be '' in 'each' mode (kept for switching back). */
+  rewardMode: StakesMode
+  penaltyMode: StakesMode
+  /** Reward for everyone ('group'). May be '' while the reward is per friend (kept for switching back). */
   reward: string
-  /** Group mode: what the member gives the group. May be '' in 'each' mode. */
+  /** Penalty for everyone ('group'). May be '' while the penalty is per friend. */
   penalty: string
-  /** 'each' mode: per friend (current members other than uid), both texts 1–120 characters. */
+  /** Per friend (current members other than uid). Each entry has both texts, 0–120 characters; the text of a
+   *  line that is per friend is 1–120 and not blank. A friend without an entry has no terms ('missing') while
+   *  either line is per friend. */
   per: Record<UID, { reward: string; penalty: string }>
   /** At most 5, months strictly ascending. */
   tiers: StreakTier[]
@@ -313,15 +331,33 @@ export interface MemberStakes {
   updatedAt: number
 }
 
-/**
- * What counts between a member and a friend in one month (§9.7): the terms everyone last agreed to (Same for
- * All: the shared texts, owed together; Per Friend: the friend's own texts; `tiers` = the member's streak
- * rewards in force that month, the same for every agreed pair), or the house stakes (group, no tiers).
- */
-export interface TermsInForce extends PairTerms {
+/** One line between a member and a friend in one month (§9.7). */
+export interface LineInForce {
+  text: string
+  /** Owed together with everyone else on the same line: a Same-for-everyone line, or the house stakes. */
+  together: boolean
+  /** 'agreed': from the friend's agreement made at `at`; 'house': the month's house stakes. */
   source: 'agreed' | 'house'
-  /** For 'agreed': the month the friend's agreement counts from. */
-  from?: MonthId
+  at?: number
+}
+
+/**
+ * What counts between a member and a friend in one month (§9.7, memberTerms): each line on its own, from
+ * the agreements made before the month was complete, else the month's house stakes. `tiers`: the member's
+ * streak rewards in force for this friend (everyone agreed to them; [] otherwise and on house stakes).
+ */
+export interface TermsInForce {
+  reward: LineInForce
+  penalty: LineInForce
+  tiers: StreakTier[]
+}
+
+/** The last change of a space's house stakes (§9.7): drives the notice and the `house` push. */
+export interface StakesNote {
+  /** The owner who changed them. */
+  by: UID
+  /** Server time of the change. */
+  at: number
 }
 
 /** One member's line in a month's results doc. */
@@ -344,8 +380,9 @@ export interface MonthResults {
   completeAt: number
   /** Everyone who was in the month's roster, plus everyone carried over from the previous month's doc. */
   members: Record<UID, MonthResultsEntry>
-  /** The month's terms for good, subject → friend (monthTerms when the doc was written, §9.7). Screens and the
-   *  job use these instead of the live stakes docs once present. Absent on docs without any player pair. */
+  /** The month's terms for good, subject → friend (monthTerms from the agreements made before `completeAt`,
+   *  §9.7). Screens and the job use these instead of the stakes docs once present. Absent on docs without any
+   *  player pair. */
   terms?: Record<UID, Record<UID, TermsInForce>>
   createdAt: number
 }

@@ -1,13 +1,17 @@
 // Firestore documents -> domain types. Timestamps become epoch ms; a pending serverTimestamp()
 // reads as the SDK's local estimate, so optimistic writes render immediately.
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
+import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras } from '../domain/decode.ts'
 import type {
   Earning,
   Goal,
   Invite,
   Mark,
+  MemberStakes,
   MoneyMove,
   MoneyState,
+  MonthlyList,
+  MonthResults,
   MonthStakes,
   Plan,
   Progress,
@@ -75,7 +79,8 @@ export function toSpace(snap: Snap): Space {
   }
   if (typeof d.utcOffsetMin === 'number') space.utcOffsetMin = d.utcOffsetMin
   if (d.leftAt && typeof d.leftAt === 'object') space.leftAt = times(d.leftAt)
-  return space
+  // Batch 2 (SPEC §9.2–§9.7): only the valid fields; a malformed one reads as absent ("as before").
+  return Object.assign(space, decodeSpaceExtras(d, msOrNull))
 }
 
 export function toInvite(snap: Snap): Invite {
@@ -94,7 +99,7 @@ export function toInvite(snap: Snap): Invite {
 
 export function toWeek(snap: Snap, spaceId: string): Week {
   const d = data(snap)
-  return {
+  const week: Week = {
     id: snap.id,
     spaceId,
     startAt: ms(d.startAt),
@@ -104,6 +109,16 @@ export function toWeek(snap: Snap, spaceId: string): Week {
     members: strings(d.members),
     submittedBy: strings(d.submittedBy),
   }
+  // Batch 2 (SPEC §9.2, §9.4): the schedule its bounds follow and its judges snapshot, when valid.
+  return Object.assign(week, decodeWeekExtras(d))
+}
+
+/** spaces/{id}/monthly/{monthId}: a week-shaped doc whose id is the MonthId (SPEC §9.5). */
+export function toMonthly(snap: Snap, spaceId: string): MonthlyList {
+  const list = toWeek(snap, spaceId)
+  // A list never follows a schedule of its own (its bounds are its weeks').
+  delete list.schedule
+  return list
 }
 
 /** A stored time, or null for anything else (a missing earnedAt, a malformed added entry). */
@@ -136,7 +151,7 @@ export function toReview(snap: Snap): Review {
 
 export function toSettlement(snap: Snap): Settlement {
   const d = data(snap)
-  return {
+  const settlement: Settlement = {
     id: snap.id,
     monthId: str(d.monthId),
     uid: str(d.uid),
@@ -144,12 +159,31 @@ export function toSettlement(snap: Snap): Settlement {
     settledBy: str(d.settledBy),
     settledAt: ms(d.settledAt),
   }
+  // The pair and streak shapes (SPEC §9.7); a legacy per-member doc has neither.
+  if (typeof d.other === 'string' && d.other !== '') {
+    settlement.other = d.other
+    if (Number.isInteger(d.tier) && d.tier >= 2 && d.tier <= 36) settlement.tier = d.tier
+  }
+  return settlement
 }
 
-/** A frozen month (spaces/{id}/months/{monthId}). */
+/** A frozen month (spaces/{id}/months/{monthId}), with when it was frozen (monthHouse decides whether it binds). */
 export function toMonthStakes(snap: Snap): MonthStakes {
   const d = data(snap)
-  return { reward: str(d.reward), penalty: str(d.penalty), frozen: true }
+  const stakes: MonthStakes = { reward: str(d.reward), penalty: str(d.penalty), frozen: true }
+  const createdAt = msOrNull(d.createdAt)
+  if (createdAt !== null && createdAt > 0) stakes.createdAt = createdAt
+  return stakes
+}
+
+/** spaces/{id}/stakes/{uid}: a member's own stakes and their friends' agreements (SPEC §9.7). */
+export function toMemberStakes(snap: Snap): MemberStakes {
+  return decodeMemberStakes(snap.id, data(snap), msOrNull)
+}
+
+/** spaces/{id}/results/{monthId} (SPEC §9.8); null when it isn't a valid results doc. */
+export function toMonthResults(snap: Snap): MonthResults | null {
+  return snap.exists() ? decodeMonthResults(data(snap), msOrNull, snap.id) : null
 }
 
 // ---------- Money (users/{uid}/...) ----------

@@ -12,6 +12,7 @@ import {
   getDocs,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   updateDoc,
   where,
@@ -22,14 +23,16 @@ import {
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
 import { newInviteCode, normalizeInviteCode } from '../domain/ids.ts'
-import { addWeeks, utcOffsetMinutes, weekIdFor } from '../domain/time.ts'
-import type { Invite, Space, UID } from '../domain/types.ts'
+import { monthEndsAtFor } from '../domain/scoring.ts'
+import { houseFreezeAt, houseFreezeMonths, needsHouseFreeze } from '../domain/stakes.ts'
+import { addWeeks, monthIdForWeek, utcOffsetMinutes, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
+import type { Invite, MonthId, Space, UID, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
-import { toInvite, toSpace, toWeek } from './convert.ts'
+import { toInvite, toMonthly, toMonthStakes, toSpace, toWeek } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { cleanText, myName, profileRef, requireUser } from './session.ts'
 import { forgetWhere, type Start } from './store.ts'
-import { weekRef } from './weeks.ts'
+import { periodRef, rawJudges, weekRef } from './weeks.ts'
 
 export const MAX_MEMBERS = 8
 
@@ -84,7 +87,7 @@ const REACH_TIMEOUT_MS = 8_000
  * in a queue and land later, which for a new space means a spinner that never ends and a duplicate
  * when the user tries again.
  */
-async function requireServer(uid: UID): Promise<void> {
+export async function requireServer(uid: UID): Promise<void> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error(MSG.offline)
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -110,7 +113,7 @@ const creating = new Map<string, Promise<Space>>()
  * (exactly as before batch 2, so it works on the old rules too).
  */
 export function createSpace(input: { name: string; reward: string; penalty: string; judge?: boolean }): Promise<Space> {
-  // batch2: TODO write `judges` (needs the batch-2 rules)
+  const judge = input.judge === true
   let name: string, reward: string, penalty: string, uid: UID
   try {
     name = cleanText(input.name, 40, 'Space name')
@@ -120,16 +123,16 @@ export function createSpace(input: { name: string; reward: string; penalty: stri
   } catch (e) {
     return Promise.reject(e)
   }
-  const key = JSON.stringify([uid, name, reward, penalty])
+  const key = JSON.stringify([uid, name, reward, penalty, judge])
   let pending = creating.get(key)
   if (!pending) {
-    pending = writeSpace(uid, name, reward, penalty).finally(() => creating.delete(key))
+    pending = writeSpace(uid, name, reward, penalty, judge).finally(() => creating.delete(key))
     creating.set(key, pending)
   }
   return pending
 }
 
-async function writeSpace(uid: UID, name: string, reward: string, penalty: string): Promise<Space> {
+async function writeSpace(uid: UID, name: string, reward: string, penalty: string, judge: boolean): Promise<Space> {
   const user = requireUser()
   const { db } = getFirebase()
   const ref = doc(collection(db, 'spaces'))
@@ -141,7 +144,7 @@ async function writeSpace(uid: UID, name: string, reward: string, penalty: strin
     await requireServer(uid)
     const inviterName = await myName(user)
     const batch = writeBatch(db)
-    batch.set(ref, {
+    const data: Record<string, unknown> = {
       name,
       reward,
       penalty,
@@ -154,14 +157,17 @@ async function writeSpace(uid: UID, name: string, reward: string, penalty: strin
       threshold: 90,
       latePenalty: 5,
       createdAt: serverTimestamp(),
-    })
+    }
+    // Only when judging: without it the doc is exactly what the app wrote before batch 2 (SPEC §9.4).
+    if (judge) data.judges = [uid]
+    batch.set(ref, data)
     batch.set(doc(db, 'invites', inviteCode), { spaceId: ref.id, spaceName: name, reward, penalty, inviterName, createdBy: uid, createdAt: serverTimestamp() })
     await batch.commit()
   } catch (e) {
     throw humanError(e, MSG.generic)
   }
   const at = Date.now()
-  return {
+  const space: Space = {
     id: ref.id,
     name,
     reward,
@@ -176,6 +182,8 @@ async function writeSpace(uid: UID, name: string, reward: string, penalty: strin
     latePenalty: 5,
     createdAt: at,
   }
+  if (judge) space.judges = [uid]
+  return space
 }
 
 /** Accepts a code or invite link; null if unknown. Works signed out (the welcome screen's preview). */
@@ -196,7 +204,7 @@ export async function lookupInvite(codeOrLink: string): Promise<Invite | null> {
  * stale judge entry of yours from an earlier stay is removed in a follow-up write.
  */
 export async function joinSpace(codeOrLink: string, opts: { judge?: boolean } = {}): Promise<string> {
-  void opts // batch2: TODO set `judges` in the join batch (needs the batch-2 rules)
+  const judge = opts.judge === true
   const code = normalizeInviteCode(codeOrLink)
   if (!code) throw new Error(MSG_BAD_CODE)
   const invite = await lookupInvite(code)
@@ -213,7 +221,9 @@ export async function joinSpace(codeOrLink: string, opts: { judge?: boolean } = 
   }
   const batch = writeBatch(db)
   batch.set(doc(db, 'spaces', invite.spaceId, 'joins', uid), { code, createdAt: serverTimestamp() })
-  batch.update(ref, 'memberIds', arrayUnion(uid), new FieldPath('joinedAt', uid), serverTimestamp())
+  // Judging adds you to the space's judges in the same write; without it the join is exactly as before batch 2.
+  const judging: unknown[] = judge ? ['judges', arrayUnion(uid)] : []
+  batch.update(ref, 'memberIds', arrayUnion(uid), new FieldPath('joinedAt', uid), serverTimestamp(), ...judging)
   try {
     await batch.commit()
   } catch (e) {
@@ -222,13 +232,34 @@ export async function joinSpace(codeOrLink: string, opts: { judge?: boolean } = 
   }
   // A refusal from before the join (left a moment ago) must not linger on screen.
   forgetSpace(uid, invite.spaceId)
+  if (!judge) await dropStaleJudge(ref, uid)
   return invite.spaceId
 }
 
+/**
+ * Joining to play while the space still lists you as a judge (an entry left from an earlier stay by an older
+ * app's leave): one write takes it out, so you play from the start. Best effort.
+ */
+async function dropStaleJudge(ref: DocumentReference, uid: UID): Promise<void> {
+  try {
+    const snap = await getDoc(ref)
+    if (rawJudges(snap)?.includes(uid)) await updateDoc(ref, { judges: arrayRemove(uid) })
+  } catch {
+    // Left for setJudge in Settings.
+  }
+}
+
 /** Drops everything cached about a space for this user (after joining or leaving it). */
-function forgetSpace(uid: UID, spaceId: string): void {
-  const exact = [`${uid}|space|${spaceId}`, `${uid}|settlements|${spaceId}`]
-  const prefixes = [`${uid}|week|${spaceId}|`, `${uid}|month|${spaceId}|`, `${uid}|months|${spaceId}|`]
+export function forgetSpace(uid: UID, spaceId: string): void {
+  const exact = [`${uid}|space|${spaceId}`, `${uid}|settlements|${spaceId}`, `${uid}|stakes|${spaceId}`]
+  const prefixes = [
+    `${uid}|week|${spaceId}|`,
+    `${uid}|month|${spaceId}|`,
+    `${uid}|months|${spaceId}|`,
+    `${uid}|monthly|${spaceId}|`,
+    `${uid}|results|${spaceId}|`,
+    `${uid}|settlements|${spaceId}|`,
+  ]
   forgetWhere((key) => exact.includes(key) || prefixes.some((p) => key.startsWith(p)))
 }
 
@@ -244,12 +275,16 @@ async function leaveUnlockedWeeks(batch: WriteBatch, space: Space, uid: UID): Pr
   } catch {
     return
   }
-  for (const weekId of [thisWeek, addWeeks(thisWeek, 1)]) {
-    const snap = await getDoc(weekRef(space.id, weekId)).catch(() => null)
+  const nextWeek = addWeeks(thisWeek, 1)
+  const refs = [weekRef(space.id, thisWeek), weekRef(space.id, nextWeek)]
+  // This month's and next week's month's lists follow the same lock rule (SPEC §9.4, §9.5).
+  for (const monthId of new Set([monthIdForWeek(thisWeek), monthIdForWeek(nextWeek)])) refs.push(periodRef(space.id, 'monthly', monthId))
+  for (const ref of refs) {
+    const snap = await getDoc(ref).catch(() => null)
     if (!snap?.exists()) continue
-    const week = toWeek(snap, space.id)
+    const period = toWeek(snap, space.id)
     // The stored lockAt decides, as in the rules.
-    if (!week.members.includes(uid) || now() >= week.lockAt) continue
+    if (!period.members.includes(uid) || now() >= period.lockAt) continue
     batch.update(snap.ref, { members: arrayRemove(uid) })
   }
 }
@@ -269,6 +304,8 @@ async function removeFromSpace(ref: DocumentReference, space: Space, uid: UID, p
     const batch = writeBatch(getFirebase().db)
     if (withWeeks) await leaveUnlockedWeeks(batch, space, uid)
     const extra = Object.entries(patch).flat()
+    // A judge leaving drops their own entry (SPEC §9.4); nobody else's changes.
+    if (space.judges?.includes(uid)) extra.push('judges', arrayRemove(uid))
     batch.update(ref, 'memberIds', arrayRemove(uid), new FieldPath('joinedAt', uid), deleteField(), new FieldPath('leftAt', uid), serverTimestamp(), ...extra)
     await batch.commit()
   }
@@ -372,17 +409,19 @@ export async function resetInviteCode(spaceId: string): Promise<string> {
   }
 }
 
+const ONLY_OWNER_STAKES = 'Only the owner can change the house stakes.'
+const STAKES_FAILED = 'Couldn’t save the stakes. Try again.'
+/** A month whose freeze time is this close to the device's clock may be seen the other way by the server. */
+const FREEZE_EDGE_MS = 10 * 60_000
+
 /**
  * Renames the space (anyone) or changes its house stakes (the owner only, SPEC §9.7), keeping the invite's
- * copy in step.
- * batch2: TODO a reward/penalty change: "Only the owner can change the house stakes." before writing for
- * anyone else; then one transaction (fails at once offline) that re-reads the space and, for each month of
- * houseFreezeMonths (the UTC month and the one before: what the rules check), the months/{monthId} doc, the
- * month's last week and its monthly list; writes months/{monthId} with the space's current (old) stakes for
- * each where needsHouseFreeze holds (houseFreezeAt on the stored docs; a create, or the re-freeze of an early
- * freeze); updates the space (name, reward, penalty, stakesNote: { by: me, at: serverTimestamp() }) and the
- * invite's copy. The new stakes count at once for the month in progress. On permission-denied, retry once with
- * the opposite decision for months whose houseFreezeAt is within 10 minutes of the device's time.
+ * copy in step. A non-owner's stakes change throws "Only the owner can change the house stakes." before
+ * writing (unchanged values aren't changes, so an old-style `{name, reward, penalty}` rename still works).
+ * The owner's stakes change is one transaction that fails at once offline: it first freezes, with the old
+ * stakes, each recently completed month that has no binding freeze (houseFreezeMonths: the months the rules
+ * check), then writes the new stakes with `stakesNote` and the invite's copy. So the new stakes count at once
+ * for the month in progress, and a finished month keeps its own. Renames queue offline as before.
  */
 export async function updateSpace(spaceId: string, patch: Partial<Pick<Space, 'name' | 'reward' | 'penalty'>>): Promise<void> {
   const clean: Partial<Record<'name' | 'reward' | 'penalty', string>> = {}
@@ -390,7 +429,25 @@ export async function updateSpace(spaceId: string, patch: Partial<Pick<Space, 'n
   if (patch.reward !== undefined) clean.reward = cleanText(patch.reward, 120, 'Reward')
   if (patch.penalty !== undefined) clean.penalty = cleanText(patch.penalty, 120, 'Penalty')
   if (Object.keys(clean).length === 0) return
-  requireUser()
+  const me = requireUser().uid
+  if (clean.reward !== undefined || clean.penalty !== undefined) {
+    let current: Space
+    try {
+      const snap = await getDoc(spaceRef(spaceId))
+      if (!snap.exists()) throw new Error(MSG.noAccess)
+      current = toSpace(snap)
+    } catch (e) {
+      throw humanError(e, MSG.noAccess)
+    }
+    const stakes = (clean.reward !== undefined && clean.reward !== current.reward) || (clean.penalty !== undefined && clean.penalty !== current.penalty)
+    if (stakes) {
+      if (current.ownerId !== me) throw new Error(ONLY_OWNER_STAKES)
+      return changeHouseStakes(spaceId, me, clean)
+    }
+    delete clean.reward
+    delete clean.penalty
+    if (clean.name === undefined || clean.name === current.name) return
+  }
   try {
     await updateDoc(spaceRef(spaceId), clean)
   } catch (e) {
@@ -406,17 +463,152 @@ export async function updateSpace(spaceId: string, patch: Partial<Pick<Space, 'n
   }
 }
 
+/** The month's house-stakes freeze as decided for one attempt, and when it becomes due. */
+interface FreezeDecision {
+  monthId: MonthId
+  freeze: boolean
+  freezeAt: number
+}
+
+/**
+ * The owner's house-stakes change (SPEC §9.7): one transaction that re-reads the space and, for each month the
+ * rules check, its freeze, its last week and its list; freezes each complete month without a binding freeze with
+ * the space's current (old) stakes; then writes the new stakes, `stakesNote` and the invite's copy. The server's
+ * clock decides when a month is complete: if refused, it tries once more with the opposite decision for each
+ * month whose freeze time is within 10 minutes of this device's clock.
+ */
+async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record<'name' | 'reward' | 'penalty', string>>): Promise<void> {
+  await requireServer(me)
+  const { db } = getFirebase()
+  const attempt = (flip: Set<MonthId>) =>
+    runTransaction(db, async (tx) => {
+      const snap = await tx.get(spaceRef(spaceId))
+      if (!snap.exists()) throw new Error(MSG.noAccess)
+      const fresh = toSpace(snap)
+      if (fresh.ownerId !== me || !fresh.memberIds.includes(me)) throw new Error(ONLY_OWNER_STAKES)
+      const at = now()
+      const decisions: FreezeDecision[] = []
+      const writes: MonthId[] = []
+      for (const monthId of houseFreezeMonths(fresh, at)) {
+        const weeks = weekIdsInMonth(monthId)
+        const [frozenSnap, lastSnap, listSnap] = await Promise.all([
+          tx.get(doc(db, 'spaces', spaceId, 'months', monthId)),
+          tx.get(weekRef(spaceId, weeks[weeks.length - 1] as WeekId)),
+          tx.get(periodRef(spaceId, 'monthly', monthId)),
+        ])
+        const lastWeek = lastSnap.exists() ? toWeek(lastSnap, spaceId) : null
+        const list = listSnap.exists() ? toMonthly(listSnap, spaceId) : null
+        const frozen = frozenSnap.exists() ? toMonthStakes(frozenSnap) : null
+        const freezeAt = houseFreezeAt(fresh, monthId, lastWeek, list)
+        const completeAt = monthEndsAtFor(fresh, monthId, lastWeek, list)
+        let freeze = needsHouseFreeze(monthId, frozen, freezeAt, completeAt, at)
+        if (flip.has(monthId)) freeze = !freeze
+        decisions.push({ monthId, freeze, freezeAt })
+        if (freeze) writes.push(monthId)
+      }
+      const invite = fresh.inviteCode ? await tx.get(doc(db, 'invites', fresh.inviteCode)) : null
+      // The freeze copies the stakes as they are before this change (the rules compare with the stored space).
+      for (const monthId of writes) {
+        tx.set(doc(db, 'spaces', spaceId, 'months', monthId), { reward: fresh.reward, penalty: fresh.penalty, createdAt: serverTimestamp() })
+      }
+      const next = { name: clean.name ?? fresh.name, reward: clean.reward ?? fresh.reward, penalty: clean.penalty ?? fresh.penalty }
+      tx.update(spaceRef(spaceId), { ...next, stakesNote: { by: me, at: serverTimestamp() } })
+      if (invite?.exists()) tx.update(invite.ref, { spaceName: next.name, reward: next.reward, penalty: next.penalty })
+      return decisions
+    })
+  let decisions: FreezeDecision[] = []
+  try {
+    await attempt(new Set())
+    return
+  } catch (e) {
+    if (!isDenied(e)) throw humanError(e, STAKES_FAILED)
+  }
+  try {
+    // The decisions as the first attempt would make them now, to find the months at the edge.
+    decisions = await peekDecisions(spaceId)
+    const edge = new Set(decisions.filter((d) => Math.abs(d.freezeAt - now()) <= FREEZE_EDGE_MS).map((d) => d.monthId))
+    if (edge.size === 0) throw new Error(STAKES_FAILED)
+    await attempt(edge)
+  } catch (e) {
+    throw humanError(e, STAKES_FAILED)
+  }
+}
+
+/** The freeze decisions an attempt would make now, read outside a transaction (for the retry). */
+async function peekDecisions(spaceId: string): Promise<FreezeDecision[]> {
+  const { db } = getFirebase()
+  const snap = await getDoc(spaceRef(spaceId))
+  if (!snap.exists()) return []
+  const fresh = toSpace(snap)
+  const at = now()
+  const out: FreezeDecision[] = []
+  for (const monthId of houseFreezeMonths(fresh, at)) {
+    const weeks = weekIdsInMonth(monthId)
+    const [lastSnap, listSnap] = await Promise.all([
+      getDoc(weekRef(spaceId, weeks[weeks.length - 1] as WeekId)).catch(() => null),
+      getDoc(periodRef(spaceId, 'monthly', monthId)).catch(() => null),
+    ])
+    const lastWeek = lastSnap?.exists() ? toWeek(lastSnap, spaceId) : null
+    const list = listSnap?.exists() ? toMonthly(listSnap, spaceId) : null
+    void db
+    out.push({ monthId, freeze: false, freezeAt: houseFreezeAt(fresh, monthId, lastWeek, list) })
+  }
+  return out
+}
+
 /**
  * You become a judge (only rate) or play again (SPEC §9.4), from the next period that hasn't locked.
- * One transaction: the space's `judges` (only your own entry changes) and the `judges` of every week and
- * monthly list that exists and hasn't locked. If a lock passes between read and commit, it retries with
- * the space alone (that period keeps your old role). Fails at once offline.
+ * One transaction: the space's `judges` (only your own entry changes) and the `judges` (plus any missing
+ * members) of every week and monthly list that exists and hasn't locked: this week, next week, this month's
+ * and next week's month's lists. If refused (a lock just passed), it retries with the space alone (that
+ * period keeps your old role). Fails at once offline.
  */
 export async function setJudge(spaceId: string, judge: boolean): Promise<void> {
-  void spaceId
-  void judge
-  // batch2: TODO
-  throw new Error('not implemented: setJudge')
+  const me = requireUser().uid
+  await requireServer(me)
+  const { db } = getFirebase()
+  const attempt = (withPeriods: boolean) =>
+    runTransaction(db, async (tx) => {
+      const snap = await tx.get(spaceRef(spaceId))
+      if (!snap.exists()) throw new Error(MSG.noAccess)
+      const fresh = toSpace(snap)
+      if (!fresh.memberIds.includes(me)) throw new Error(MSG.noAccess)
+      const before = rawJudges(snap) ?? []
+      const next = before.filter((uid) => uid !== me)
+      if (judge) next.push(me)
+      const periods: DocumentSnapshot[] = []
+      if (withPeriods) {
+        const thisWeek = weekIdFor(now(), fresh.timezone)
+        const nextWeek = addWeeks(thisWeek, 1)
+        const refs = [weekRef(spaceId, thisWeek), weekRef(spaceId, nextWeek)]
+        for (const monthId of new Set([monthIdForWeek(thisWeek), monthIdForWeek(nextWeek)])) refs.push(periodRef(spaceId, 'monthly', monthId))
+        for (const ref of refs) periods.push(await tx.get(ref))
+      }
+      const changed = before.length !== next.length || before.some((uid, i) => uid !== next[i])
+      if (changed) tx.update(spaceRef(spaceId), { judges: next })
+      for (const period of periods) {
+        if (!period.exists()) continue
+        const stored = toWeek(period, spaceId)
+        if (now() >= stored.lockAt) continue
+        const current = rawJudges(period)
+        const missing = fresh.memberIds.filter((uid) => !stored.members.includes(uid))
+        const same = current !== undefined && current.length === next.length && current.every((uid, i) => uid === next[i])
+        if (same && missing.length === 0) continue
+        if (current === undefined && next.length === 0 && missing.length === 0) continue
+        tx.update(period.ref, missing.length > 0 ? { judges: next, members: arrayUnion(...missing) } : { judges: next })
+      }
+    })
+  try {
+    await attempt(true)
+  } catch (e) {
+    if (!isDenied(e)) throw humanError(e, MSG.noAccess)
+    try {
+      // A lock passed between reading and writing: that period keeps your old role.
+      await attempt(false)
+    } catch (e2) {
+      throw humanError(e2, MSG.noAccess)
+    }
+  }
 }
 
 /** `<app url>?join=CODE` for sharing. */

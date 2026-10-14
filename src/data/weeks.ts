@@ -1,4 +1,5 @@
-// Weeks: participation, live week data (with the blind-review reveal) and the week's writes.
+// Weeks (and, through the same code, monthly lists): participation, live period data (with the blind-review
+// reveal) and the week's writes.
 import {
   arrayUnion,
   collection,
@@ -22,12 +23,13 @@ import {
 import { now } from '../domain/clock.ts'
 import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
 import { earningId } from '../domain/money.ts'
-import { isRevealed, isTaskDone, joinedAfterLock } from '../domain/scoring.ts'
+import { boundsFor, isUsualSchedule, needsRetime, RETIME_NOTICE_MS, sameSchedule, scheduleOf } from '../domain/schedule.ts'
+import { isRevealed, isTaskDone, joinedAfterLock, judgesOf } from '../domain/scoring.ts'
 import { boundsDiffer, weekBounds, type WeekBounds } from '../domain/time.ts'
-import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
+import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId, WeekSchedule } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
-import { isMark, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
+import { isMark, toMonthly, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { earnedAtChange, earningRef, inBackground, keepsEarned, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
 import { requireUser } from './session.ts'
@@ -74,14 +76,22 @@ function spaceRef(spaceId: string) {
   return doc(getFirebase().db, 'spaces', spaceId)
 }
 
-export function weekRef(spaceId: string, weekId: WeekId) {
-  return doc(getFirebase().db, 'spaces', spaceId, 'weeks', weekId)
+/** A planning period: a week ('weeks') or a month's list ('monthly', SPEC §9.5). */
+export type PeriodColl = 'weeks' | 'monthly'
+
+export function periodRef(spaceId: string, coll: PeriodColl, id: string) {
+  return doc(getFirebase().db, 'spaces', spaceId, coll, id)
 }
 
-/** The stored timeline is more than an hour off the one the space's zone gives (see SPEC §1). */
+export function weekRef(spaceId: string, weekId: WeekId) {
+  return periodRef(spaceId, 'weeks', weekId)
+}
+
+/** The stored timeline is more than an hour off the one the space's zone gives on the week's own schedule (see
+ *  SPEC §1, §9.2): a retimed week follows its stored `schedule`, so it isn't flagged. */
 function mismatched(week: Week, weekId: WeekId, timezone: string): boolean {
   try {
-    return boundsDiffer(week, weekBounds(weekId, timezone))
+    return boundsDiffer(week, weekBounds(weekId, timezone, scheduleOf(week)))
   } catch {
     return false
   }
@@ -95,6 +105,15 @@ export function startWeek(spaceId: string, weekId: WeekId, uid: UID): Start<Week
   return (emit) => watchWeek(spaceId, weekId, uid, emit)
 }
 
+/** What a period listener gathers: the space, the period doc (null: none yet), plans, progress and reviews. */
+export interface PeriodParts {
+  space: Space
+  period: Week | null
+  plans: Record<UID, Plan>
+  progress: Record<UID, Progress>
+  reviews: Review[]
+}
+
 /**
  * Listens to one week: the space (its zone), the week doc, plans, progress and
  * reviews. Reviews follow the blind rule: only the user's own until the week is revealed, then
@@ -102,10 +121,41 @@ export function startWeek(spaceId: string, weekId: WeekId, uid: UID): Start<Week
  * deadlineAt, and a revealed week is never published with only the user's own reviews.
  */
 export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<WeekData>): () => void {
-  const ref = weekRef(spaceId, weekId)
+  return watchPeriod(
+    spaceId,
+    'weeks',
+    weekId,
+    uid,
+    (parts, boundsMismatch) => ({ spaceId, weekId, week: parts.period, plans: parts.plans, progress: parts.progress, reviews: parts.reviews, boundsMismatch }),
+    emit,
+    { mismatch: (space, week) => mismatched(week, weekId, space.timezone) },
+  )
+}
+
+/** How a period watch flags a skewed timeline; `watch` may listen to more (and call `republish` on news). */
+export interface MismatchCheck {
+  mismatch: (space: Space, period: Week) => boolean
+  watch?: (space: Space, republish: () => void) => () => void
+}
+
+/**
+ * Listens to one period (a week, or a month's list): the space, the period doc, plans, progress and reviews,
+ * with the blind rule (own reviews until revealed, then everyone's, switched live at the last submit and by
+ * timer at deadlineAt). A revealed period is never published with only the user's own reviews.
+ */
+export function watchPeriod<T>(
+  spaceId: string,
+  coll: PeriodColl,
+  id: string,
+  uid: UID,
+  build: (parts: PeriodParts, boundsMismatch: boolean) => T,
+  emit: Emit<T>,
+  check: MismatchCheck,
+): () => void {
+  const ref = periodRef(spaceId, coll, id)
   let space: Space | undefined
   let week: Week | null | undefined
-  /** The week as the server has it. A reveal seen only through our own pending submit would be denied. */
+  /** The period as the server has it. A reveal seen only through our own pending submit would be denied. */
   let weekConfirmed = false
   let plans: Record<UID, Plan> | undefined
   let progress: Record<UID, Progress> | undefined
@@ -118,25 +168,26 @@ export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<
 
   let reviewMode: 'mine' | 'all' | null = null
   let stopReviews = () => {}
+  let stopExtra = () => {}
   let timer: ReturnType<typeof setTimeout> | null = null
   let fullReadAllowedAt = 0
 
-  /** Revealed as scoring and the rules see it: every week member has submitted, or the deadline passed. */
+  /** Revealed as scoring and the rules see it: every period member has submitted, or the deadline passed. */
   const revealedHere = () => week != null && space !== undefined && isRevealed(week, now())
 
   const publish = () => {
     if (stopped) return
     if (week !== undefined && space !== undefined && plans && progress && reviews) {
-      // Scoring a revealed week from our own reviews alone gives wrong scores and false "didn't review"
+      // Scoring a revealed period from our own reviews alone gives wrong scores and false "didn't review"
       // points, so hold the last state until everyone's arrive. Only a denied full read (clock skew,
       // retrying) shows what we have.
       if (revealedHere() && reviewsScope !== 'all' && Date.now() >= fullReadAllowedAt) {
         if (!published) emit({ data: undefined, loading: error === null, error })
         return
       }
-      const boundsMismatch = week ? mismatched(week, weekId, space.timezone) : false
+      const boundsMismatch = week ? check.mismatch(space, week) : false
       published = true
-      emit({ data: { spaceId, weekId, week, plans, progress, reviews, boundsMismatch }, loading: false, error })
+      emit({ data: build({ space, period: week, plans, progress, reviews }, boundsMismatch), loading: false, error })
     } else {
       emit({ data: undefined, loading: error === null, error })
     }
@@ -192,11 +243,16 @@ export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<
       (snap) => {
         if (!snap.exists()) return fail(new Error(MSG.noAccess))
         const next = toSpace(snap)
-        const json = JSON.stringify([next.memberIds, next.leftAt, next.timezone])
+        const json = JSON.stringify([next.memberIds, next.leftAt, next.timezone, next.schedule ?? null])
         const changed = space === undefined || json !== spaceJson
+        const zoneChanged = space === undefined || space.timezone !== next.timezone || !sameSchedule(space.schedule, next.schedule)
         space = next
         spaceJson = json
         if (!changed) return
+        if (zoneChanged && check.watch) {
+          stopExtra()
+          stopExtra = check.watch(next, publish)
+        }
         syncReviews()
         publish()
       },
@@ -207,7 +263,7 @@ export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<
       { includeMetadataChanges: true },
       (snap) => {
         weekConfirmed = !snap.metadata.hasPendingWrites
-        const next = snap.exists() ? toWeek(snap, spaceId) : null
+        const next = snap.exists() ? (coll === 'monthly' ? toMonthly(snap, spaceId) : toWeek(snap, spaceId)) : null
         const json = JSON.stringify(next)
         const changed = week === undefined || json !== weekJson
         week = next
@@ -240,6 +296,7 @@ export function watchWeek(spaceId: string, weekId: WeekId, uid: UID, emit: Emit<
     stopped = true
     if (timer) clearTimeout(timer)
     stopReviews()
+    stopExtra()
     stops.forEach((stop) => stop())
   }
 }
@@ -261,13 +318,48 @@ function hasAll(snap: DocumentSnapshot | null, uids: UID[]): boolean {
   return Array.isArray(members) && uids.every((uid) => members.includes(uid))
 }
 
+/** A doc's `judges` exactly as stored (the rules compare lists as stored), or undefined without a list. */
+export function rawJudges(snap: DocumentSnapshot | null | undefined): string[] | undefined {
+  const judges: unknown = snap?.exists() ? snap.get('judges') : undefined
+  return Array.isArray(judges) && judges.every((j) => typeof j === 'string') ? (judges as string[]) : undefined
+}
+
+export function sameList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const x = a ?? []
+  const y = b ?? []
+  return x.length === y.length && x.every((v, i) => v === y[i])
+}
+
+/** A stored time exactly as stored (the rules compare it exactly), else the ms as a Timestamp. */
+export function storedTime(snap: DocumentSnapshot | null | undefined, field: string, fallbackMs: number): Timestamp {
+  const value: unknown = snap?.exists() ? snap.get(field) : undefined
+  return value instanceof Timestamp && value.toMillis() === fallbackMs ? value : Timestamp.fromMillis(fallbackMs)
+}
+
+/** The key part of a space's schedule and judges, for upkeep caches. */
+export function upkeepKey(space: Space): string {
+  const s = space.schedule
+  return `${s ? `${s.lock}/${s.reviewOpen}/${s.deadline}` : ''}|${(space.judges ?? []).join(',')}`
+}
+
+/** The week doc as the cache has it is already what the upkeep would make of it. */
+function upToDate(snap: DocumentSnapshot | null, space: Space, nowMs: number): boolean {
+  if (!snap?.exists() || !hasAll(snap, space.memberIds)) return false
+  const week = toWeek(snap, space.id)
+  if (nowMs >= week.lockAt) return true
+  return sameList(rawJudges(snap), space.judges) && needsRetime(space, week, nowMs) === null
+}
+
 /**
  * Makes sure the week exists and has every current space member while it is before lockAt, so
  * taking part never depends on who opened the app. Weeks nobody opened before lockAt stay inactive
- * (no doc). Best effort: callers ignore failures (offline, a lock that just passed).
+ * (no doc). Batch 2 (SPEC §9.2, §9.4): a week is created on the space's schedule (storing `schedule` unless it
+ * is the usual one) with its judges snapshot (unless nobody judges); an existing week that hasn't locked follows
+ * a change of times with a day's notice (retimed in its own write) and keeps its members and judges in step
+ * with the space. Best effort: callers ignore failures (offline, a lock that just passed).
  */
 export function ensureWeek(space: Space, weekId: WeekId): Promise<void> {
-  const key = `${space.id}|${weekId}|${[...space.memberIds].sort().join(',')}`
+  const key = `${space.id}|${weekId}|${[...space.memberIds].sort().join(',')}|${upkeepKey(space)}`
   if (filled.has(key)) return Promise.resolve()
   let pending = filling.get(key)
   if (!pending) {
@@ -281,42 +373,76 @@ export function ensureWeek(space: Space, weekId: WeekId): Promise<void> {
   return pending
 }
 
+/** Bounds as stored Timestamps. */
+function boundsData(b: WeekBounds): Record<'lockAt' | 'reviewOpenAt' | 'deadlineAt', Timestamp> {
+  return { lockAt: Timestamp.fromMillis(b.lockAt), reviewOpenAt: Timestamp.fromMillis(b.reviewOpenAt), deadlineAt: Timestamp.fromMillis(b.deadlineAt) }
+}
+
+/** `schedule` as a week or space stores it: absent for the usual times. */
+export function scheduleField(s: WeekSchedule): WeekSchedule | FieldValue {
+  return isUsualSchedule(s) ? deleteField() : { lock: s.lock, reviewOpen: s.reviewOpen, deadline: s.deadline }
+}
+
 async function fillWeek(space: Space, weekId: WeekId): Promise<void> {
   const ref = weekRef(space.id, weekId)
   const cached = await getDocFromCache(ref).catch(() => null)
-  if (hasAll(cached, space.memberIds)) return
-  const cachedLock = cached?.exists() ? toWeek(cached, space.id).lockAt : weekBounds(weekId, space.timezone).lockAt
+  if (upToDate(cached, space, now())) return
+  const cachedLock = cached?.exists() ? toWeek(cached, space.id).lockAt : boundsFor(space, weekId).lockAt
   if (now() >= cachedLock) return
+  /** One write at most (no rule branch allows a retime and a member sync together); true when it wrote. */
   const attempt = () =>
     runTransaction(getFirebase().db, async (tx) => {
       // The member list as the rules will see it: everyone who is in the space right now.
       const spaceSnap = await tx.get(spaceRef(space.id))
-      if (!spaceSnap.exists()) return
+      if (!spaceSnap.exists()) return false
       const fresh = toSpace(spaceSnap)
+      const judges = rawJudges(spaceSnap) ?? []
       const snap = await tx.get(ref)
+      const at = now()
       if (!snap.exists()) {
-        const bounds = weekBounds(weekId, fresh.timezone)
-        if (now() >= bounds.lockAt) return
-        tx.set(ref, {
+        const schedule = scheduleOf(fresh)
+        const bounds = weekBounds(weekId, fresh.timezone, schedule)
+        if (at >= bounds.lockAt) return false
+        // After a change of times no week can lock within a day of it (the rules refuse it).
+        if (fresh.scheduleNote && bounds.lockAt < fresh.scheduleNote.at + RETIME_NOTICE_MS) return false
+        const data: Record<string, unknown> = {
           startAt: Timestamp.fromMillis(bounds.startAt),
-          lockAt: Timestamp.fromMillis(bounds.lockAt),
-          reviewOpenAt: Timestamp.fromMillis(bounds.reviewOpenAt),
-          deadlineAt: Timestamp.fromMillis(bounds.deadlineAt),
+          ...boundsData(bounds),
           members: fresh.memberIds,
           submittedBy: [],
-        })
-        return
+        }
+        if (!isUsualSchedule(schedule)) data.schedule = { lock: schedule.lock, reviewOpen: schedule.reviewOpen, deadline: schedule.deadline }
+        if (judges.length > 0) data.judges = judges
+        tx.set(ref, data)
+        return false
       }
       const week = toWeek(snap, space.id)
-      if (now() >= week.lockAt) return
+      if (at >= week.lockAt) return false
+      const moved = needsRetime(fresh, week, at)
+      if (moved) {
+        tx.update(ref, { ...boundsData(moved), schedule: scheduleField(scheduleOf(fresh)) })
+        return true
+      }
       const missing = fresh.memberIds.filter((m) => !week.members.includes(m))
-      if (missing.length > 0) tx.update(ref, { members: arrayUnion(...missing) })
+      const stored = rawJudges(snap)
+      // A week without a snapshot in a space without judges stays as it is (older clients' shape).
+      const judgesDiffer = !sameList(stored, judges) && !(stored === undefined && judges.length === 0)
+      if (judgesDiffer) {
+        tx.update(ref, missing.length > 0 ? { members: arrayUnion(...missing), judges } : { judges })
+      } else if (missing.length > 0) {
+        tx.update(ref, { members: arrayUnion(...missing) })
+      }
+      return false
     })
+  const run = async () => {
+    // A retime goes alone; the members and judges follow in a second write.
+    if (await attempt()) await attempt()
+  }
   try {
-    await attempt()
+    await run()
   } catch {
     // Most likely a friend created the week at the same moment; the doc exists now, so this fills it.
-    await attempt()
+    await run()
   }
 }
 
@@ -340,7 +466,22 @@ export async function joinWeek(space: Space, weekId: WeekId): Promise<boolean> {
 async function boundsOf(space: Space, weekId: WeekId): Promise<WeekBounds> {
   const ref = weekRef(space.id, weekId)
   const snap = (await getDocFromCache(ref).catch(() => null)) ?? (await getDoc(ref).catch(() => null))
-  return snap?.exists() ? toWeek(snap, space.id) : weekBounds(weekId, space.timezone)
+  return snap?.exists() ? toWeek(snap, space.id) : boundsFor(space, weekId)
+}
+
+/** The week doc as this device has it (cache, else one read); null when there is none. */
+async function storedWeek(space: Space, weekId: WeekId): Promise<Week | null> {
+  const ref = weekRef(space.id, weekId)
+  const snap = (await getDocFromCache(ref).catch(() => null)) ?? (await getDoc(ref).catch(() => null))
+  return snap?.exists() ? toWeek(snap, space.id) : null
+}
+
+const JUDGING_WEEK = 'You’re judging this week, so there’s no list to plan.'
+
+/** Judges have no list (SPEC §9.4): the week's snapshot decides, else (no doc yet) the space's judges. */
+async function judgesWeek(space: Space, weekId: WeekId, uid: UID): Promise<boolean> {
+  const week = await storedWeek(space, weekId)
+  return week ? judgesOf(week).includes(uid) : (space.judges ?? []).includes(uid)
 }
 
 /** Why someone who is in the space isn't in this week. */
@@ -354,7 +495,7 @@ async function notInWeekMessage(space: Space, weekId: WeekId, uid: UID): Promise
     : "This week started without you. You're in from next week."
 }
 
-const MAX_TITLE = 120
+export const MAX_TITLE = 120
 const TOO_MANY_STEPS = `A task can have up to ${MAX_SUBTASKS} steps.`
 const LONG_TASK = `Keep each task under ${MAX_TITLE} characters.`
 const LONG_STEP = `Keep each step under ${MAX_TITLE} characters.`
@@ -365,7 +506,7 @@ function cleanSteps(task: Task): Task {
   return steps.length > 0 ? { id: task.id, title: task.title, subtasks: steps } : { id: task.id, title: task.title }
 }
 
-function cleanTasks(tasks: Task[]): Task[] {
+export function cleanTasks(tasks: Task[]): Task[] {
   // Blank rows are dropped; titles are otherwise stored as typed so autosave can't fight the cursor.
   // addedAt never comes along: before the lock nothing counts as added.
   const out = tasks.filter((t) => t.title.trim() !== '').map(cleanSteps)
@@ -403,7 +544,7 @@ async function localWeek(space: Space, weekId: WeekId, uid: UID): Promise<{ task
  * Ticks left by tasks and steps deleted before the lock (and the own key of a task that has steps
  * now), cleared only when a new tick would go over the cap: a full list of steps needs every key.
  */
-function staleTicks(local: { tasks?: Task[]; done?: Record<string, boolean> }, id: string): Record<string, FieldValue> {
+export function staleTicks(local: { tasks?: Task[]; done?: Record<string, boolean> }, id: string): Record<string, FieldValue> {
   const { tasks, done } = local
   if (!tasks || !done || Object.hasOwn(done, id) || Object.keys(done).length < MAX_TICKS) return {}
   const live = new Set(tasks.flatMap((t) => (t.subtasks?.length ? t.subtasks.map((step) => step.id) : [t.id])))
@@ -411,7 +552,7 @@ function staleTicks(local: { tasks?: Task[]; done?: Record<string, boolean> }, i
 }
 
 /** The task a check-off id belongs to: the task itself or the task holding that step. */
-function taskOf(tasks: Task[], id: string): Task | undefined {
+export function taskOf(tasks: Task[], id: string): Task | undefined {
   return tasks.find((t) => t.id === id) ?? tasks.find((t) => t.subtasks?.some((step) => step.id === id))
 }
 
@@ -424,6 +565,7 @@ export async function savePlan(space: Space, weekId: WeekId, tasks: Task[]): Pro
   try {
     if (now() >= (await boundsOf(space, weekId)).lockAt) throw new Error(MSG.closed)
     if (!(await joinWeek(space, weekId))) throw new Error(MSG.closed)
+    if (await judgesWeek(space, weekId, uid)) throw new Error(JUDGING_WEEK)
     before = (await localWeek(space, weekId, uid)).tasks
     await setDoc(ref, { tasks: clean.map(encodeTask), updatedAt: serverTimestamp() })
   } catch (e) {
@@ -466,9 +608,10 @@ export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewT
   try {
     const bounds = await boundsOf(space, weekId)
     if (now() < bounds.lockAt) throw new Error('Your list hasn’t locked yet. Add the task to it instead.')
-    if (now() >= bounds.reviewOpenAt) throw new Error('Adding tasks closes when reviews open on Friday.')
+    if (now() >= bounds.reviewOpenAt) throw new Error('Adding tasks closed when reviews opened.')
     if (!space.memberIds.includes(uid)) throw new Error('You’re no longer in this space.')
     if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
+    if (await judgesWeek(space, weekId, uid)) throw new Error(JUDGING_WEEK)
     await runTransaction(getFirebase().db, async (tx) => {
       const snap = await tx.get(ref)
       // Everything already stored goes back exactly as it is: the rules compare it item by item.
@@ -575,7 +718,7 @@ export async function submitReviews(space: Space, weekId: WeekId, reviews: { rev
   const uid = requireUser().uid
   if (reviews.some((r) => r.revieweeId === uid || !Object.values(r.marks).every(isMark))) throw new Error(MSG.generic)
   const bounds = await boundsOf(space, weekId)
-  if (now() < bounds.reviewOpenAt) throw new Error('Reviews open on Friday.')
+  if (now() < bounds.reviewOpenAt) throw new Error('Reviews haven’t opened yet.')
   if (now() >= bounds.deadlineAt) throw new Error(MSG.closed)
   const { db } = getFirebase()
   const ref = weekRef(space.id, weekId)

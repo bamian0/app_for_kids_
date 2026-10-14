@@ -14,8 +14,9 @@ export const HOUR = 3_600_000
 export const DAY = 24 * HOUR
 export const ts = (ms: number): Timestamp => Timestamp.fromMillis(ms)
 
-/** Registers the emulator lifecycle for one test file: fresh rules once, empty database per test. */
-export function useRulesEnv() {
+/** Registers the emulator lifecycle for one test file: fresh rules once, empty database per test.
+ *  `rules` replaces the published rules (calendar.test.ts runs them on a moved clock). */
+export function useRulesEnv(rules: string = RULES) {
   let env: RulesTestEnvironment
   const clients = new Map<string, Firestore>()
 
@@ -23,7 +24,7 @@ export function useRulesEnv() {
     env = await initializeTestEnvironment({
       projectId: 'demo-stakes',
       // `firebase emulators:exec` sets FIRESTORE_EMULATOR_HOST; otherwise assume the default port.
-      firestore: process.env.FIRESTORE_EMULATOR_HOST ? { rules: RULES } : { rules: RULES, host: '127.0.0.1', port: 8080 },
+      firestore: process.env.FIRESTORE_EMULATOR_HOST ? { rules } : { rules, host: '127.0.0.1', port: 8080 },
     })
   })
   afterAll(async () => {
@@ -53,7 +54,22 @@ export function useRulesEnv() {
     })
   }
 
-  return { db, seed }
+  /** Replaces the rules for the rest of this file (the measuring in budget.test.ts). Resolves to
+   *  false when the emulator refuses them (e.g. a rule too complex to compile). */
+  async function loadRules(next: string): Promise<boolean> {
+    const host = process.env.FIRESTORE_EMULATOR_HOST ?? '127.0.0.1:8080'
+    const res = await fetch(`http://${host}/emulator/v1/projects/demo-stakes:securityRules`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rules: { files: [{ name: 'firestore.rules', content: next }] } }),
+    })
+    return res.ok
+  }
+
+  /** Empties the database (between measuring attempts). */
+  const clear = () => env.clearFirestore()
+
+  return { db, seed, loadRules, clear }
 }
 
 function isPermissionDenied(e: unknown): boolean {
@@ -185,3 +201,99 @@ export function weekDoc(phase: Phase, members: string[], submittedBy: string[] =
     submittedBy,
   }
 }
+
+// ---------- batch 2 fixtures ----------
+
+/** The published rules, for files that run a variant of them. */
+export const PUBLISHED_RULES = RULES
+
+/** The rules with "now" moved: in validNewWeek, retimesWeek, validNewMonthly and retimesMonthly,
+ *  request.time becomes the space doc's `testNow` when it has one (calendar.test.ts). */
+export function movedClock(rules: string): string {
+  let out = rules
+  for (const fn of ['validNewWeek', 'retimesWeek', 'validNewMonthly', 'retimesMonthly']) {
+    const start = out.indexOf(`function ${fn}(`)
+    const end = out.indexOf('\n      }\n', start)
+    if (start < 0 || end < 0) throw new Error(`${fn} not found in firestore.rules`)
+    const body = out.slice(start, end)
+    const moved = body.replaceAll('request.time', "space.get('testNow', request.time)")
+    if (moved === body) throw new Error(`${fn} doesn't read request.time any more`)
+    out = out.slice(0, start) + moved + out.slice(end)
+  }
+  return out
+}
+
+export type Schedule = { lock: number; reviewOpen: number; deadline: number }
+/** Lists lock Monday at midnight, reviews open Thursday at midnight, due Friday at midnight. */
+export const USUAL: Schedule = { lock: 1440, reviewOpen: 5760, deadline: 7200 }
+/** SPEC §9.2's example: lists lock Monday at 8:00 PM, reviews open Thursday at midnight, due Saturday at noon. */
+export const CUSTOM: Schedule = { lock: 1200, reviewOpen: 5760, deadline: 7920 }
+
+/** The instant `minutes` after the week's Monday 00:00 on the zone's wall clock (whole days through
+ *  startOf('day'), the rest through set({hour, minute}), like the domain's momentAt). */
+export function momentAt(weekId: string, zone: string, minutes: number): number {
+  const days = Math.floor(minutes / 1440)
+  const rest = minutes - days * 1440
+  const day = DateTime.fromISO(weekId, { zone }).plus({ days }).startOf('day')
+  return (rest === 0 ? day : day.set({ hour: Math.floor(rest / 60), minute: rest % 60 })).toMillis()
+}
+
+/** Monday (ISO week start, local date) of the week containing now in `zone`, shifted by `weeks`. */
+export function mondayOf(zone: string, weeks = 0): string {
+  return DateTime.now().setZone(zone).startOf('week').plus({ weeks }).toISODate()!
+}
+
+/** A week doc on `schedule` in `zone`, as the data layer creates it (it stores `schedule` only when it
+ *  isn't the usual one; pass `extra` to add or override keys). */
+export function weekOn(members: string[], weekId: string, zone: string, schedule: Schedule = USUAL, extra: DocumentData = {}): DocumentData {
+  const usual = schedule.lock === USUAL.lock && schedule.reviewOpen === USUAL.reviewOpen && schedule.deadline === USUAL.deadline
+  return {
+    startAt: ts(momentAt(weekId, zone, 0)),
+    lockAt: ts(momentAt(weekId, zone, schedule.lock)),
+    reviewOpenAt: ts(momentAt(weekId, zone, schedule.reviewOpen)),
+    deadlineAt: ts(momentAt(weekId, zone, schedule.deadline)),
+    members,
+    submittedBy: [],
+    ...(usual ? {} : { schedule }),
+    ...extra,
+  }
+}
+
+/** A month's weeks (SPEC §9.5): the week holding its first Friday, the next one (whose lock the list
+ *  shares) and the week holding its last Friday (whose review window it shares). */
+export function monthWeeks(monthId: string): { first: string; lock: string; last: string } {
+  const [y, m] = monthId.split('-').map(Number) as [number, number]
+  const firstMonday = (year: number, month: number) => {
+    const d = DateTime.utc(year, month, 1)
+    return d.plus({ days: ((12 - d.weekday) % 7) - 4 })
+  }
+  const first = firstMonday(y, m)
+  const next = m === 12 ? firstMonday(y + 1, 1) : firstMonday(y, m + 1)
+  return { first: first.toISODate()!, lock: first.plus({ days: 7 }).toISODate()!, last: next.minus({ days: 7 }).toISODate()! }
+}
+
+/** A monthly list as ensureMonthly creates it: bounds computed on `schedule` in `zone`. */
+export function monthlyOn(monthId: string, zone: string, schedule: Schedule, members: string[], judges: string[] = [], extra: DocumentData = {}): DocumentData {
+  const w = monthWeeks(monthId)
+  return {
+    startAt: ts(momentAt(w.first, zone, 0)),
+    lockAt: ts(momentAt(w.lock, zone, schedule.lock)),
+    reviewOpenAt: ts(momentAt(w.last, zone, schedule.reviewOpen)),
+    deadlineAt: ts(momentAt(w.last, zone, schedule.deadline)),
+    members,
+    judges,
+    submittedBy: [],
+    ...extra,
+  }
+}
+
+/** A monthly list doc whose bounds put `now` in the given phase, like weekDoc. */
+export function monthlyDoc(phase: Phase, members: string[], judges: string[] = [], submittedBy: string[] = []): DocumentData {
+  return { ...weekDoc(phase, members, submittedBy), judges }
+}
+
+/** 'YYYY-MM' of an instant (UTC), like the rules' monthStr. */
+export const monthStr = (ms: number): string => DateTime.fromMillis(ms, { zone: 'utc' }).toFormat('yyyy-MM')
+/** The month `n` months after `monthId`. */
+export const addMonths = (monthId: string, n: number): string =>
+  DateTime.fromISO(`${monthId}-01`, { zone: 'utc' }).plus({ months: n }).toFormat('yyyy-MM')

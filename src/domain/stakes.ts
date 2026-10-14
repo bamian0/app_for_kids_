@@ -271,7 +271,9 @@ export function agreeOutcome(
   const pals = unique([...friends, me]).filter((f) => f !== subject)
   const before = memberTerms(space, subject, pals, stakes, house, Infinity)[me]
   const latest = Math.max(-Infinity, ...pals.flatMap((f) => agreementsOf(own, f).map((a) => a.at)))
-  const at = Math.max(nowMs, latest + 1)
+  // The server stamps my Agree after every earlier one and after I joined, whatever this device's clock says.
+  const joined = space.joinedAt[me]
+  const at = Math.max(nowMs, latest + 1, typeof joined === 'number' ? joined : -Infinity)
   const next = nextAgreement(own.agreed[me], terms)
   const withMine: Record<UID, MemberStakes> = next ? { ...stakes, [subject]: { ...own, agreed: { ...own.agreed, [me]: { at, ...next } } } } : { ...stakes }
   const after = memberTerms(space, subject, pals, withMine, house, Infinity)[me]

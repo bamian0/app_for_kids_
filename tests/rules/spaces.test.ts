@@ -4,7 +4,10 @@ import {
   arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, query, serverTimestamp,
   setDoc, Timestamp, updateDoc, where, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
-import { allDenied, allowed, CODE, DAY, denied, inviteDoc, newSpace, OTHER_CODE, spaceDoc, ts, useRulesEnv } from './helpers.ts'
+import {
+  addMonths, allDenied, allowed, CODE, DAY, denied, HOUR, inviteDoc, monthStr, monthWeeks, newSpace, OTHER_CODE, spaceDoc, ts,
+  useRulesEnv, USUAL,
+} from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
 
@@ -56,6 +59,14 @@ const twoSpaces = () =>
     [`invites/${CODE}`]: inviteDoc('s1', 'alice'),
     [`invites/${OTHER_CODE}`]: inviteDoc('s2', 'zoe'),
   })
+
+/** Freezes for this and last UTC month (the months the rules check on a house-stakes edit), made
+ *  after either could complete, so a stakes edit finds nothing to freeze first. */
+const frozenRecently = (spaceId = 's1') => {
+  const later = ts(Date.now() + DAY)
+  const stakes = { reward: 'Dinner on me', penalty: 'You buy coffee for a week', createdAt: later }
+  return seed({ [`spaces/${spaceId}/months/${monthStr(Date.now())}`]: stakes, [`spaces/${spaceId}/months/${addMonths(monthStr(Date.now()), -1)}`]: stakes })
+}
 
 describe('spaces: create', () => {
   test('createSpace writes the space and its invite in one batch', async () => {
@@ -132,9 +143,17 @@ describe('spaces: read', () => {
 })
 
 describe('spaces: update', () => {
-  test('a member edits name, reward and penalty', async () => {
+  test('anyone renames; only the owner changes the house stakes (SPEC §9.7)', async () => {
     await twoSpaces()
-    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 2', reward: 'Sushi', penalty: 'Dishes' }))
+    await frozenRecently()
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 2' }))
+    // An older client sends all three; unchanged stakes aren't a change.
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 3', reward: 'Dinner on me', penalty: 'You buy coffee for a week' }))
+    await allDenied({
+      'a member changes the reward': () => updateDoc(doc(db('bob'), 'spaces/s1'), { reward: 'Sushi' }),
+      'a member changes both, with a rename': () => updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 4', reward: 'Sushi', penalty: 'Dishes' }),
+    })
+    await allowed(updateDoc(doc(db('alice'), 'spaces/s1'), { name: 'Crew 5', reward: 'Sushi', penalty: 'Dishes' }))
   })
 
   test('other edits are rejected', async () => {
@@ -371,7 +390,8 @@ describe('invites/{code}', () => {
 
   test('a member refreshes the invite to mirror the space\'s name and stakes', async () => {
     await twoSpaces()
-    await updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Film crew II', reward: 'Sushi' })
+    await frozenRecently()
+    await updateDoc(doc(db('alice'), 'spaces/s1'), { name: 'Film crew II', reward: 'Sushi' })
     await allowed(updateDoc(doc(db('bob'), `invites/${CODE}`), { spaceName: 'Film crew II', reward: 'Sushi' }))
     // An invite from before the stakes were mirrored gains them.
     await seed({ [`invites/${CODE}`]: (({ reward: _r, penalty: _p, ...rest }) => rest)(inviteDoc('s1', 'alice')) })
@@ -394,5 +414,125 @@ describe('invites/{code}', () => {
     await allowed(deleteDoc(doc(db('bob'), `invites/${CODE}`)))
     await seed({ [`invites/${CODE}`]: inviteDoc('s1', 'alice'), 'spaces/s1': spaceDoc(['bob']) })
     await allowed(deleteDoc(doc(db('alice'), `invites/${CODE}`)))
+  })
+})
+
+describe('house stakes (SPEC §9.7)', () => {
+  const C = monthStr(Date.now())
+  const P = addMonths(C, -1)
+  const OLD = { reward: 'Dinner on me', penalty: 'You buy coffee for a week' }
+  const lastWeek = (m: string) => `spaces/s1/weeks/${monthWeeks(m).last}`
+  /** The month's last week as stored, ending at `deadlineMs` (the rules read its deadline). */
+  const weekEnding = (deadlineMs: number): DocumentData => ({
+    startAt: ts(deadlineMs - 5 * DAY), lockAt: ts(deadlineMs - 4 * DAY), reviewOpenAt: ts(deadlineMs - DAY), deadlineAt: ts(deadlineMs),
+    members: ['alice', 'bob'], submittedBy: [],
+  })
+  const note = (by = 'alice', extra: DocumentData = {}) => ({ stakesNote: { by, at: serverTimestamp(), ...extra } })
+  const change = (fs: Firestore, extra: DocumentData = {}) => updateDoc(doc(fs, 'spaces/s1'), { reward: 'Sushi', penalty: 'Dishes', ...extra })
+  const freezeIn = (batch: ReturnType<typeof writeBatch>, fs: Firestore, m: string) =>
+    batch.set(doc(fs, `spaces/s1/months/${m}`), { ...OLD, createdAt: serverTimestamp() })
+  /** The owner's edit as updateSpace writes it: freezes first, then the space with its note, then the invite. */
+  function ownerEdit(freezes: string[] = [], withNote = true) {
+    const alice = db('alice')
+    const batch = writeBatch(alice)
+    for (const m of freezes) freezeIn(batch, alice, m)
+    batch.update(doc(alice, 'spaces/s1'), { reward: 'Sushi', penalty: 'Dishes', ...(withNote ? note() : {}) })
+    batch.update(doc(alice, `invites/${CODE}`), { reward: 'Sushi', penalty: 'Dishes' })
+    return batch.commit()
+  }
+  /** Mid-month: last month complete (its last week ended 2 days ago), this month in progress. */
+  async function setup(space: DocumentData = {}, docs: Record<string, DocumentData> = {}) {
+    await seed({
+      'spaces/s1': spaceDoc(['alice', 'bob'], { createdAt: ts(Date.now() - 90 * DAY), ...space }),
+      [`invites/${CODE}`]: inviteDoc('s1', 'alice'),
+      [lastWeek(P)]: weekEnding(Date.now() - 2 * DAY),
+      [lastWeek(C)]: weekEnding(Date.now() + 3 * DAY),
+      ...docs,
+    })
+  }
+  const frozenAt = (createdAtMs: number) => ({ ...OLD, createdAt: ts(createdAtMs) })
+
+  test('the owner\'s change carries a note saying who and when; an older client\'s carries none', async () => {
+    await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY) })
+    await allowed(change(db('alice'), note()))
+    await allowed(change(db('alice'), { reward: 'Tacos' }))
+    await allDenied({
+      'a note without a stakes change': () => updateDoc(doc(db('alice'), 'spaces/s1'), note()),
+      'a note with a rename only': () => updateDoc(doc(db('alice'), 'spaces/s1'), { name: 'Crew', ...note() }),
+      'a note by someone else': () => change(db('alice'), { reward: 'Ramen', ...note('bob') }),
+      'a note at a client time': () => change(db('alice'), { reward: 'Ramen', stakesNote: { by: 'alice', at: Timestamp.now() } }),
+      'a note with an extra key': () => change(db('alice'), { reward: 'Ramen', ...note('alice', { why: 'cheaper' }) }),
+      'the note deleted': () => change(db('alice'), { reward: 'Ramen', stakesNote: deleteField() }),
+      'a member\'s change with a note': () => change(db('bob'), { reward: 'Ramen', ...note('bob') }),
+      'a member\'s note alone': () => updateDoc(doc(db('bob'), 'spaces/s1'), note('bob')),
+    })
+  })
+
+  test('the owner\'s change and the invite\'s copy in one batch', async () => {
+    await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY) })
+    await allowed(ownerEdit())
+    expect((await getDoc(doc(db('bob'), `invites/${CODE}`))).data()).toMatchObject({ reward: 'Sushi', penalty: 'Dishes' })
+  })
+
+  test('a finished month is frozen first: in the same batch, or before', async () => {
+    await setup()
+    await denied(ownerEdit())
+    await denied(ownerEdit([C]))
+    await allowed(ownerEdit([P]))
+    expect((await getDoc(doc(db('bob'), `spaces/s1/months/${P}`))).data()).toMatchObject(OLD)
+    // Already frozen at its completion.
+    await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY) })
+    await allowed(ownerEdit())
+    // A rename never needs a freeze.
+    await setup()
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew' }))
+  })
+
+  test('the previous app\'s early freeze of this month doesn\'t count; re-freezing it in the batch does', async () => {
+    // This month ('2026-10' or later) has just completed; the previous app froze it at its first lock.
+    await setup({}, {
+      [`spaces/s1/months/${P}`]: frozenAt(Date.now() - 20 * DAY),
+      [lastWeek(C)]: weekEnding(Date.now() - HOUR),
+      [`spaces/s1/months/${C}`]: { reward: 'Old dinner', penalty: 'Old coffee', createdAt: ts(Date.now() - 20 * DAY) },
+    })
+    await denied(ownerEdit())
+    await allowed(ownerEdit([C]))
+    expect((await getDoc(doc(db('bob'), `spaces/s1/months/${C}`))).data()).toMatchObject(OLD)
+  })
+
+  test.runIf(P < '2026-10')('an early freeze of a month before 2026-10 counts', async () => {
+    await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - 40 * DAY) })
+    await allowed(ownerEdit())
+  })
+
+  test('without a week doc, the computed deadline plus an hour decides', async () => {
+    // Last month has no week docs; its deadline, computed from the space's offset, is moved around now.
+    const lastMonday = Date.parse(`${monthWeeks(P).last}T00:00:00Z`)
+    const offsetFor = (completeAtMs: number) => Math.round((lastMonday - completeAtMs) / 60_000) + USUAL.deadline
+    const noLastWeek = (completeAtMs: number) =>
+      seed({
+        'spaces/s1': spaceDoc(['alice', 'bob'], { createdAt: ts(Date.now() - 90 * DAY), utcOffsetMin: offsetFor(completeAtMs) }),
+        [`invites/${CODE}`]: inviteDoc('s1', 'alice'),
+        [lastWeek(C)]: weekEnding(Date.now() + 3 * DAY),
+      })
+    // Complete half an hour ago: within the hour of slack, the freeze isn't required yet (months.test.ts
+    // shows it is already allowed).
+    await noLastWeek(Date.now() - 30 * 60_000)
+    await allowed(ownerEdit())
+    // Complete for more than an hour: it is.
+    await noLastWeek(Date.now() - 2 * HOUR)
+    await denied(ownerEdit())
+    await allowed(ownerEdit([P]))
+  })
+
+  test('a space created this month has no last month to freeze', async () => {
+    const startOfMonth = Date.parse(`${C}-01T00:00:00Z`)
+    await setup({ createdAt: ts(Math.max(startOfMonth + 60_000, Date.now() - HOUR)) })
+    await allowed(ownerEdit())
+  })
+
+  test('mid-month, nothing needs freezing', async () => {
+    await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY) })
+    await allowed(ownerEdit([], false))
   })
 })

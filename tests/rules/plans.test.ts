@@ -76,9 +76,17 @@ describe('plans', () => {
     })
   })
 
+  test('a judge of the week has no list (SPEC §9.4)', async () => {
+    await seed({ 'spaces/s1': spaceDoc(['alice', 'bob', 'carol'], { judges: ['bob'] }), 'spaces/s1/weeks/W': { ...weekDoc('planning', ['alice', 'bob']), judges: ['bob'] } })
+    await denied(setDoc(planRef(db('bob'), 'bob'), plan()))
+    await denied(deleteDoc(planRef(db('bob'), 'bob')))
+    await allowed(setDoc(planRef(db('alice'), 'alice'), plan()))
+  })
+
   test('joining the week and saving a full plan in one batch stays within rule limits', async () => {
     // 25 tasks of 8 steps, every id and title at its longest: the most a plan write can ask of the
-    // 1000-expression limit (the emulator enforces it).
+    // 1000-expression limit (the emulator enforces it). Measured with batch 2's judge check in
+    // canPlan: ~895 expressions, ~105 of headroom (budget.test.ts has the table and its monthly twin).
     await setup('planning')
     const carol = db('carol')
     const batch = writeBatch(carol)

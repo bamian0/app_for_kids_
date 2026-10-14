@@ -1,20 +1,30 @@
 import { describe, expect, it } from 'vitest'
+import { DateTime } from 'luxon'
 import {
   addMonths,
   addWeeks,
   boundsDiffer,
+  DEFAULT_SCHEDULE,
+  firstMonthOf,
   formatCountdown,
   formatMonth,
   formatWeekRange,
+  isMonthlyReviewWeek,
+  lastCompleteMonthCandidate,
   localParts,
+  momentAt,
   monthCompleteAt,
   monthIdFor,
   monthIdForWeek,
+  monthlyBounds,
+  monthlyWeeks,
   utcOffsetMinutes,
+  WEEK_MINUTES,
   weekBounds,
   weekIdFor,
   weekIdsInMonth,
   weekPhase,
+  type WeekBounds,
 } from './time.ts'
 
 const at = (iso: string) => Date.parse(iso)
@@ -369,5 +379,240 @@ describe('formatting', () => {
   it('formatMonth', () => {
     expect(formatMonth('2026-10')).toBe('October 2026')
     expect(formatMonth('2027-01')).toBe('January 2027')
+  })
+})
+
+// ---------- Batch 2 (SPEC §9.2, §9.5, §9.8) ----------
+
+/** weekBounds exactly as it was before batch 2: whole local days through startOf('day'). The usual schedule must
+ *  give this, byte for byte, in every zone. */
+function legacyWeekBounds(weekId: string, tz: string): WeekBounds {
+  const date = DateTime.fromISO(weekId, { zone: 'utc' })
+  const monday = DateTime.fromObject({ year: date.year, month: date.month, day: date.day }, { zone: tz })
+  const dayStart = (days: number) => monday.plus({ days }).startOf('day').toMillis()
+  return { startAt: dayStart(0), lockAt: dayStart(1), reviewOpenAt: dayStart(4), deadlineAt: dayStart(5) }
+}
+
+const iso = (ms: number) => new Date(ms).toISOString()
+
+describe('the usual schedule is unchanged', () => {
+  const zones = [
+    'Europe/Berlin', 'America/Los_Angeles', 'Australia/Sydney', 'Asia/Kolkata', 'America/Santiago', 'Asia/Beirut', 'Australia/Lord_Howe',
+    'Pacific/Kiritimati', 'Pacific/Chatham', 'Africa/Cairo', 'America/Asuncion', 'Asia/Tehran', 'America/New_York', 'Europe/London', 'UTC',
+  ]
+
+  it('DEFAULT_SCHEDULE and WEEK_MINUTES', () => {
+    expect(DEFAULT_SCHEDULE).toEqual({ lock: 1440, reviewOpen: 5760, deadline: 7200 })
+    expect(Object.isFrozen(DEFAULT_SCHEDULE)).toBe(true)
+    expect(WEEK_MINUTES).toBe(7 * 1440)
+  })
+
+  it.each(zones)('weekBounds with and without the usual schedule equals the pre-batch-2 output in %s (2026–2027)', (tz) => {
+    for (let w = '2026-01-05'; w < '2028-01-01'; w = addWeeks(w, 1)) {
+      const legacy = legacyWeekBounds(w, tz)
+      expect(weekBounds(w, tz)).toEqual(legacy)
+      expect(weekBounds(w, tz, DEFAULT_SCHEDULE)).toEqual(legacy)
+      expect(weekBounds(w, tz, { lock: 1440, reviewOpen: 5760, deadline: 7200 })).toEqual(legacy)
+      // Whole days of momentAt are those same local day starts, the next Monday included.
+      expect(momentAt(w, tz, 0)).toBe(legacy.startAt)
+      expect(momentAt(w, tz, WEEK_MINUTES)).toBe(legacyWeekBounds(addWeeks(w, 1), tz).startAt)
+    }
+  })
+
+  it.each(zones)('monthCompleteAt without a schedule or a stored week equals the pre-batch-2 output in %s', (tz) => {
+    for (let m = '2026-01'; m < '2028-01'; m = addMonths(m, 1)) {
+      const ids = weekIdsInMonth(m)
+      expect(monthCompleteAt(m, tz)).toBe(legacyWeekBounds(ids[ids.length - 1], tz).deadlineAt)
+    }
+  })
+})
+
+describe('momentAt (wall-clock minutes after Monday 00:00)', () => {
+  it('times of day on the space clock', () => {
+    // Monday at 8:00 PM, Friday at 6:00 PM, Saturday at noon (Berlin, summer time until Oct 25).
+    expect(iso(momentAt('2026-10-12', 'Europe/Berlin', 1200))).toBe('2026-10-12T18:00:00.000Z')
+    expect(iso(momentAt('2026-10-12', 'Europe/Berlin', 4 * 1440 + 1080))).toBe('2026-10-16T16:00:00.000Z')
+    expect(iso(momentAt('2026-10-12', 'Europe/Berlin', 5 * 1440 + 720))).toBe('2026-10-17T10:00:00.000Z')
+    // After the change to winter time inside the week (Sunday Oct 25), the same wall clock is an hour later in UTC.
+    expect(iso(momentAt('2026-10-19', 'Europe/Berlin', 6 * 1440 + 720))).toBe('2026-10-25T11:00:00.000Z')
+    expect(iso(momentAt('2026-10-12', 'Asia/Kolkata', 30))).toBe('2026-10-11T19:00:00.000Z')
+    expect(iso(momentAt('2026-10-12', 'Australia/Lord_Howe', 1470))).toBe(iso(DateTime.fromISO('2026-10-13T00:30', { zone: 'Australia/Lord_Howe' }).toMillis()))
+  })
+
+  it('a time in a spring-forward gap moves forward (New York, 2026-03-08 02:30 → 03:30)', () => {
+    // Sunday of the week of Monday 2026-03-02, 02:30 local doesn't exist.
+    expect(iso(momentAt('2026-03-02', 'America/New_York', 6 * 1440 + 150))).toBe('2026-03-08T07:30:00.000Z')
+    // 01:30 is still before the gap (EST); 03:30 after it (EDT): the gap time lands on 03:30 too.
+    expect(iso(momentAt('2026-03-02', 'America/New_York', 6 * 1440 + 90))).toBe('2026-03-08T06:30:00.000Z')
+    expect(iso(momentAt('2026-03-02', 'America/New_York', 6 * 1440 + 210))).toBe('2026-03-08T07:30:00.000Z')
+  })
+
+  it('an ambiguous fall-back time takes its first occurrence (New York, 2026-11-01 01:30 → −04:00)', () => {
+    expect(iso(momentAt('2026-10-26', 'America/New_York', 6 * 1440 + 90))).toBe('2026-11-01T05:30:00.000Z')
+    // 02:30 is after the repeat (EST).
+    expect(iso(momentAt('2026-10-26', 'America/New_York', 6 * 1440 + 150))).toBe('2026-11-01T07:30:00.000Z')
+  })
+
+  it('a skipped midnight (Santiago, 2026-09-06 starts at 01:00): the end of Saturday is the first instant of Sunday', () => {
+    // Clocks jump from Saturday 24:00 (−04) to Sunday 01:00 (−03).
+    const saturdayMidnight = momentAt('2026-08-31', 'America/Santiago', 6 * 1440)
+    expect(iso(saturdayMidnight)).toBe('2026-09-06T04:00:00.000Z')
+    expect(saturdayMidnight).toBe(DateTime.fromISO('2026-09-06', { zone: 'America/Santiago' }).startOf('day').toMillis())
+    // Sunday 00:30 is in the gap: it moves forward to 01:30.
+    expect(iso(momentAt('2026-08-31', 'America/Santiago', 6 * 1440 + 30))).toBe('2026-09-06T04:30:00.000Z')
+    // A schedule whose reviews are due Saturday at midnight that week: due at that first instant of Sunday.
+    expect(weekBounds('2026-08-31', 'America/Santiago', { lock: 1440, reviewOpen: 5760, deadline: 6 * 1440 }).deadlineAt).toBe(saturdayMidnight)
+  })
+
+  it('minutes below 0 and from WEEK_MINUTES on roll into the neighbouring weeks', () => {
+    expect(iso(momentAt('2026-10-12', 'UTC', -60))).toBe('2026-10-11T23:00:00.000Z')
+    expect(momentAt('2026-10-12', 'Europe/Berlin', -1440)).toBe(momentAt('2026-10-05', 'Europe/Berlin', 6 * 1440))
+    expect(momentAt('2026-10-12', 'Europe/Berlin', -30)).toBe(momentAt('2026-10-05', 'Europe/Berlin', WEEK_MINUTES - 30))
+    expect(momentAt('2026-10-12', 'Europe/Berlin', WEEK_MINUTES)).toBe(weekBounds('2026-10-19', 'Europe/Berlin').startAt)
+    expect(momentAt('2026-10-12', 'Europe/Berlin', WEEK_MINUTES + 1440)).toBe(weekBounds('2026-10-19', 'Europe/Berlin').lockAt)
+    expect(momentAt('2026-10-12', 'Europe/Berlin', WEEK_MINUTES + 90)).toBe(momentAt('2026-10-19', 'Europe/Berlin', 90))
+  })
+
+  it('rejects minutes that aren’t a number', () => {
+    expect(() => momentAt('2026-10-12', 'UTC', Number.NaN)).toThrow(RangeError)
+    expect(() => momentAt('2026-10-12', 'UTC', Infinity)).toThrow(RangeError)
+    expect(() => momentAt('2026-13-12', 'UTC', 0)).toThrow(RangeError)
+  })
+
+  it('weekBounds on a custom schedule', () => {
+    // Lists lock Monday at 8:00 PM, reviews open Thursday at midnight and are due Saturday at noon.
+    const b = weekBounds('2026-10-12', 'Europe/Berlin', { lock: 1200, reviewOpen: 5760, deadline: 7920 })
+    expect(iso(b.startAt)).toBe('2026-10-11T22:00:00.000Z')
+    expect(iso(b.lockAt)).toBe('2026-10-12T18:00:00.000Z')
+    expect(iso(b.reviewOpenAt)).toBe('2026-10-15T22:00:00.000Z')
+    expect(iso(b.deadlineAt)).toBe('2026-10-17T10:00:00.000Z')
+    // The earliest lock (Sunday at midnight, m = 0) is the week's start; the latest deadline the next Monday.
+    const edge = weekBounds('2026-10-12', 'Europe/Berlin', { lock: 0, reviewOpen: 5760, deadline: WEEK_MINUTES })
+    expect(edge.lockAt).toBe(edge.startAt)
+    expect(edge.deadlineAt).toBe(weekBounds('2026-10-19', 'Europe/Berlin').startAt)
+  })
+})
+
+describe('monthCompleteAt with a schedule and a stored week', () => {
+  it('computed on the schedule without a doc; the stored deadline when given', () => {
+    const saturdayNoon = { lock: 1440, reviewOpen: 5760, deadline: 7920 }
+    expect(iso(monthCompleteAt('2026-10', 'Europe/Berlin', saturdayNoon))).toBe('2026-10-31T11:00:00.000Z')
+    const stored = { deadlineAt: Date.parse('2026-10-31T09:30:00Z') }
+    expect(monthCompleteAt('2026-10', 'Europe/Berlin', saturdayNoon, stored)).toBe(stored.deadlineAt)
+    expect(monthCompleteAt('2026-10', 'Europe/Berlin', undefined, stored)).toBe(stored.deadlineAt)
+    expect(monthCompleteAt('2026-10', 'Europe/Berlin', DEFAULT_SCHEDULE, null)).toBe(weekBounds('2026-10-26', 'Europe/Berlin').deadlineAt)
+  })
+})
+
+describe('monthly lists: monthlyWeeks, monthlyBounds, isMonthlyReviewWeek', () => {
+  it('the first week, the second (its lock) and the last, for months starting on any day', () => {
+    // The 1st on a Thursday (5 weeks), a Monday, a Friday, a Saturday, a Sunday; across New Year; a 4-week February.
+    expect(monthlyWeeks('2026-10')).toEqual({ first: '2026-09-28', lock: '2026-10-05', last: '2026-10-26' })
+    expect(monthlyWeeks('2026-06')).toEqual({ first: '2026-06-01', lock: '2026-06-08', last: '2026-06-22' })
+    expect(monthlyWeeks('2026-05')).toEqual({ first: '2026-04-27', lock: '2026-05-04', last: '2026-05-25' })
+    expect(monthlyWeeks('2026-08')).toEqual({ first: '2026-08-03', lock: '2026-08-10', last: '2026-08-24' })
+    expect(monthlyWeeks('2026-11')).toEqual({ first: '2026-11-02', lock: '2026-11-09', last: '2026-11-23' })
+    expect(monthlyWeeks('2027-01')).toEqual({ first: '2026-12-28', lock: '2027-01-04', last: '2027-01-25' })
+    expect(monthlyWeeks('2027-02')).toEqual({ first: '2027-02-01', lock: '2027-02-08', last: '2027-02-22' })
+    expect(weekIdsInMonth('2027-02')).toHaveLength(4)
+    expect(weekIdsInMonth('2026-10')).toHaveLength(5)
+  })
+
+  it('usual times, October 2026 in Berlin: Mon Sep 28 00:00; Tue Oct 6 00:00; Fri Oct 30 00:00 → Sat Oct 31 00:00', () => {
+    const b = monthlyBounds('2026-10', (w) => weekBounds(w, 'Europe/Berlin'))
+    expect({ startAt: iso(b.startAt), lockAt: iso(b.lockAt), reviewOpenAt: iso(b.reviewOpenAt), deadlineAt: iso(b.deadlineAt) }).toEqual({
+      startAt: '2026-09-27T22:00:00.000Z',
+      lockAt: '2026-10-05T22:00:00.000Z',
+      // Winter time from Oct 25.
+      reviewOpenAt: '2026-10-29T23:00:00.000Z',
+      deadlineAt: '2026-10-30T23:00:00.000Z',
+    })
+  })
+
+  it('Los Angeles in November (DST ended Nov 1) and Berlin in March, on a custom schedule', () => {
+    const la = monthlyBounds('2026-11', (w) => weekBounds(w, 'America/Los_Angeles'))
+    expect([iso(la.startAt), iso(la.lockAt), iso(la.reviewOpenAt), iso(la.deadlineAt)]).toEqual([
+      '2026-11-02T08:00:00.000Z',
+      '2026-11-10T08:00:00.000Z',
+      '2026-11-27T08:00:00.000Z',
+      '2026-11-28T08:00:00.000Z',
+    ])
+    const s = { lock: 1200, reviewOpen: 4 * 1440 + 1080, deadline: 6 * 1440 }
+    const berlin = monthlyBounds('2027-03', (w) => weekBounds(w, 'Europe/Berlin', s))
+    expect([iso(berlin.startAt), iso(berlin.lockAt), iso(berlin.reviewOpenAt), iso(berlin.deadlineAt)]).toEqual([
+      '2027-02-28T23:00:00.000Z',
+      '2027-03-08T19:00:00.000Z',
+      '2027-03-26T17:00:00.000Z',
+      '2027-03-27T23:00:00.000Z',
+    ])
+  })
+
+  it('takes each week’s bounds from the given function (stored when the doc exists)', () => {
+    const stored: Record<string, WeekBounds> = { '2026-10-05': { startAt: 1, lockAt: 2, reviewOpenAt: 3, deadlineAt: 4 }, '2026-10-26': { startAt: 5, lockAt: 6, reviewOpenAt: 7, deadlineAt: 8 } }
+    const b = monthlyBounds('2026-10', (w) => stored[w] ?? weekBounds(w, 'UTC'))
+    expect(b).toEqual({ startAt: weekBounds('2026-09-28', 'UTC').startAt, lockAt: 2, reviewOpenAt: 7, deadlineAt: 8 })
+  })
+
+  it('isMonthlyReviewWeek: only the month’s last week', () => {
+    expect(isMonthlyReviewWeek('2026-10-26')).toBe(true)
+    expect(isMonthlyReviewWeek('2026-10-19')).toBe(false)
+    expect(isMonthlyReviewWeek('2026-11-23')).toBe(true)
+    expect(isMonthlyReviewWeek('2026-11-30')).toBe(false)
+    expect(isMonthlyReviewWeek('2026-12-21')).toBe(true)
+    expect(isMonthlyReviewWeek('2026-12-28')).toBe(false)
+  })
+})
+
+describe('lastCompleteMonthCandidate', () => {
+  it('the latest month whose last week is before this week', () => {
+    // Mid-October: September (its last week is Sep 21).
+    expect(lastCompleteMonthCandidate(at('2026-10-14T12:00:00Z'), 'Europe/Berlin')).toBe('2026-09')
+    // October's last week is Oct 26: still September on the Saturday and Sunday after it, October from Monday.
+    expect(lastCompleteMonthCandidate(at('2026-10-31T12:00:00Z'), 'Europe/Berlin')).toBe('2026-09')
+    expect(lastCompleteMonthCandidate(at('2026-11-01T22:00:00Z'), 'Europe/Berlin')).toBe('2026-09')
+    expect(lastCompleteMonthCandidate(at('2026-11-01T23:00:00Z'), 'Europe/Berlin')).toBe('2026-10')
+    expect(lastCompleteMonthCandidate(at('2026-11-20T12:00:00Z'), 'Europe/Berlin')).toBe('2026-10')
+  })
+
+  it('around New Year (the week of Dec 28 is January’s)', () => {
+    expect(lastCompleteMonthCandidate(at('2026-12-27T12:00:00Z'), 'Europe/Berlin')).toBe('2026-11')
+    expect(lastCompleteMonthCandidate(at('2027-01-01T12:00:00Z'), 'Europe/Berlin')).toBe('2026-12')
+    expect(lastCompleteMonthCandidate(at('2027-01-04T12:00:00Z'), 'Europe/Berlin')).toBe('2026-12')
+    expect(lastCompleteMonthCandidate(at('2027-02-01T12:00:00Z'), 'Europe/Berlin')).toBe('2027-01')
+  })
+
+  it('in the space’s zone, across a DST change', () => {
+    // Monday Nov 2 00:30 in Berlin (winter time) is still Sunday Nov 1 in UTC and in Los Angeles.
+    const ms = at('2026-11-01T23:30:00Z')
+    expect(lastCompleteMonthCandidate(ms, 'Europe/Berlin')).toBe('2026-10')
+    expect(lastCompleteMonthCandidate(ms, 'UTC')).toBe('2026-09')
+    expect(lastCompleteMonthCandidate(ms, 'America/Los_Angeles')).toBe('2026-09')
+    // Every result's last week ends before the week holding `now`.
+    for (let ms2 = at('2026-01-01T00:00:00Z'); ms2 < at('2028-01-01T00:00:00Z'); ms2 += 13 * H) {
+      for (const tz of ['Europe/Berlin', 'Pacific/Kiritimati', 'America/Santiago']) {
+        const m = lastCompleteMonthCandidate(ms2, tz)
+        const ids = weekIdsInMonth(m)
+        expect(ids[ids.length - 1] < weekIdFor(ms2, tz)).toBe(true)
+        const next = weekIdsInMonth(addMonths(m, 1))
+        expect(next[next.length - 1] >= weekIdFor(ms2, tz)).toBe(true)
+        expect(weekBounds(ids[ids.length - 1], tz).deadlineAt).toBeLessThanOrEqual(ms2)
+      }
+    }
+  })
+})
+
+describe('firstMonthOf', () => {
+  it('the month of the creation week’s Friday, in the space’s zone', () => {
+    const created = at('2026-09-27T23:00:00Z')
+    // Monday Sep 28 01:00 in Berlin: the week of Sep 28, whose Friday is Oct 2.
+    expect(firstMonthOf({ timezone: 'Europe/Berlin', createdAt: created })).toBe('2026-10')
+    // Sunday Sep 27 in New York: the week of Sep 21.
+    expect(firstMonthOf({ timezone: 'America/New_York', createdAt: created })).toBe('2026-09')
+  })
+
+  it('null without a usable createdAt or zone', () => {
+    expect(firstMonthOf({ timezone: 'Europe/Berlin', createdAt: 0 })).toBeNull()
+    expect(firstMonthOf({ timezone: 'Europe/Berlin', createdAt: Number.NaN })).toBeNull()
+    expect(firstMonthOf({ timezone: 'Mars/Olympus', createdAt: at('2026-10-01T00:00:00Z') })).toBeNull()
   })
 })

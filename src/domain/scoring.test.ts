@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { addedAfterLock, computeMonth, computeWeek, isRevealed, isTaskDone, joinedAfterLock, membersAt, reviewTargets, taskSelfFraction } from './scoring.ts'
-import { monthCompleteAt, weekBounds } from './time.ts'
-import type { Mark, Review, Space, Task, UID, WeekData, WeekId } from './types.ts'
+import {
+  addedAfterLock,
+  computeMonth,
+  computeMonthly,
+  computeWeek,
+  isRevealed,
+  isTaskDone,
+  joinedAfterLock,
+  judgesOf,
+  membersAt,
+  monthEndsAt,
+  reviewTargets,
+  spaceJudges,
+  taskSelfFraction,
+} from './scoring.ts'
+import { monthCompleteAt, monthlyBounds, weekBounds } from './time.ts'
+import type { Mark, MonthlyData, Review, Space, Task, UID, WeekData, WeekId, WeekSchedule } from './types.ts'
 
 const TZ = 'Europe/Paris'
 const H = 3_600_000
@@ -821,5 +835,287 @@ describe('tasks added after the lock', () => {
     // a never reviewed b: a misses the review and b falls back to the self check-off.
     expect(r.members.a.missedReviewsOf).toEqual(['b'])
     expect(r.members.b).toMatchObject({ score: 100, taskCount: 1 })
+  })
+})
+
+// ---------- Batch 2 (SPEC §9.3–§9.6): judges, paused weeks, monthly lists ----------
+
+function judged(data: WeekData, judges: UID[]): WeekData {
+  return { ...data, week: data.week && { ...data.week, judges } }
+}
+
+/** Everyone in `members` with tasks reviews everyone else with tasks: Done on every task. */
+function allDone(members: UID[], tasks: Record<UID, number>): [UID, UID, Mark[]][] {
+  return members.flatMap((r) => members.filter((m) => m !== r && (tasks[m] ?? 0) > 0).map((m): [UID, UID, Mark[]] => [r, m, Array<Mark>(tasks[m]).fill(1)]))
+}
+
+function monthlyData(monthId: string, setup: WeekSetup & { judges?: UID[] }): MonthlyData {
+  const d = weekData('2026-10-12', setup)
+  const bounds = monthlyBounds(monthId, (w) => weekBounds(w, TZ))
+  return {
+    spaceId: 's1',
+    monthId,
+    monthly: { id: monthId, spaceId: 's1', ...bounds, members: setup.members, submittedBy: setup.submittedBy ?? [], judges: setup.judges ?? [] },
+    plans: d.plans,
+    progress: d.progress,
+    reviews: d.reviews,
+  }
+}
+
+describe('judges (§9.4, §9.6)', () => {
+  // j judges; their plan is left from before they switched.
+  const setup = {
+    members: ['a', 'b', 'j'],
+    tasks: { a: 2, b: 1, j: 3 },
+    reviews: [
+      ['j', 'a', [1, 1]],
+      ['j', 'b', [1]],
+      ['a', 'b', [0]],
+      ['b', 'a', [1, 0]],
+      ['a', 'j', [1, 1, 1]],
+    ] as [UID, UID, Mark[]][],
+    submittedBy: ['a', 'b', 'j'],
+  }
+
+  it('judgesOf: the snapshot within the members; spaceJudges: the space’s within its members', () => {
+    expect(judgesOf({ members: ['a', 'j'], judges: ['j', 'x', 'j'] })).toEqual(['j'])
+    expect(judgesOf({ members: ['a', 'j'] })).toEqual([])
+    expect(spaceJudges({ memberIds: ['a', 'j'], judges: ['gone', 'j'] })).toEqual(['j'])
+    expect(spaceJudges({ memberIds: ['a'] })).toEqual([])
+  })
+
+  it('a judge has no list and no score; reviews of a judge are dropped, reviews by a judge count', () => {
+    const r = computeWeek(judged(weekData(W, setup), ['j']), space(['a', 'b', 'j']), afterDeadline)
+    expect(r.judges).toEqual(['j'])
+    expect(r.paused).toBe(false)
+    expect(r.members.j).toEqual({
+      uid: 'j',
+      participating: true,
+      judge: true,
+      taskCount: 0,
+      tasks: [],
+      provisionalScore: null,
+      score: null,
+      reviewedBy: [],
+      missedReviewsOf: [],
+      hasSubmitted: true,
+    })
+    expect(r.members.a).toMatchObject({ judge: false, score: 75, reviewedBy: ['j', 'b'], missedReviewsOf: [] })
+    expect(r.members.b).toMatchObject({ judge: false, score: 50, reviewedBy: ['j', 'a'] })
+  })
+
+  it('a judge is nobody’s review target, reviews everyone with tasks, and a skip only lists them', () => {
+    const data = judged(weekData(W, { ...setup, reviews: setup.reviews.filter(([r]) => r !== 'j'), submittedBy: ['a', 'b'] }), ['j'])
+    expect(reviewTargets(data, 'a')).toEqual(['b'])
+    expect(reviewTargets(data, 'j')).toEqual(['a', 'b'])
+    expect(computeWeek(data, space(['a', 'b', 'j']), duringReview).members.j.missedReviewsOf).toEqual([])
+    const r = computeWeek(data, space(['a', 'b', 'j']), afterDeadline)
+    expect(r.members.j).toMatchObject({ judge: true, missedReviewsOf: ['a', 'b'], hasSubmitted: false })
+    expect(r.members.a.missedReviewsOf).toEqual([])
+    expect(r.members.b.missedReviewsOf).toEqual([])
+  })
+
+  it('a week doc without judges (before batch 2) has none: the same results as before', () => {
+    const r = computeWeek(weekData(W, setup), space(['a', 'b', 'j']), afterDeadline)
+    expect(r.judges).toEqual([])
+    expect(r.members.j).toMatchObject({ judge: false, taskCount: 3, score: 100 })
+  })
+
+  it('a judge with a leftover plan costs nobody points in the month', () => {
+    const data = judged(weekData('2026-10-05', { ...setup, reviews: [['j', 'a', [1, 1]], ['j', 'b', [1]], ['a', 'b', [1]], ['b', 'a', [1, 1]]], submittedBy: ['a', 'b', 'j'] }), ['j'])
+    const res = computeMonth(space(['a', 'b', 'j']), '2026-10', [data], monthCompleteAt('2026-10', TZ))
+    expect(res.a).toMatchObject({ missedReviews: 0, average: 100, judged: [] })
+    expect(res.j).toMatchObject({ judged: ['2026-10-05'], average: null, finalScore: null, passed: null, skippedAsJudge: 0, others: ['a', 'b'] })
+    expect(res.a.others).toEqual(['b'])
+  })
+})
+
+describe('judged weeks in a month (0% where you also play)', () => {
+  // November 2026 has four weeks.
+  const NOV = ['2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23']
+  const sp = space(['a', 'b'])
+  const end = monthCompleteAt('2026-11', TZ)
+  /** a plays (1 task, done) in the weeks listed, else judges; b always plays (1 task). Everyone reviews. */
+  const month = (aPlays: WeekId[]) =>
+    NOV.map((w) => {
+      const tasks: Record<UID, number> = aPlays.includes(w) ? { a: 1, b: 1 } : { b: 1 }
+      return judged(weekData(w, { members: ['a', 'b'], tasks, reviews: allDone(['a', 'b'], tasks), submittedBy: ['a', 'b'] }), aPlays.includes(w) ? [] : ['a'])
+    })
+
+  it('100% in week 1, then judging weeks 2–4: 25%', () => {
+    const res = computeMonth(sp, '2026-11', month([NOV[0]]), end)
+    expect(res.a).toMatchObject({ average: 25, finalScore: 25, passed: false, judged: NOV.slice(1), skippedAsJudge: 0 })
+    expect(res.a.weeks).toEqual([{ weekId: NOV[0], score: 100, closed: true }])
+    expect(res.b).toMatchObject({ average: 100, passed: true, others: ['a'] })
+  })
+
+  it('judging weeks 1–3, then playing week 4 at 100%: 25%', () => {
+    const res = computeMonth(sp, '2026-11', month([NOV[3]]), end)
+    expect(res.a).toMatchObject({ average: 25, passed: false, judged: NOV.slice(0, 3) })
+    // Before week 4 closes only the closed judged weeks count, at 0.
+    const early = computeMonth(sp, '2026-11', month([NOV[3]]), weekBounds(NOV[3], TZ).reviewOpenAt)
+    expect(early.a).toMatchObject({ average: 0, complete: false, passed: null })
+  })
+
+  it('a month someone only judged: no score, nothing owed, in nobody’s others', () => {
+    const res = computeMonth(sp, '2026-11', month([]), end)
+    expect(res.a).toMatchObject({ average: null, finalScore: null, passed: null, judged: NOV, weeks: [], others: ['b'] })
+    expect(res.b.others).toEqual([])
+  })
+
+  it('a judge’s skipped reviews are counted apart, never subtracted', () => {
+    const weeks = month([NOV[0]]).map((d, i) => (i === 0 ? d : { ...d, reviews: [], week: d.week && { ...d.week, submittedBy: [] } }))
+    const res = computeMonth(sp, '2026-11', weeks, end)
+    expect(res.a).toMatchObject({ skippedAsJudge: 3, missedReviews: 0, penaltyPoints: 0, average: 25 })
+  })
+})
+
+describe('paused weeks (§9.3)', () => {
+  const pausedSpace = (memberIds: UID[]) => ({ ...space(memberIds), paused: { '2026-10': W } })
+
+  it('nothing counts: every score is null and nobody misses a review; tasks and provisional scores as usual', () => {
+    const data = weekData(W, { members: ['a', 'b'], tasks: { a: 2, b: 1 }, done: { a: 1 } })
+    const r = computeWeek(data, pausedSpace(['a', 'b']), afterDeadline)
+    expect(r).toMatchObject({ paused: true, revealed: true, phase: 'closed' })
+    expect(r.members.a).toMatchObject({ score: null, provisionalScore: 50, taskCount: 2, missedReviewsOf: [] })
+    expect(r.members.b).toMatchObject({ score: null, missedReviewsOf: [] })
+    // The same week unpaused: a missed b and scores 50.
+    expect(computeWeek(data, space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 50, missedReviewsOf: ['b'] })
+    // Another month's pause doesn't touch it.
+    expect(computeWeek(data, { ...space(['a', 'b']), paused: { '2026-11': W } }, afterDeadline).paused).toBe(false)
+  })
+
+  it('in the month: listed as paused, left out of the average (not 0%) and of `others`', () => {
+    const weeks = [
+      weekData('2026-10-05', { members: ['a', 'b'], tasks: { a: 1, b: 1 }, reviews: allDone(['a', 'b'], { a: 1, b: 1 }), submittedBy: ['a', 'b'] }),
+      // c only took part in the paused week.
+      weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 4, b: 1, c: 2 } }),
+    ]
+    const res = computeMonth(pausedSpace(['a', 'b', 'c']), '2026-10', weeks, monthCompleteAt('2026-10', TZ))
+    expect(res.a.weeks).toEqual([
+      { weekId: '2026-10-05', score: 100, closed: true },
+      { weekId: W, score: null, closed: true, paused: true },
+    ])
+    expect(res.a).toMatchObject({ average: 100, missedReviews: 0, passed: true, others: ['b'] })
+    expect(res.c).toMatchObject({ average: null, finalScore: null, passed: null, others: ['a', 'b'] })
+  })
+
+  it('every week paused: no score', () => {
+    const res = computeMonth(pausedSpace(['a', 'b']), '2026-10', [weekData(W, { members: ['a', 'b'], tasks: { a: 1, b: 1 } })], monthCompleteAt('2026-10', TZ))
+    expect(res.a).toMatchObject({ finalScore: null, passed: null, others: [] })
+  })
+})
+
+describe('monthly lists (§9.5)', () => {
+  const M = '2026-10'
+  const listEnd = monthlyBounds(M, (w) => weekBounds(w, TZ)).deadlineAt
+
+  it('computeMonthly scores a list like a week; no tasks means no list (null, not 0%); judges as in weeks', () => {
+    const data = monthlyData(M, {
+      members: ['a', 'b', 'c'],
+      judges: ['c'],
+      tasks: { a: 2, b: 0, c: 2 },
+      done: { a: 1 },
+      reviews: [
+        ['b', 'a', [1, 0.5]],
+        ['c', 'a', [1, 1]],
+      ],
+      submittedBy: ['b', 'c'],
+    })
+    const sp = space(['a', 'b', 'c'])
+    const r = computeMonthly(data, sp, listEnd)
+    expect(r).toMatchObject({ weekId: M, phase: 'closed', revealed: true, paused: false, judges: ['c'] })
+    expect(r.members.a).toMatchObject({ score: 87.5, provisionalScore: 50, taskCount: 2, missedReviewsOf: [] })
+    expect(r.members.b).toMatchObject({ participating: true, taskCount: 0, score: null, provisionalScore: null, missedReviewsOf: [] })
+    expect(r.members.c).toMatchObject({ judge: true, score: null, taskCount: 0 })
+    expect(reviewTargets(data, 'b')).toEqual(['a'])
+    expect(reviewTargets(data, 'a')).toEqual([])
+    // Before its deadline (a hasn't submitted): no score yet, the provisional one shows.
+    const before = computeMonthly(data, sp, listEnd - H)
+    expect(before.phase).toBe('review')
+    expect(before.members.a).toMatchObject({ score: null, provisionalScore: 50 })
+    // Without a doc: nobody is in it, on the computed bounds.
+    expect(computeMonthly({ ...data, monthly: null }, sp, listEnd - H)).toMatchObject({ phase: 'review', revealed: false, members: { a: { participating: false } } })
+  })
+
+  /** a: weeks of 100% and 80% (self check-offs, nobody reviews a) and a list at 90%; b plays with no tasks. */
+  const setup = () => ({
+    weeks: [
+      weekData('2026-10-05', { members: ['a', 'b'], tasks: { a: 1, b: 0 }, done: { a: 1 } }),
+      weekData('2026-10-12', { members: ['a', 'b'], tasks: { a: 5, b: 0 }, done: { a: 4 } }),
+    ],
+    list: monthlyData(M, { members: ['a', 'b'], tasks: { a: 10, b: 0 }, done: { a: 9 } }),
+  })
+
+  it('a closed list with tasks is one extra week: 100, 80 and 90 average to exactly 90', () => {
+    const { weeks, list } = setup()
+    const res = computeMonth(space(['a', 'b']), M, weeks, listEnd, list)
+    expect(res.a).toMatchObject({ average: 90, finalScore: 90, passed: true, missedReviews: 0, monthly: { score: 90, closed: true, taskCount: 10 }, monthlyJudge: false })
+    // b missed a's two weeks and a's list: 5 points each.
+    expect(res.b).toMatchObject({ monthly: null, missedReviews: 3, penaltyPoints: 15, average: 0 })
+    expect(res.a.others).toEqual(['b'])
+  })
+
+  it('an open list is listed but not averaged yet', () => {
+    const { weeks, list } = setup()
+    const res = computeMonth(space(['a', 'b']), M, weeks, listEnd - H, list)
+    expect(res.a).toMatchObject({ monthly: { score: null, closed: false, taskCount: 10 }, average: 90, complete: false })
+  })
+
+  it('in a paused last week, missed monthly reviews cost nothing and the list still counts', () => {
+    const { weeks, list } = setup()
+    const res = computeMonth({ ...space(['a', 'b']), paused: { [M]: '2026-10-26' } }, M, weeks, listEnd, list)
+    expect(res.b).toMatchObject({ missedReviews: 2 })
+    expect(res.a).toMatchObject({ average: 90, monthly: { score: 90 } })
+  })
+
+  it('a monthly judge: no list, skips counted apart; a list player who judged weeks scores them 0%', () => {
+    const { list } = setup()
+    const judgeList: MonthlyData = { ...list, monthly: list.monthly && { ...list.monthly, judges: ['b'] } }
+    const res = computeMonth(space(['a', 'b']), M, [], listEnd, judgeList)
+    expect(res.b).toMatchObject({ monthlyJudge: true, monthly: null, skippedAsJudge: 1, missedReviews: 0, finalScore: null })
+    expect(res.a).toMatchObject({ average: 90, others: [] })
+    // a plays only the list and judged a week: that week counts as 0%.
+    const week = judged(weekData('2026-10-05', { members: ['a', 'b'], tasks: { b: 1 }, reviews: [['a', 'b', [1]]], submittedBy: ['a', 'b'] }), ['a'])
+    expect(computeMonth(space(['a', 'b']), M, [week], listEnd, list).a).toMatchObject({ judged: ['2026-10-05'], average: 45 })
+  })
+
+  it('a list of another month is ignored', () => {
+    const { weeks, list } = setup()
+    expect(computeMonth(space(['a', 'b']), '2026-11', weeks, listEnd, list).a.monthly).toBeNull()
+  })
+})
+
+describe('monthEndsAt and completion by stored deadlines (§9.6)', () => {
+  const M = '2026-10'
+  const last = weekBounds('2026-10-26', TZ)
+
+  it('the last week’s stored deadline, the list’s if later; computed without a doc', () => {
+    const sp = space(['a'])
+    expect(monthEndsAt(sp, M, [])).toBe(last.deadlineAt)
+    const lastWeek = weekData('2026-10-26', { members: ['a'] })
+    const stored = { ...lastWeek, week: lastWeek.week && { ...lastWeek.week, deadlineAt: last.deadlineAt + 3 * H } }
+    expect(monthEndsAt(sp, M, [stored])).toBe(last.deadlineAt + 3 * H)
+    const list = monthlyData(M, { members: ['a'] })
+    const later = { ...list, monthly: list.monthly && { ...list.monthly, deadlineAt: last.deadlineAt + 5 * H } }
+    expect(monthEndsAt(sp, M, [stored], later)).toBe(last.deadlineAt + 5 * H)
+    expect(monthEndsAt(sp, M, [stored], list)).toBe(last.deadlineAt + 3 * H)
+    // A space on its own times, no doc: computed on its schedule (reviews due Saturday at noon).
+    const saturdayNoon: WeekSchedule = { lock: 1440, reviewOpen: 5760, deadline: 7920 }
+    expect(monthEndsAt({ ...sp, schedule: saturdayNoon }, M, [])).toBe(weekBounds('2026-10-26', TZ, saturdayNoon).deadlineAt)
+  })
+
+  it('computeMonth is complete at the stored deadline, not the computed one', () => {
+    const weeks = [weekData('2026-10-26', { members: ['a'], tasks: { a: 1 }, done: { a: 1 } })]
+    weeks[0].week = weeks[0].week && { ...weeks[0].week, deadlineAt: last.deadlineAt + 2 * H }
+    expect(computeMonth(space(['a']), M, weeks, last.deadlineAt + H).a.complete).toBe(false)
+    expect(computeMonth(space(['a']), M, weeks, last.deadlineAt + 2 * H).a.complete).toBe(true)
+  })
+
+  it('computeWeek without a doc uses the space’s own times', () => {
+    const tuesdayNoon: WeekSchedule = { lock: 2160, reviewOpen: 5760, deadline: 7200 }
+    const empty: WeekData = { spaceId: 's1', weekId: W, week: null, plans: {}, progress: {}, reviews: [] }
+    expect(computeWeek(empty, space(['a']), b.lockAt + H).phase).toBe('active')
+    expect(computeWeek(empty, { ...space(['a']), schedule: tuesdayNoon }, b.lockAt + H).phase).toBe('planning')
   })
 })

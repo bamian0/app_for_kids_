@@ -131,21 +131,29 @@ service cloud.firestore {
         's': scheduleOf(space)
       };
     }
-    // Whether month `monthId` was complete at time t: its last week's stored deadline has passed
-    // (with no week doc, its deadline computed on the space's schedule, plus slackMin minutes: −60
-    // where a freeze is allowed, +60 where one is insisted on, covering the anchor's DST hour; a space
-    // without utcOffsetMin counts a month complete 4 days into the next one, in any zone on any
-    // schedule), and so has its monthly list's, if it has one. 2 reads (get of a missing doc is null).
-    function monthCompleteBy(spaceId, space, monthId, t, slackMin) {
+    // A month's end: its last week's Monday (00:00 UTC date), and that week's stored doc and the month's
+    // monthly list (null when missing). 2 reads (get of a missing doc is null).
+    function monthEnd(spaceId, monthId) {
       let last = lastMonday(monthId);
-      let week = get(periodPath(spaceId, 'weeks', dateId(last)));
-      let list = get(periodPath(spaceId, 'monthly', monthId));
-      return (week != null
-          ? t >= week.data.deadlineAt
+      return {
+        'last': last,
+        'week': get(periodPath(spaceId, 'weeks', dateId(last))),
+        'list': get(periodPath(spaceId, 'monthly', monthId))
+      };
+    }
+    // Whether the month was complete at time t: its last week's stored deadline has passed (with no
+    // week doc, its deadline computed on the space's schedule, plus slackMin minutes: −60 where a freeze
+    // is allowed, +60 where one is insisted on, covering the anchor's DST hour; a space without
+    // utcOffsetMin counts a month complete 4 days into the next one, in any zone on any schedule), and
+    // so has its monthly list's, if it has one. `end` is monthEnd(spaceId, monthId), so one request
+    // can ask about several instants for the price of one.
+    function monthCompleteBy(space, monthId, end, t, slackMin) {
+      return (end.week != null
+          ? t >= end.week.data.deadlineAt
           : (space.get('utcOffsetMin', null) is int
-              ? t >= last - duration.value(space.utcOffsetMin, 'm') + duration.value(scheduleOf(space).deadline + slackMin, 'm')
+              ? t >= end.last - duration.value(space.utcOffsetMin, 'm') + duration.value(scheduleOf(space).deadline + slackMin, 'm')
               : monthStr(t - duration.value(4, 'd')) > monthId))
-        && (list == null || t >= list.data.deadlineAt);
+        && (end.list == null || t >= end.list.data.deadlineAt);
     }
 
     // ---------- users ----------
@@ -326,9 +334,10 @@ service cloud.firestore {
     // ('2026-10') on, by a freeze made at completion (the previous app's freeze at the first lock
     // doesn't bind and has to be re-frozen first). 3 reads (the last week, the list, the freeze).
     function frozenIfComplete(spaceId, space, m) {
+      let end = monthEnd(spaceId, m);
       let freeze = getAfter(/databases/$(database)/documents/spaces/$(spaceId)/months/$(m));
-      return !monthCompleteBy(spaceId, space, m, request.time, 60)
-        || (freeze != null && (m < '2026-10' || monthCompleteBy(spaceId, space, m, freeze.data.createdAt, -60)));
+      return !monthCompleteBy(space, m, end, request.time, 60)
+        || (freeze != null && (m < '2026-10' || monthCompleteBy(space, m, end, freeze.data.createdAt, -60)));
     }
     // The months that can have completed recently: this UTC calendar month and the one before (a
     // month completes between its 18th and the next month's 3rd), not before the space existed.
@@ -775,7 +784,10 @@ service cloud.firestore {
 
       // A plan of 25 tasks with 8 steps each must stay under the 1000-expression limit, and every node
       // counts (a literal, a field read, an operator), so these checks are written for cost first.
-      // Measured in the emulator: see tests/rules/budget.test.ts.
+      // Measured in the emulator (tests/rules/budget.test.ts): ~895 with canPlan's judge check, for a
+      // week or a monthly list, batched with filling the period. If a change leaves under 40 of
+      // headroom, drop the judge line from canPlan first (appendsTask keeps it; scoring ignores a
+      // judge's plan anyway).
 
       // Exactly {id, title} or {id, title, subs}: size() and the keys read leave no room for others.
       // matches() also rejects non-strings. Titles are 1-120 characters; blank titles are left to the
@@ -970,33 +982,40 @@ service cloud.firestore {
 
       // ---------- per-person stakes (SPEC §9.7) ----------
 
-      // A per-friend entry holds both texts (kept for switching back); the text of a line that is
-      // per friend is 1-120 characters and not blank.
+      // Written for cost: a worst-case doc (7 friends, 5 streak rewards) is checked text by text, and
+      // every node counts toward the 1000-expression limit (measured in tests/rules/budget.test.ts).
+      // A text the line uses: 1-120 characters, not blank (trim() also fails on anything but a string).
+      // A text kept for switching back: any string of at most 120 characters.
+      function lineText(v) { return v.trim() != '' && v.size() <= 120; }
+      function keptText(v) { return v is string && v.size() <= 120; }
+      // A per-friend entry holds exactly both texts: size 2, and both are read.
       function validPerEntry(p, rewardEach, penaltyEach) {
-        return exactKeys(p, ['reward', 'penalty'])
-          && (rewardEach ? text(p.reward, 120) : str(p.reward, 0, 120))
-          && (penaltyEach ? text(p.penalty, 120) : str(p.penalty, 0, 120));
+        return p.size() == 2
+          && (rewardEach ? lineText(p.reward) : keptText(p.reward))
+          && (penaltyEach ? lineText(p.penalty) : keptText(p.penalty));
       }
       // At most 7, keyed by current members other than the doc's owner (7 slots: rules have no loops).
       function validPer(per, uid, memberIds, rewardEach, penaltyEach) {
-        let ks = per.keys();
-        let n = ks.size();
-        return n <= 7 && ks.hasOnly(memberIds) && !(uid in ks)
-          && (n <= 0 || validPerEntry(per[ks[0]], rewardEach, penaltyEach))
-          && (n <= 1 || validPerEntry(per[ks[1]], rewardEach, penaltyEach))
-          && (n <= 2 || validPerEntry(per[ks[2]], rewardEach, penaltyEach))
-          && (n <= 3 || validPerEntry(per[ks[3]], rewardEach, penaltyEach))
-          && (n <= 4 || validPerEntry(per[ks[4]], rewardEach, penaltyEach))
-          && (n <= 5 || validPerEntry(per[ks[5]], rewardEach, penaltyEach))
-          && (n <= 6 || validPerEntry(per[ks[6]], rewardEach, penaltyEach));
+        let vs = per.values();
+        let n = vs.size();
+        return n <= 7 && per.keys().hasOnly(memberIds) && !(uid in per)
+          && (n <= 0 || validPerEntry(vs[0], rewardEach, penaltyEach))
+          && (n <= 1 || validPerEntry(vs[1], rewardEach, penaltyEach))
+          && (n <= 2 || validPerEntry(vs[2], rewardEach, penaltyEach))
+          && (n <= 3 || validPerEntry(vs[3], rewardEach, penaltyEach))
+          && (n <= 4 || validPerEntry(vs[4], rewardEach, penaltyEach))
+          && (n <= 5 || validPerEntry(vs[5], rewardEach, penaltyEach))
+          && (n <= 6 || validPerEntry(vs[6], rewardEach, penaltyEach));
       }
+      // Exactly {months, reward}: size 2, and both are read.
       function validTier(t) {
-        return exactKeys(t, ['months', 'reward']) && t.months is int && t.months >= 2 && t.months <= 36 && text(t.reward, 120);
+        return t.size() == 2 && t.months is int && lineText(t.reward);
       }
-      // Streak rewards: at most 5, strictly ascending by months (so no length repeats).
+      // Streak rewards: at most 5, strictly ascending by months from 2 to 36 (so no length repeats).
       function validTiers(ts) {
         let n = ts.size();
         return n <= 5
+          && (n == 0 || (ts[0].months >= 2 && ts[n - 1].months <= 36))
           && (n <= 0 || validTier(ts[0]))
           && (n <= 1 || (validTier(ts[1]) && ts[1].months > ts[0].months))
           && (n <= 2 || (validTier(ts[2]) && ts[2].months > ts[1].months))
@@ -1004,12 +1023,13 @@ service cloud.firestore {
           && (n <= 4 || (validTier(ts[4]) && ts[4].months > ts[3].months));
       }
       // Each line (reward, penalty) is the same for everyone ('group', its text required) or different
-      // per friend ('each', its text may be '' and each friend's is required).
+      // per friend ('each', its text may be '' and each friend's is required). Exactly the 8 keys:
+      // size 8, and all 8 are read.
       function validStakes(uid, d, memberIds) {
-        return exactKeys(d, ['rewardMode', 'penaltyMode', 'reward', 'penalty', 'per', 'tiers', 'agreed', 'updatedAt'])
+        return d.size() == 8
           && d.rewardMode in ['group', 'each'] && d.penaltyMode in ['group', 'each']
-          && (d.rewardMode == 'group' ? text(d.reward, 120) : str(d.reward, 0, 120))
-          && (d.penaltyMode == 'group' ? text(d.penalty, 120) : str(d.penalty, 0, 120))
+          && (d.rewardMode == 'group' ? lineText(d.reward) : keptText(d.reward))
+          && (d.penaltyMode == 'group' ? lineText(d.penalty) : keptText(d.penalty))
           && d.per is map && validPer(d.per, uid, memberIds, d.rewardMode == 'each', d.penaltyMode == 'each')
           && d.tiers is list && validTiers(d.tiers)
           && d.agreed is map
@@ -1079,27 +1099,28 @@ service cloud.firestore {
       // A month's house stakes are frozen once the month is complete (its last week's stored deadline,
       // or the computed one, and its monthly list's), copying the space's stakes as they were before
       // this request (get: so the owner's edit batch freezes the old ones), for recent months only.
-      // An earlier freeze (the previous app froze at a month's first lock) is refused.
-      function validMonthStakes(spaceId, monthId) {
+      // An earlier freeze (the previous app froze at a month's first lock) is refused. The only update:
+      // from FIRST_RESULTS_MONTH ('2026-10') on, a freeze made before the month was complete (the
+      // previous app's) is overwritten at completion; the new createdAt is after completion, so once.
+      function validMonthStakes(spaceId, monthId, refreeze) {
         let d = incoming();
         let space = get(spacePath(spaceId)).data;
+        let end = monthEnd(spaceId, monthId);
         return monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
           && monthId >= monthStr(request.time - duration.value(62, 'd'))
           && exactKeys(d, ['reward', 'penalty', 'createdAt'])
           && d.reward == space.reward
           && d.penalty == space.penalty
           && d.createdAt == request.time
-          && monthCompleteBy(spaceId, space, monthId, request.time, -60);
+          && monthCompleteBy(space, monthId, end, request.time, -60)
+          && (!refreeze || (monthId >= '2026-10' && !monthCompleteBy(space, monthId, end, existing().createdAt, -60)));
       }
 
-      // Created once the month is complete, never deleted. The only update: from FIRST_RESULTS_MONTH
-      // ('2026-10') on, the previous app's early freeze (made before the month was complete) is
-      // overwritten at completion. The new createdAt is after completion, so it happens once.
+      // Created once the month is complete; never deleted.
       match /months/{monthId} {
         allow read: if isMember(spaceId);
-        allow create: if isMember(spaceId) && validMonthStakes(spaceId, monthId);
-        allow update: if isMember(spaceId) && monthId >= '2026-10' && validMonthStakes(spaceId, monthId)
-          && !monthCompleteBy(spaceId, get(spacePath(spaceId)).data, monthId, existing().createdAt, -60);
+        allow create: if isMember(spaceId) && validMonthStakes(spaceId, monthId, false);
+        allow update: if isMember(spaceId) && validMonthStakes(spaceId, monthId, true);
       }
 
       // ---------- settlements ----------

@@ -448,6 +448,15 @@ describe('agreeOutcome', () => {
     expect(agreeOutcome(three, 'marco', 'lena', ['lena', 'sam'], { marco: each }, HOUSE, t1)).toEqual({ counts: 'now', waitingFor: [] })
   })
 
+  it('a device clock behind the server: the Agree still lands after earlier ones and after my join', () => {
+    const st = agree(GROUP, 'lena', t2)
+    // Sam's device says t1, before Lena's Agree (t2) was stamped.
+    expect(agreeOutcome(three, 'marco', 'sam', ['lena', 'sam'], { marco: st }, HOUSE, t1)).toEqual({ counts: 'now', waitingFor: [] })
+    // Sam joined (server time) at t3; his device still says t1.
+    const joinedLate = { ...three, joinedAt: { ...three.joinedAt, sam: t3 } }
+    expect(agreeOutcome(joinedLate, 'marco', 'sam', ['lena', 'sam'], { marco: GROUP }, HOUSE, t1)).toEqual({ counts: 'later', waitingFor: ['lena'] })
+  })
+
   it('a friend who left this month doesn’t hold back an Agree made after they left', () => {
     const left = space(['marco', 'lena', 'sam'], { leftAt: { kim: t1 } })
     const st = agree(GROUP, 'lena', t2)
@@ -468,6 +477,10 @@ describe('tiersInForce', () => {
     expect(tiersInForce({ marco: pairs }, 'marco')).toEqual([{ months: 3, reward: 'Weekend away' }])
     expect(tiersInForce({ marco: pairs }, 'lena')).toEqual([])
     expect(tiersInForce(undefined, 'marco')).toEqual([])
+    // So Marco's 3-month run goes on in the month results instead of being dropped.
+    const prev: MonthResults = { monthId: '2026-10', completeAt: 1, members: { marco: { score: 95, passed: true, streak: 1, tierRuns: { '3': 1 } } }, createdAt: 2 }
+    const month = { marco: { ...result('marco', ['kim', 'lena', 'sam']), monthId: '2026-11' } }
+    expect(buildMonthResults('2026-11', 3, month, prev, { marco: pairs }).members.marco).toEqual({ score: 95, passed: true, streak: 2, tierRuns: { '3': 2 } })
   })
 })
 

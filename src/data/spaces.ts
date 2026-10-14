@@ -104,8 +104,13 @@ async function requireServer(uid: UID): Promise<void> {
 /** Creating the same space twice at once (tap, cancel, tap again) returns the first attempt. */
 const creating = new Map<string, Promise<Space>>()
 
-/** Creates the space (timezone = this device's IANA zone) and its invite doc, in one batch. */
-export function createSpace(input: { name: string; reward: string; penalty: string }): Promise<Space> {
+/**
+ * Creates the space (timezone = this device's IANA zone) and its invite doc, in one batch. `judge`
+ * (SPEC §9.4): the creator only rates; the space is written with `judges: [me]`, else without `judges`
+ * (exactly as before batch 2, so it works on the old rules too).
+ */
+export function createSpace(input: { name: string; reward: string; penalty: string; judge?: boolean }): Promise<Space> {
+  // batch2: TODO write `judges` (needs the batch-2 rules)
   let name: string, reward: string, penalty: string, uid: UID
   try {
     name = cleanText(input.name, 40, 'Space name')
@@ -185,8 +190,13 @@ export async function lookupInvite(codeOrLink: string): Promise<Invite | null> {
   }
 }
 
-/** Joins via code or link and returns the spaceId. No-op if already a member. */
-export async function joinSpace(codeOrLink: string): Promise<string> {
+/**
+ * Joins via code or link and returns the spaceId. No-op if already a member. `opts.judge` (SPEC §9.4):
+ * the join batch also adds you to the space's judges; without it the batch is as before batch 2, and a
+ * stale judge entry of yours from an earlier stay is removed in a follow-up write.
+ */
+export async function joinSpace(codeOrLink: string, opts: { judge?: boolean } = {}): Promise<string> {
+  void opts // batch2: TODO set `judges` in the join batch (needs the batch-2 rules)
   const code = normalizeInviteCode(codeOrLink)
   if (!code) throw new Error(MSG_BAD_CODE)
   const invite = await lookupInvite(code)
@@ -382,6 +392,19 @@ export async function updateSpace(spaceId: string, patch: Partial<Pick<Space, 'n
   if (space.inviteCode) {
     await updateDoc(doc(getFirebase().db, 'invites', space.inviteCode), { spaceName: space.name, reward: space.reward, penalty: space.penalty }).catch(() => {})
   }
+}
+
+/**
+ * You become a judge (only rate) or play again (SPEC §9.4), from the next period that hasn't locked.
+ * One transaction: the space's `judges` (only your own entry changes) and the `judges` of every week and
+ * monthly list that exists and hasn't locked. If a lock passes between read and commit, it retries with
+ * the space alone (that period keeps your old role). Fails at once offline.
+ */
+export async function setJudge(spaceId: string, judge: boolean): Promise<void> {
+  void spaceId
+  void judge
+  // batch2: TODO
+  throw new Error('not implemented: setJudge')
 }
 
 /** `<app url>?join=CODE` for sharing. */

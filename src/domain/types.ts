@@ -43,13 +43,25 @@ export interface Space {
   /** Points subtracted from the monthly score per missed review, always 5. */
   latePenalty: number
   createdAt: number
+  // ----- Batch 2 (SPEC §9); every field is optional, so spaces from before read as they always did. -----
+  /** The space's own times (§9.2). Absent = the usual ones (DEFAULT_SCHEDULE in time.ts). Only the owner changes them. */
+  schedule?: WeekSchedule
+  /** The last change of the times, for the notice everyone else sees (§9.2). */
+  scheduleNote?: ScheduleNote
+  /** The one pause request in play, if any (§9.3). Its state is derived (pauseView in domain/pause.ts). */
+  pause?: PauseRequest
+  /** Completed pauses: the month of the week's Friday → the paused week. One per month, and final (§9.3). */
+  paused?: Record<MonthId, WeekId>
+  /** Members who only rate, as each chose for themselves (§9.4). Order = order of choosing. Entries of
+   *  people who left are ignored (spaceJudges in scoring.ts). Absent = nobody judges. */
+  judges?: UID[]
 }
 
 export interface Invite {
   code: string
   spaceId: string
   spaceName: string
-  /** The space's stakes, mirrored so the join preview can show them before joining. Empty on old invites. */
+  /** The space's (house) stakes, mirrored so the join preview can show them before joining. Empty on old invites. */
   reward: string
   penalty: string
   inviterName: string
@@ -62,11 +74,11 @@ export interface Week {
   spaceId: string
   /** Monday 00:00 local. */
   startAt: number
-  /** Tuesday 00:00 local — task lists lock ("Monday at midnight"). */
+  /** Task lists lock. Usual times: Tuesday 00:00 local ("Monday at midnight"); else the week's `schedule`. */
   lockAt: number
-  /** Friday 00:00 local — review window opens. */
+  /** The review window opens. Usual times: Friday 00:00 local. */
   reviewOpenAt: number
-  /** Saturday 00:00 local — reviews due ("Friday at midnight"). */
+  /** Reviews are due. Usual times: Saturday 00:00 local ("Friday at midnight"). */
   deadlineAt: number
   /** Participants: everyone who was a space member before lockAt (added whenever any member opens the
    *  app before then), minus anyone who left the space before lockAt. Leaving or being removed after
@@ -74,6 +86,11 @@ export interface Week {
   members: UID[]
   /** Participants who submitted their Friday reviews. */
   submittedBy: UID[]
+  /** Batch 2 (§9.2): the schedule these bounds follow. Absent = the usual one (every week from before batch 2). */
+  schedule?: WeekSchedule
+  /** Batch 2 (§9.4): the space's judges, kept equal to `space.judges` until lockAt, then fixed. Absent (docs
+   *  from before batch 2) = nobody judges. Who judges is `judgesOf(week)` = judges ∩ members. */
+  judges?: UID[]
 }
 
 /** One step of a task. Its check-off lives in Progress.done under the subtask's own id. */
@@ -115,14 +132,31 @@ export interface Review {
   submittedAt: number
 }
 
+/**
+ * An honor-system "Settled" mark (§9.7). Three shapes, told apart by `other` and `tier`:
+ * - `${monthId}_${uid}` (before batch 2, and old clients): every non-streak debt of `uid`'s month is settled;
+ * - `${monthId}_${uid}_${other}`: the debt between `uid` (whose verdict made it) and `other`;
+ * - `${monthId}_${uid}_${other}_s${tier}`: `other` owes `uid` the streak reward for `tier` months in a row.
+ */
 export interface Settlement {
-  /** `${monthId}_${uid}` */
   id: string
   monthId: MonthId
+  /** Whose month (or streak) the debt comes from. */
   uid: UID
+  /** The friend on the other side. Missing on per-member settlements from before batch 2. */
+  other?: UID
+  /** A streak reward: its length in months (2–36). */
+  tier?: number
   settled: boolean
   settledBy: UID
   settledAt: number
+}
+
+/** One pair a "Settled" tap marks (§9.7). Doc id: settlementDocId(monthId, uid, other, tier). */
+export interface SettlementKey {
+  uid: UID
+  other: UID
+  tier?: number
 }
 
 /** Everything the current user can see about one week of one space. */
@@ -140,12 +174,180 @@ export interface WeekData {
   boundsMismatch?: boolean
 }
 
-/** The stakes that apply to one month: frozen in spaces/{id}/months/{monthId} once the month's first
- *  task lists have locked, else the space's current text (frozen = false). */
+/** The house stakes that apply to one month: frozen in spaces/{id}/months/{monthId} once the month's
+ *  first task lists have locked, else the space's current text (frozen = false). Since batch 2 they count
+ *  between two people who haven't agreed on their own (§9.7). */
 export interface MonthStakes {
   reward: string
   penalty: string
   frozen: boolean
+}
+
+// ---------- Batch 2: times, pause, periods (SPEC §9) ----------
+
+/**
+ * When a week's lists lock, its review window opens and reviews are due, in wall-clock minutes after
+ * Monday 00:00 in the space's zone. 1440 is "Monday at midnight" (the end of Monday). Ints with
+ * 0 ≤ lock < reviewOpen, reviewOpen + 180 ≤ deadline ≤ 10080. The usual times are DEFAULT_SCHEDULE
+ * (time.ts): { lock: 1440, reviewOpen: 5760, deadline: 7200 }.
+ */
+export interface WeekSchedule {
+  lock: number
+  reviewOpen: number
+  deadline: number
+}
+
+/** The last change of a space's times (§9.2): drives the notice and the `schedule` push. */
+export interface ScheduleNote {
+  /** The owner who changed them. */
+  by: UID
+  /** Server time of the change. */
+  at: number
+  /** The first week on the new times when they were saved: this week, next week or the week after (the first
+   *  whose lists lock at least a day away on both the old and new times, §9.2). The rules only check it's a
+   *  Monday near the change. */
+  fromWeek: WeekId
+  /** The effective times before the change. */
+  before: WeekSchedule
+}
+
+/** A request to pause one week (§9.3). Pending, declined, withdrawn, recorded or lapsed: see pauseView
+ *  (domain/pause.ts). It needs an OK from everyone in the week who is still in the space. */
+export interface PauseRequest {
+  /** This week (until its reviews open) or next week. */
+  weekId: WeekId
+  /** Who asked. */
+  by: UID
+  /** Server time of the ask. */
+  at: number
+  /** Who said OK, in order; starts as [by]. */
+  oks: UID[]
+  /** Someone said Not Now, or the asker cancelled (declinedBy === by, "withdrawn"): the request is over.
+   *  A cancelled request is kept, so the asker's 12-hour wait still holds. */
+  declinedBy?: UID
+}
+
+/** A planning period: a week, or a month's list (§9.5). */
+export type Period = { kind: 'week'; id: WeekId } | { kind: 'month'; id: MonthId }
+
+/**
+ * spaces/{id}/monthly/{monthId}: a month's list (§9.5). The same shape as a week, with `id` the MonthId
+ * and the month's timeline: its first week's startAt, its second week's lockAt, its last week's review
+ * window. `judges` is always written on these docs; `schedule` never is.
+ */
+export type MonthlyList = Week
+
+/** Everything the current user can see about one month's lists (like WeekData). */
+export interface MonthlyData {
+  spaceId: string
+  monthId: MonthId
+  /** null until a member opens the app in its creation window (see ensureMonthly). */
+  monthly: MonthlyList | null
+  plans: Record<UID, Plan>
+  progress: Record<UID, Progress>
+  /** Own reviews before the reveal, everyone's after (the blind rule, as for weeks). */
+  reviews: Review[]
+  /** The stored timeline is more than an hour off the expected one (as WeekData.boundsMismatch). */
+  boundsMismatch?: boolean
+}
+
+/** What month scores need: the month's weeks, and its monthly list once it can count. */
+export interface MonthData {
+  monthId: MonthId
+  /** Every week of the month (weekIdsInMonth), with or without a doc. */
+  weeks: WeekData[]
+  /** undefined: not loaded (before the month's last week starts it can't count yet); else loaded. */
+  monthly?: MonthlyData
+}
+
+// ---------- Batch 2: per-person stakes and streaks (SPEC §9.7, §9.8) ----------
+
+/** One thing for the whole group, or a separate thing per friend. */
+export type StakesMode = 'group' | 'each'
+
+/** A streak reward: hit the bar `months` months in a row (2–36) and the friends owe `reward`, together. */
+export interface StreakTier {
+  months: number
+  /** 1–120 characters. */
+  reward: string
+}
+
+/** One member's stakes as they apply between them and one friend. */
+export interface PairTerms {
+  mode: StakesMode
+  /** What the friend owes (group mode: what the friends owe together) when the member hits the bar. */
+  reward: string
+  /** What the member owes the friend (group mode: gives the group) when they miss. */
+  penalty: string
+  /** The member's streak rewards, ascending by months; one list for everyone. */
+  tiers: StreakTier[]
+}
+
+/** A friend's Agree: these terms count from month `from` on, until a later entry. */
+export interface AgreedTerms extends PairTerms {
+  from: MonthId
+}
+
+/** A friend's agreements to one member's stakes. */
+export interface Agreement {
+  /** Server time of the latest Agree. */
+  at: number
+  /** Oldest first, `from` strictly ascending, at most 6 entries. */
+  history: AgreedTerms[]
+}
+
+/** spaces/{id}/stakes/{uid}: a member's own stakes, and their friends' agreements to them. */
+export interface MemberStakes {
+  uid: UID
+  mode: StakesMode
+  /** Group mode: what the friends owe, together. May be '' in 'each' mode (kept for switching back). */
+  reward: string
+  /** Group mode: what the member gives the group. May be '' in 'each' mode. */
+  penalty: string
+  /** 'each' mode: per friend (current members other than uid), both texts 1–120 characters. */
+  per: Record<UID, { reward: string; penalty: string }>
+  /** At most 5, months strictly ascending. */
+  tiers: StreakTier[]
+  /** Written only by each friend, for their own key. */
+  agreed: Record<UID, Agreement>
+  updatedAt: number
+}
+
+/**
+ * What counts between a member and a friend in one month (§9.7): the terms everyone last agreed to (Same for
+ * All: the shared texts, owed together; Per Friend: the friend's own texts; `tiers` = the member's streak
+ * rewards in force that month, the same for every agreed pair), or the house stakes (group, no tiers).
+ */
+export interface TermsInForce extends PairTerms {
+  source: 'agreed' | 'house'
+  /** For 'agreed': the month the friend's agreement counts from. */
+  from?: MonthId
+}
+
+/** One member's line in a month's results doc. */
+export interface MonthResultsEntry {
+  /** The month's finalScore; null when they had none (sat out, judged, every week paused). */
+  score: number | null
+  passed: boolean | null
+  /** Months in a row at or above the bar after this month (skipped months carry it). */
+  streak: number
+  /** Each streak reward's own run after this month, keyed by its length in months ("3" → 2): counted only
+   *  while everyone has agreed to it (§9.8). A tier is owed in the month its run first equals its length.
+   *  Absent = no streak reward in force (and every month before batch 2). */
+  tierRuns?: Record<string, number>
+}
+
+/** spaces/{id}/results/{monthId}: written once by the reminders job when the month is complete. Read only. */
+export interface MonthResults {
+  monthId: MonthId
+  /** When the month became final (its last stored deadline). */
+  completeAt: number
+  /** Everyone who was in the month's roster, plus everyone carried over from the previous month's doc. */
+  members: Record<UID, MonthResultsEntry>
+  /** The month's terms for good, subject → friend (monthTerms when the doc was written, §9.7). Screens and the
+   *  job use these instead of the live stakes docs once present. Absent on docs without any player pair. */
+  terms?: Record<UID, Record<UID, TermsInForce>>
+  createdAt: number
 }
 
 // ---------- Money (private to each user: users/{uid}/...) ----------

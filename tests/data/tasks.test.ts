@@ -30,7 +30,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const CLOSED = "You can't change this anymore."
+const CLOSED = 'You can’t change this anymore.'
 const GENERIC = 'Something went wrong. Try again.'
 
 let alex: TestUser

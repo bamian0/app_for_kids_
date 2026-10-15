@@ -1,0 +1,7 @@
+/* Monthly lists (SPEC §9.5): the monthly screen's Judges section. */
+
+/* A judge who skipped: said plainly, in the label color rather than gray. */
+.mo-judge--missed {
+  color: var(--label);
+  font-weight: 600;
+}

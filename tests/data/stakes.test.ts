@@ -39,8 +39,8 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const OFFLINE = "You're offline. Check your connection and try again."
-const NO_ACCESS = "You don't have access to this."
+const OFFLINE = 'You’re offline. Check your connection and try again.'
+const NO_ACCESS = 'You don’t have access to this.'
 const CHANGED = 'These stakes just changed. Take another look.'
 
 let marco: TestUser

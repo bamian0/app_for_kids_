@@ -1,10 +1,11 @@
 // Which month to show, and the month verdict in words (who owes whom, and who may mark it settled).
 import { scheduleOf } from '../../domain/schedule.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
-import type { DebtLine } from '../../domain/stakes.ts'
-import { addMonths, monthCompleteAt, monthIdForWeek, weekIdFor } from '../../domain/time.ts'
-import type { MonthId, Settlement, Space, UID } from '../../domain/types.ts'
-import { monthName, shortDate } from './format.ts'
+import { debtLines, monthDebts, monthTerms, streaksFor } from '../../domain/stakes.ts'
+import type { DebtLine, House, Streaks } from '../../domain/stakes.ts'
+import { addMonths, firstMonthOf, monthCompleteAt, monthIdForWeek, weekIdFor } from '../../domain/time.ts'
+import type { MemberStakes, MonthId, MonthResults, Settlement, Space, TermsInForce, UID } from '../../domain/types.ts'
+import { formatScore, monthName, shortDate } from './format.ts'
 import { compactNames, listNames } from './people.ts'
 
 const DAY = 86_400_000
@@ -179,4 +180,94 @@ export function playsMonth(result: MemberMonthResult): boolean {
 /** The member only judged this month (weeks or its lists) and has no score. */
 export function judgeOnly(result: MemberMonthResult): boolean {
   return !playsMonth(result) && ((result.judged?.length ?? 0) > 0 || result.monthlyJudge === true)
+}
+
+// ---------- The month view's rows (SPEC §9.3–§9.8) ----------
+
+/**
+ * A member's month in a line: "3 weeks scored · 1 paused · −5 late", "4 weeks + October list scored", or for
+ * someone who only judged "Judge · no score this month · didn’t review 2". `weekClosed` tells which judged weeks
+ * have closed (in a month they also play, each one counts as a 0% week).
+ */
+export function monthSummary(result: MemberMonthResult, weekClosed: (weekId: string) => boolean): string {
+  if (judgeOnly(result)) {
+    const skipped = result.skippedAsJudge ?? 0
+    return `Judge · no score this month${skipped > 0 ? ` · didn’t review ${skipped}` : ''}`
+  }
+  if (result.finalScore === null) return 'No scored weeks yet'
+  const judgedScored = playsMonth(result) ? (result.judged ?? []).filter(weekClosed).length : 0
+  const scored = result.weeks.filter((w) => !w.paused && w.closed && w.score !== null).length + judgedScored
+  const list = !!result.monthly?.closed && result.monthly.score !== null
+  const paused = result.weeks.filter((w) => w.paused).length
+  return [
+    `${scored} week${scored === 1 ? '' : 's'}${list ? ` + ${monthName(result.monthId)} list` : ''} scored`,
+    paused > 0 ? `${paused} paused` : null,
+    result.penaltyPoints ? `−${result.penaltyPoints} late` : null,
+  ]
+    .filter((p): p is string => !!p)
+    .join(' · ')
+}
+
+/** A week row's detail in the month view: the score, "Paused", "Judge" ("Judge · 0%" once closed in a month they
+ *  also play), "In progress", "Upcoming", "Sat out" or "Not in". */
+export function weekDetail(result: MemberMonthResult, weekId: string, bounds: { startAt: number; deadlineAt: number }, nowMs: number): string {
+  const started = nowMs >= bounds.startAt
+  const closed = nowMs >= bounds.deadlineAt
+  const entry = result.weeks.find((w) => w.weekId === weekId)
+  if (entry?.paused) return 'Paused'
+  if (result.judged?.includes(weekId)) return playsMonth(result) && closed ? 'Judge · 0%' : 'Judge'
+  if (entry) return entry.score !== null ? `${formatScore(entry.score)}${entry.closed ? '' : ' so far'}` : started ? 'In progress' : 'Upcoming'
+  return !started ? 'Upcoming' : closed ? 'Sat out' : 'Not in'
+}
+
+/** The "October list" row's detail: the list's score, "In progress", "Judge" or "No list". */
+export function monthlyDetail(result: MemberMonthResult): string {
+  if (result.monthlyJudge) return 'Judge'
+  const list = result.monthly
+  if (!list) return 'No list'
+  if (!list.closed) return 'In progress'
+  return list.score !== null ? formatScore(list.score) : 'No score'
+}
+
+/** The finished month's footnote for people who only judged it: "Kim judged October." */
+export function judgedFootnote(names: string[], monthId: MonthId): string | null {
+  return names.length > 0 ? `${listNames(names)} judged ${monthName(monthId)}.` : null
+}
+
+/** "3 months in a row" from 2 on. */
+export function streakPill(streak: number | null | undefined): string | null {
+  return typeof streak === 'number' && streak >= 2 ? `${streak} months in a row` : null
+}
+
+export interface MonthDebtView {
+  /** The month's terms, subject → friend (stored, or monthTerms from the agreements before completion). */
+  terms: Record<UID, Record<UID, TermsInForce>>
+  /** Debt lines: by the final verdicts once complete; by the score so far before that (no streak rewards). */
+  lines: DebtLine[]
+  /** Streaks and runs after this month (complete months only); null while unknown. */
+  streaks: Streaks | null
+}
+
+/**
+ * What the month view shows about who owes whom (SPEC §9.7, §9.8): a complete month by its results doc's stored
+ * terms, else by monthTerms with its `completeAt` and house stakes (a finished month never changes); a month in
+ * progress by what counts now (the same as the stakes card, through termsFriends), read as if it ended now.
+ */
+export function monthDebtView(input: {
+  space: Space
+  monthId: MonthId
+  results: Record<UID, MemberMonthResult>
+  stakes: Record<UID, MemberStakes> | undefined
+  house: House
+  completeAt: number
+  firstLockAt: number
+  stored: MonthResults | null | undefined
+  prev: MonthResults | null | undefined
+}): MonthDebtView {
+  const { space, monthId, results, stakes, house, completeAt, firstLockAt, stored, prev } = input
+  const terms = monthTerms(space, monthId, results, stakes, house, { completeAt, firstLockAt }, stored)
+  const complete = Object.values(results).some((r) => r.complete)
+  if (!complete) return { terms, lines: debtLines(monthDebts(monthId, soFar(results, space.threshold), terms, null)), streaks: null }
+  const streaks = streaksFor(monthId, firstMonthOf(space), stored, prev, results, terms)
+  return { terms, lines: debtLines(monthDebts(monthId, results, terms, streaks?.tierRuns ?? null)), streaks }
 }

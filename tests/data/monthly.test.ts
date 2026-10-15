@@ -29,7 +29,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const CLOSED = "You can't change this anymore."
+const CLOSED = 'You can’t change this anymore.'
 const NOT_IN_LIST = 'This month’s list started without you. You’re in from next month.'
 
 let lena: TestUser

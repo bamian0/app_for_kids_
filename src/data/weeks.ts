@@ -215,9 +215,13 @@ export function watchPeriod<T>(
     const col = collection(ref, 'reviews')
     stopReviews = onSnapshot(
       want === 'all' ? col : query(col, where('reviewerId', '==', uid)),
+      // A full read answers from the cache first, which may hold only our own reviews (from the own-reviews
+      // query): such an answer counts as ours until the server confirms it.
+      { includeMetadataChanges: want === 'all' },
       (snap) => {
         reviews = snap.docs.map(toReview)
-        reviewsScope = want
+        const unconfirmed = want === 'all' && snap.metadata.fromCache && reviews.every((r) => r.reviewerId === uid)
+        reviewsScope = unconfirmed ? 'mine' : want
         publish()
       },
       (e) => {

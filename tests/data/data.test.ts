@@ -60,7 +60,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const CLOSED = "You can't change this anymore."
+const CLOSED = 'You can’t change this anymore.'
 /** Seeded in its review window; everyone submits, so it ends up revealed. */
 const REVIEW_WEEK = '2026-09-21'
 
@@ -70,7 +70,7 @@ let kim: TestUser
 let lee: TestUser
 let space: Space
 
-const OFFLINE = "You're offline. Check your connection and try again."
+const OFFLINE = 'You’re offline. Check your connection and try again.'
 
 /** Every state a subscription emits, for checking that none of them was wrong on the way. */
 function record<T>(start: (emit: (next: Live<T>) => void) => () => void) {
@@ -100,7 +100,7 @@ describe('accounts', () => {
     await signOut()
     await rejectsWith(signUp('Alex', alex.email, PASSWORD), 'An account with this email already exists. Try signing in.')
     await rejectsWith(signUp('Pat', 'pat@example.com', '12345'), 'Use at least 6 characters for your password.')
-    await rejectsWith(signUp('Pat', 'not-an-email', PASSWORD), "That email address doesn't look right.")
+    await rejectsWith(signUp('Pat', 'not-an-email', PASSWORD), 'That email address doesn’t look right.')
     await rejectsWith(signUp('   ', 'pat@example.com', PASSWORD), "Name can't be empty.")
     await rejectsWith(signIn(alex.email, 'wrong-password'), 'Wrong email or password.')
     await rejectsWith(signIn('nobody@example.com', PASSWORD), 'Wrong email or password.')

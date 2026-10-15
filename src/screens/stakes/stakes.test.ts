@@ -3,8 +3,21 @@ import { debtLines, nextAgreement, pairTerms } from '../../domain/stakes.ts'
 import type { Debt } from '../../domain/stakes.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
 import { weekBounds } from '../../domain/time.ts'
-import type { MemberStakes, Space, UID } from '../../domain/types.ts'
-import { canSettleLine, debtLineSubtitle, debtLineText, judgeOnly, settleLineHint, soFar } from '../components/month.ts'
+import type { MemberStakes, MonthResults, Space, TermsInForce, UID } from '../../domain/types.ts'
+import {
+  canSettleLine,
+  debtLineSubtitle,
+  debtLineText,
+  judgedFootnote,
+  judgeOnly,
+  monthDebtView,
+  monthlyDetail,
+  monthSummary,
+  settleLineHint,
+  soFar,
+  streakPill,
+  weekDetail,
+} from '../components/month.ts'
 import {
   agreeConfirm,
   agreeOutcomeNow,
@@ -135,13 +148,19 @@ describe('the stakes card', () => {
 
   it('says when a friend changed their stakes without needing you, until dismissed', () => {
     const sp = space(['marco', 'lena', 'sam'])
-    const agreed = agree(GROUP, 'lena', MID - D)
-    const card = stakesCard({ space: sp, me: 'lena', stakes: { marco: agreed }, nowMs: MID, name })
-    expect(card.news).toEqual({ kind: 'friend', text: 'Marco has new stakes', uid: 'marco', seenKey: `stakesSeen.s1.marco.${GROUP.updatedAt}` })
-    const dismissed = stakesCard({ space: sp, me: 'lena', stakes: { marco: agreed }, nowMs: MID, name, seen: (k) => k === `stakesSeen.s1.marco.${GROUP.updatedAt}` })
+    // Lena agreed to her own penalty; then Marco changed only Sam's: Lena's terms stand, so it's only news.
+    const each = own('marco', { reward: 'Dinner', penaltyMode: 'each', per: { lena: { reward: '', penalty: 'A coffee' }, sam: { reward: '', penalty: 'A beer' } }, updatedAt: MID - 3 * D })
+    const lena = agree(each, 'lena', MID - 3 * D + H)
+    const changed = { ...lena, per: { ...lena.per, sam: { reward: '', penalty: 'Two beers' } }, updatedAt: MID - 2 * D }
+    const key = `stakesSeen.s1.marco.${MID - 2 * D}`
+    const card = stakesCard({ space: sp, me: 'lena', stakes: { marco: changed }, nowMs: MID, name })
+    expect(card.news).toEqual({ kind: 'friend', text: 'Marco has new stakes', uid: 'marco', seenKey: key })
+    const dismissed = stakesCard({ space: sp, me: 'lena', stakes: { marco: changed }, nowMs: MID, name, seen: (k) => k === key })
     expect(dismissed.news).toBeNull()
     // A week later it isn't news anymore.
-    expect(stakesCard({ space: sp, me: 'lena', stakes: { marco: agreed }, nowMs: MID + 8 * D, name }).news).toBeNull()
+    expect(stakesCard({ space: sp, me: 'lena', stakes: { marco: changed }, nowMs: MID + 8 * D, name }).news).toBeNull()
+    // Nor once you agreed to them after the change.
+    expect(stakesCard({ space: sp, me: 'lena', stakes: { marco: agree(GROUP, 'lena', MID - D) }, nowMs: MID, name }).news).toBeNull()
   })
 
   it('shows the owner’s house-stakes edit at once, even with an early October freeze (the card reads the space)', () => {
@@ -215,7 +234,6 @@ describe('when it counts', () => {
   })
 
   it('tells the save toast who has to agree, from the saved terms', () => {
-    const sp = space(['marco', 'lena', 'sam'])
     const agreed = agree(agree(GROUP, 'lena', MID - D), 'sam', MID - H)
     // Back to terms everyone agreed to: counts now.
     const same = stakesAfterSave('marco', draftInput(draftFrom(agreed, HOUSE, ['lena', 'sam']), ['lena', 'sam']), agreed, MID)
@@ -438,5 +456,116 @@ describe('month debt lines', () => {
     expect(judgeOnly(result('a', { judged: ['2026-10-05'] }))).toBe(true)
     expect(judgeOnly(result('a', { judged: ['2026-10-05'], weeks: [{ weekId: '2026-10-12', score: 80, closed: true }] }))).toBe(false)
     expect(judgeOnly(result('a'))).toBe(false)
+  })
+
+  it('sums up a month: paused weeks, the month’s list, late points, and a month only judged', () => {
+    const closed = () => true
+    const weeks = [
+      { weekId: '2026-10-05', score: 90, closed: true },
+      { weekId: '2026-10-12', score: null, closed: true, paused: true as const },
+      { weekId: '2026-10-19', score: 95, closed: true },
+      { weekId: '2026-10-26', score: 80, closed: true },
+    ]
+    expect(monthSummary(result('a', { weeks, finalScore: 88, average: 88 }), closed)).toBe('3 weeks scored · 1 paused')
+    const withList = result('a', { weeks: weeks.filter((w) => !w.paused), finalScore: 88, monthly: { score: 92, closed: true, taskCount: 3 }, penaltyPoints: 5 })
+    expect(monthSummary(withList, closed)).toBe('3 weeks + October list scored · −5 late')
+    expect(monthSummary(result('a', { judged: ['2026-10-05', '2026-10-12'], skippedAsJudge: 2 }), closed)).toBe('Judge · no score this month · didn’t review 2')
+    expect(monthSummary(result('a', { judged: ['2026-10-05'] }), closed)).toBe('Judge · no score this month')
+    // A judged week in a month they also play counts as a 0% week once closed.
+    const mixed = result('a', { weeks: [{ weekId: '2026-10-12', score: 100, closed: true }], judged: ['2026-10-05'], finalScore: 50 })
+    expect(monthSummary(mixed, closed)).toBe('2 weeks scored')
+    expect(monthSummary(result('a'), closed)).toBe('No scored weeks yet')
+  })
+
+  it('reads each week row: paused, judged, scored, or not in', () => {
+    const bounds = { startAt: Date.parse('2026-10-05T00:00:00+02:00'), deadlineAt: Date.parse('2026-10-10T00:00:00+02:00') }
+    const after = bounds.deadlineAt + H
+    const r = result('a', { weeks: [{ weekId: '2026-10-05', score: 92.5, closed: true }] })
+    expect(weekDetail(r, '2026-10-05', bounds, after)).toBe('92%')
+    expect(weekDetail(result('a', { weeks: [{ weekId: '2026-10-05', score: null, closed: true, paused: true }] }), '2026-10-05', bounds, after)).toBe('Paused')
+    expect(weekDetail(result('a', { judged: ['2026-10-05'] }), '2026-10-05', bounds, after)).toBe('Judge')
+    const plays = result('a', { judged: ['2026-10-05'], weeks: [{ weekId: '2026-10-12', score: 80, closed: true }] })
+    expect(weekDetail(plays, '2026-10-05', bounds, after)).toBe('Judge · 0%')
+    expect(weekDetail(plays, '2026-10-05', bounds, bounds.startAt + H)).toBe('Judge')
+    expect(weekDetail(result('a'), '2026-10-05', bounds, after)).toBe('Sat out')
+    expect(weekDetail(result('a'), '2026-10-05', bounds, bounds.startAt - H)).toBe('Upcoming')
+  })
+
+  it('reads the month’s list row, the streak pill and the judges’ footnote', () => {
+    expect(monthlyDetail(result('a', { monthly: { score: 92, closed: true, taskCount: 2 } }))).toBe('92%')
+    expect(monthlyDetail(result('a', { monthly: { score: 50, closed: false, taskCount: 2 } }))).toBe('In progress')
+    expect(monthlyDetail(result('a', { monthlyJudge: true }))).toBe('Judge')
+    expect(monthlyDetail(result('a'))).toBe('No list')
+    expect(streakPill(3)).toBe('3 months in a row')
+    expect(streakPill(1)).toBeNull()
+    expect(judgedFootnote(['Kim'], '2026-10')).toBe('Kim judged October.')
+    expect(judgedFootnote(['Kim', 'Ana'], '2026-10')).toBe('Kim and Ana judged October.')
+    expect(judgedFootnote([], '2026-10')).toBeNull()
+  })
+})
+
+describe('the month view’s debt lines', () => {
+  const sp = space(['marco', 'lena', 'sam'])
+  const others = (uid: UID) => ['marco', 'lena', 'sam'].filter((id) => id !== uid)
+  const month = (complete: boolean, scores: Record<UID, number>): Record<UID, MemberMonthResult> =>
+    Object.fromEntries(
+      Object.entries(scores).map(([uid, score]) => [
+        uid,
+        {
+          uid,
+          monthId: '2026-10',
+          former: false,
+          others: others(uid),
+          weeks: [{ weekId: '2026-10-05', score, closed: true }],
+          average: score,
+          missedReviews: 0,
+          penaltyPoints: 0,
+          finalScore: score,
+          complete,
+          passed: complete ? score >= 90 : null,
+        },
+      ]),
+    )
+  const firstLockAt = weekBounds('2026-09-28', TZ).lockAt
+  const agreed = agree(agree(GROUP, 'lena', MID - 2 * H), 'sam', MID - H)
+
+  it('a month in progress quotes what counts now, by the score so far', () => {
+    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(false, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    const marco = view.lines.filter((l) => l.subject === 'marco')
+    expect(marco.map((l) => debtLineText(l, 'marco', name))).toEqual(['Lena and Sam owe you: Dinner, on you'])
+    expect(view.streaks).toBeNull()
+    // Lena is on the house stakes with everyone (she has no stakes of her own).
+    expect(view.lines.filter((l) => l.subject === 'lena').map((l) => debtLineText(l, 'marco', name))).toEqual(['Lena owes you and Sam: Coffee for a week'])
+  })
+
+  it('a finished month never changes: agreements after it was complete count from the next month', () => {
+    const late = agree(agree(GROUP, 'lena', OCT_END + H), 'sam', OCT_END + 2 * H)
+    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: late }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    expect(view.lines.filter((l) => l.subject === 'marco').map((l) => l.what)).toEqual(['Dinner on me'])
+    // October is the first results month: streaks start there.
+    expect(view.streaks?.streaks.marco).toBe(1)
+    // Agreed before it was complete: those terms are October's.
+    const before = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    expect(before.lines.filter((l) => l.subject === 'marco').map((l) => l.what)).toEqual(['Dinner, on you'])
+  })
+
+  it('uses the stored terms and streak runs once the results are in, with the streak reward due', () => {
+    const line = (text: string): TermsInForce['reward'] => ({ text, together: true, source: 'agreed' })
+    const pair: TermsInForce = { reward: line('Dinner, on you'), penalty: line('Pizza for all'), tiers: [{ months: 3, reward: 'Weekend away' }] }
+    const stored: MonthResults = {
+      monthId: '2026-11',
+      completeAt: OCT_END + 35 * D,
+      members: { marco: { score: 95, passed: true, streak: 3, tierRuns: { '3': 3 } }, lena: { score: 80, passed: false, streak: 0 }, sam: { score: 92, passed: true, streak: 1 } },
+      terms: { marco: { lena: pair, sam: pair } },
+      createdAt: OCT_END + 36 * D,
+    }
+    const results = Object.fromEntries(Object.entries(month(true, { marco: 95, lena: 80, sam: 92 })).map(([k, r]) => [k, { ...r, monthId: '2026-11' }]))
+    const view = monthDebtView({ space: sp, monthId: '2026-11', results, stakes: {}, house: HOUSE, completeAt: OCT_END + 35 * D, firstLockAt, stored, prev: null })
+    const marco = view.lines.filter((l) => l.subject === 'marco')
+    expect(marco.map((l) => [debtLineText(l, 'marco', name), l.tier])).toEqual([
+      ['Lena and Sam owe you: Dinner, on you', undefined],
+      ['Lena and Sam owe you: Weekend away', 3],
+    ])
+    expect(view.streaks?.streaks.marco).toBe(3)
   })
 })

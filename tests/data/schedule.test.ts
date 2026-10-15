@@ -31,7 +31,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const OFFLINE = "You're offline. Check your connection and try again."
+const OFFLINE = 'You’re offline. Check your connection and try again.'
 /** Lists lock Tuesday at 10:00 AM, reviews open Thursday at midnight, due Saturday at noon. */
 const TUESDAY_LATE: WeekSchedule = { lock: 2040, reviewOpen: 5760, deadline: 7920 }
 

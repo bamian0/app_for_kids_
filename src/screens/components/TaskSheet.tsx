@@ -227,7 +227,8 @@ function TaskSheetBody({ space, mode, close, onSave, onDelete, loaded, done, loc
     <Screen
       title={TITLES[mode.kind]}
       titleDisplay="inline"
-      leading={<GlassButton icon="xmark" aria-label="Cancel" onClick={() => void cancel()} />}
+      // A locked monthly task has nothing left to change: just Done, like a read-only sheet.
+      leading={mode.kind === 'locked' && !money ? undefined : <GlassButton icon="xmark" aria-label="Cancel" onClick={() => void cancel()} />}
       trailing={
         mode.kind === 'add' ? undefined : (
           <GlassButton prominent icon="checkmark" aria-label="Done" onClick={() => void submit()} disabled={!valid} />

@@ -1,11 +1,14 @@
-// Help, behind the "?" on every tab's root screen: how Stakes works in a two-minute read, with the
+// Help, behind the "?" on every tab's root screen: how Stakes works in about three minutes, with the
 // week at a glance on top. It ends with the intro, replayed as a full-screen cover. The "How Stakes
-// Works" rows in the Profile sheet and space settings push the same content, so there is one text.
+// Works" rows in the Profile sheet and space settings push the same content, so there is one text; from a
+// space it follows that space's own times (SPEC §9.12).
 import { useCallback } from 'react'
 import { AVATAR_COLORS } from '../../domain/ids.ts'
+import type { HourCycle } from '../../domain/schedule.ts'
+import type { WeekSchedule } from '../../domain/types.ts'
 import { GlassButton, Icon, Row, Screen, Section, cx, useSheet } from '../../ui/index.ts'
-import { WEEK_TIMELINE, WEEKDAY_LETTERS, helpSections } from './content.ts'
-import type { HelpSection } from './content.ts'
+import { RULES, WEEKDAY_LETTERS, glanceFooter, helpSections, weekTimeline } from './content.ts'
+import type { HelpSection, TimelineStop } from './content.ts'
 import { IntroScreen } from './IntroScreen.tsx'
 import './help.css'
 
@@ -18,6 +21,18 @@ const TILE: Record<HelpSection['id'], string> = {
   money: AVATAR_COLORS[1],
   reminders: AVATAR_COLORS[4],
 }
+
+/** The device's clock style: "6:00 PM" or "18:00". */
+const HOUR_CYCLE: HourCycle = (() => {
+  try {
+    const cycle = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle
+    return cycle === 'h23' || cycle === 'h24' ? 'h23' : 'h12'
+  } catch {
+    return 'h12'
+  }
+})()
+
+const SUBTITLE = 'Everything, in about three minutes.'
 
 /** Plays the intro again as a full-screen cover. Replaying it doesn't touch the device's flag. */
 function useShowIntro(): () => void {
@@ -57,7 +72,7 @@ export function HelpSheet({ close, onShowIntro }: { close: () => void; onShowInt
   return (
     <Screen
       title="How Stakes Works"
-      subtitle="Everything, in a two-minute read."
+      subtitle={SUBTITLE}
       className="hp"
       trailing={<GlassButton prominent icon="checkmark" aria-label="Done" onClick={close} />}
     >
@@ -66,23 +81,32 @@ export function HelpSheet({ close, onShowIntro }: { close: () => void; onShowInt
   )
 }
 
-/** The same, pushed from a settings row; `timezone` names the city a space's deadlines run on. */
-export function HelpScreen({ timezone }: { timezone?: string }) {
+export interface HelpScreenProps {
+  /** The city a space's deadlines run on ("Berlin"), from a space's settings. */
+  timezone?: string
+  /** The space's own times (absent: the usual ones). */
+  schedule?: WeekSchedule
+  /** You only rate in this space. */
+  judge?: boolean
+}
+
+/** The same, pushed from a settings row; from a space it follows its times and names its clock. */
+export function HelpScreen({ timezone, schedule, judge }: HelpScreenProps) {
   const showIntro = useShowIntro()
   return (
-    <Screen title="How Stakes Works" subtitle="Everything, in a two-minute read." className="hp">
-      <HelpContent onShowIntro={showIntro} timezone={timezone} />
+    <Screen title="How Stakes Works" subtitle={SUBTITLE} className="hp">
+      <HelpContent onShowIntro={showIntro} timezone={timezone} schedule={schedule} judge={judge} />
     </Screen>
   )
 }
 
-function HelpContent({ onShowIntro, timezone }: { onShowIntro: () => void; timezone?: string }) {
+function HelpContent({ onShowIntro, timezone, schedule, judge }: { onShowIntro: () => void } & HelpScreenProps) {
   return (
     <>
-      <Section header="Your week at a glance" footer={timezone ? `Every deadline in this space runs on ${timezone} time.` : undefined}>
-        <WeekGlance />
+      <Section header="Your week at a glance" footer={glanceFooter(timezone, schedule, judge)}>
+        <WeekGlance stops={weekTimeline(schedule, HOUR_CYCLE)} />
       </Section>
-      {helpSections().map((section) => (
+      {helpSections({ ...RULES, schedule, hourCycle: HOUR_CYCLE }).map((section) => (
         <Topic key={section.id} section={section} />
       ))}
       <Section>
@@ -92,9 +116,10 @@ function HelpContent({ onShowIntro, timezone }: { onShowIntro: () => void; timez
   )
 }
 
-/** Monday to Sunday with the four moments that matter, then the same four in words. */
-function WeekGlance() {
-  const stops = new Map(WEEK_TIMELINE.map((stop) => [stop.day, stop]))
+/** Monday to Sunday with the moments that matter, then the same in words. When two share a day, the later one
+ *  draws the strip's icon and both are in the legend. Exported for the Week Schedule screen's live preview. */
+export function WeekGlance({ stops: list = weekTimeline() }: { stops?: TimelineStop[] }) {
+  const stops = new Map(list.map((stop) => [stop.day, stop]))
   return (
     <div className="hp-week">
       <div className="hp-week__strip" aria-hidden>
@@ -109,8 +134,8 @@ function WeekGlance() {
         })}
       </div>
       <ul className="hp-week__legend">
-        {WEEK_TIMELINE.map((stop) => (
-          <li key={stop.day} className="hp-stop">
+        {list.map((stop) => (
+          <li key={`${stop.day}-${stop.icon}`} className="hp-stop">
             <span className="hp-stop__icon" aria-hidden>
               <Icon name={stop.icon} size={17} weight={1.9} />
             </span>

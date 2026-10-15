@@ -27,7 +27,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const OFFLINE = "You're offline. Check your connection and try again."
+const OFFLINE = 'You’re offline. Check your connection and try again.'
 
 let ana: TestUser
 let ben: TestUser

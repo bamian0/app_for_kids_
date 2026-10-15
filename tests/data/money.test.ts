@@ -38,7 +38,7 @@ import {
 } from './helpers.ts'
 
 const GENERIC = 'Something went wrong. Try again.'
-const NO_ACCESS = "You don't have access to this."
+const NO_ACCESS = 'You don’t have access to this.'
 
 let alex: TestUser
 let sam: TestUser

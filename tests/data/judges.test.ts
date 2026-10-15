@@ -26,7 +26,7 @@ import {
   type TestUser,
 } from './helpers.ts'
 
-const OFFLINE = "You're offline. Check your connection and try again."
+const OFFLINE = 'You’re offline. Check your connection and try again.'
 const JUDGING = 'You’re judging this week, so there’s no list to plan.'
 /** The 12 keys of a space from before batch 2. */
 const OLD_KEYS = ['createdAt', 'inviteCode', 'joinedAt', 'latePenalty', 'memberIds', 'name', 'ownerId', 'penalty', 'reward', 'threshold', 'timezone', 'utcOffsetMin']

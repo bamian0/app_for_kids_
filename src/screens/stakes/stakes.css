@@ -1,0 +1,387 @@
+/* The stakes card, the Stakes screen and the stakes editor (SPEC §9.7). */
+
+/* ---------- Card ---------- */
+
+.sk-card__main {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.2s ease;
+}
+.sk-card__main .s-stakes__item {
+  padding-right: 40px;
+}
+/* Lined up with the first row (the reward), so it never sits on a separator. */
+.sk-card__chevron {
+  position: absolute;
+  top: 31px;
+  right: 14px;
+  color: var(--tertiary-label);
+  transform: translateY(-50%);
+}
+
+/* One status line under the rows: a leading glyph lined up with the stakes tiles, the words, a trailing action. */
+.sk-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.2s ease;
+}
+.sk-line::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.sk-line--split {
+  padding: 0 6px 0 0;
+}
+.sk-line__main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 10px 0 10px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+button.sk-line,
+.sk-line__main,
+.sk-card__main {
+  cursor: pointer;
+}
+@media (hover: none) {
+  button.sk-line:active,
+  .sk-line--split:has(.sk-line__main:active),
+  .sk-card__main:active {
+    background: var(--row-highlight);
+  }
+}
+@media (hover: hover) {
+  button.sk-line:hover,
+  .sk-line--split:has(.sk-line__main:hover),
+  .sk-card__main:hover {
+    background: var(--quaternary-system-fill);
+  }
+}
+.sk-line__lead {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-height: 28px;
+}
+.sk-line__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tint);
+}
+.sk-line__glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--secondary-label);
+}
+.sk-line__glyph--done {
+  background: var(--label);
+  color: var(--on-label);
+}
+.sk-line__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.sk-line__title {
+  color: var(--label);
+}
+.sk-line__title--strong {
+  font-weight: 600;
+}
+.sk-line__title--action {
+  font-weight: 600;
+  color: var(--tint);
+}
+:root[data-theme="dark"] .sk-line__title--action {
+  color: var(--label);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sk-line__title--action {
+    color: var(--label);
+  }
+}
+/* A capsule that reads as a small button inside a tappable line (the line itself is the button). */
+.sk-line__action {
+  flex-shrink: 0;
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: var(--tertiary-system-fill);
+  font: 600 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--label);
+  white-space: nowrap;
+}
+.sk-line__action--filled {
+  background: var(--label);
+  color: var(--on-label);
+}
+.sk-line__close {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--tertiary-label);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sk-line__close-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--secondary-label);
+}
+.sk-line .ui-avatar-stack {
+  flex-shrink: 0;
+}
+
+/* ---------- Stakes screen ---------- */
+
+.sk-section {
+  scroll-margin-top: 104px;
+}
+.sk-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.sk-head__counts {
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.sk-subhead {
+  position: relative;
+  padding: 12px 16px 2px 60px;
+  font: 600 13px/18px var(--font);
+  letter-spacing: 0.01em;
+  color: var(--secondary-label);
+}
+.sk-subhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.sk-agree {
+  position: relative;
+  padding: 12px 16px 16px;
+}
+.sk-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sk-note {
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Editor ---------- */
+
+.sk-mode {
+  position: relative;
+  padding: 10px 12px;
+}
+.sk-mode::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: bottom;
+}
+.sk-field {
+  position: relative;
+  padding-top: 10px;
+}
+.sk-field + .sk-field::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.sk-field__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.sk-field__label strong {
+  font-weight: 600;
+  color: var(--label);
+}
+.sk-field__who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sk-field .ui-textarea {
+  padding-top: 6px;
+}
+.sk-tier {
+  position: relative;
+  padding-top: 10px;
+  background: var(--secondary-system-grouped-background);
+}
+.sk-tier::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.sk-tiers > :first-child .sk-tier::before {
+  display: none;
+}
+.sk-tier__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 16px;
+  min-height: 28px;
+}
+.sk-tier__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--label);
+  color: var(--on-label);
+}
+.sk-tier__title {
+  flex: 1;
+  font: 600 15px/20px var(--font);
+  color: var(--label);
+}
+.sk-tier__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--tertiary-label);
+  cursor: pointer;
+}
+.sk-tier .ui-textarea {
+  padding-top: 4px;
+}
+.sk-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--label);
+}
+.sk-tiers + .ui-row::before,
+.sk-tiers + .ui-row {
+  position: relative;
+}
+.sk-editor-footer {
+  margin: -12px calc(var(--gutter) + var(--ui-safe-right) + 16px) 32px calc(var(--gutter) + var(--ui-safe-left) + 16px);
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Month view ---------- */
+
+.sk-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.sk-month-footnote {
+  margin: -8px calc(var(--gutter) + var(--ui-safe-right) + 16px) 28px calc(var(--gutter) + var(--ui-safe-left) + 16px);
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.sk-line-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--secondary-label);
+}

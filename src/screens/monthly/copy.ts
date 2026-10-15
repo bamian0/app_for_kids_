@@ -8,7 +8,7 @@ import type { WeekBounds, WeekPhase } from '../../domain/time.ts'
 import type { MonthlyData, Space, UID } from '../../domain/types.ts'
 import type { IconName } from '../../ui/icons.tsx'
 import { formatScore, monthName } from '../components/format.ts'
-import { compactNames } from '../components/people.ts'
+import { compactNames, listNames } from '../components/people.ts'
 
 const DAY_MS = 86_400_000
 /** A list can be planned from 8 days before its first week starts (when the upkeep may create it). */
@@ -34,8 +34,8 @@ export function listHolders(result: WeekResult): UID[] {
 export interface MonthlyCardView {
   title: string
   subtitle: string
-  /** Your list's step ring (tasks done of n), or an icon. */
-  lead: { kind: 'ring'; done: number; total: number } | { kind: 'icon'; icon: IconName }
+  /** The row's glyph: a calendar for a list, two people for a judge. */
+  icon: IconName
   /** The mini score beside it: provisional (graphite) until revealed. */
   score?: { value: number | null; provisional: boolean }
 }
@@ -67,7 +67,7 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
   const phase = weekPhase(bounds, nowMs)
   // The list's snapshot decides (setJudge writes it with the space's); before you're in it, the space's choice.
   const judging = list && list.members.includes(me) ? judgesOf(list).includes(me) : spaceJudges(space).includes(me)
-  const judgeView = (subtitle: string): MonthlyCardView => ({ title: `${month} lists`, subtitle, lead: { kind: 'icon', icon: 'person2' } })
+  const judgeView = (subtitle: string): MonthlyCardView => ({ title: `${month} lists`, subtitle, icon: 'person2' })
   const inReview = (): string | null => {
     if (phase === 'review' && !result.revealed) return `In review · due ${when(bounds.deadlineAt)}`
     if (phase === 'review' || phase === 'closed') return 'Results are in'
@@ -79,11 +79,9 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
     if (judging) return judgeView(`You rate them in ${month}’s last week.`)
     const plan = data.plans[me]?.tasks ?? []
     if (plan.length === 0) {
-      return { title: `Your ${month} list`, subtitle: `Optional: a few bigger things for ${month}. Locks ${when(bounds.lockAt)}.`, lead: { kind: 'icon', icon: 'calendar' } }
+      return { title: `Your ${month} list`, subtitle: `Optional: a few bigger things for ${month}. Locks ${when(bounds.lockAt)}.`, icon: 'calendar' }
     }
-    const mine = result.members[me]
-    const done = mine?.tasks.filter((t) => t.selfDone).length ?? 0
-    return { title: `Your ${month} list`, subtitle: `${tasks(plan.length)} · locks ${when(bounds.lockAt)}`, lead: { kind: 'ring', done, total: plan.length } }
+    return { title: `Your ${month} list`, subtitle: `${tasks(plan.length)} · locks ${when(bounds.lockAt)}`, icon: 'calendar' }
   }
 
   // Locked: only the list's own members see it, and only when there is something in it for them.
@@ -92,12 +90,11 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
   const mine: MemberWeekResult | undefined = result.members[me]
   if (mine && mine.taskCount > 0) {
     const done = mine.tasks.filter((t) => t.selfDone).length
-    const lead = { kind: 'ring', done, total: mine.taskCount } as const
     if (result.revealed && mine.score !== null) {
-      return { title: `Your ${month} list`, subtitle: `Score ${formatScore(mine.score)}`, lead, score: { value: mine.score, provisional: false } }
+      return { title: `Your ${month} list`, subtitle: `Score ${formatScore(mine.score)}`, icon: 'calendar', score: { value: mine.score, provisional: false } }
     }
     const subtitle = phase === 'review' ? `In review · due ${when(bounds.deadlineAt)}` : `${done} of ${mine.taskCount} done`
-    return { title: `Your ${month} list`, subtitle, lead, score: { value: mine.provisionalScore, provisional: true } }
+    return { title: `Your ${month} list`, subtitle, icon: 'calendar', score: { value: mine.provisionalScore, provisional: true } }
   }
   const holders = listHolders(result).filter((id) => id !== me)
   if (holders.length === 0) return null
@@ -105,7 +102,7 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
   return {
     title: `${month} lists`,
     subtitle: inReview() ?? `${who} ${holders.length === 1 ? 'has' : 'have'} one. Yours is optional; you’ll review theirs in ${month}’s last week.`,
-    lead: { kind: 'icon', icon: 'calendar' },
+    icon: 'calendar',
   }
 }
 
@@ -151,4 +148,91 @@ export function planningFooter(taskCount: number, lockText: string): string {
 export function noListNote(month: string, names: string[]): string | null {
   if (names.length === 0) return null
   return `${compactNames(names)} ${names.length === 1 ? 'has' : 'have'} no ${month} list.`
+}
+
+function inZone(ms: number, tz: string, options: Intl.DateTimeFormatOptions): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: tz }).format(ms).replace(/[  ]/g, ' ')
+  } catch {
+    return new Intl.DateTimeFormat('en-US', options).format(ms).replace(/[  ]/g, ' ')
+  }
+}
+
+/** The calendar day of `ms` in `tz`, as a day number. */
+function dayIn(ms: number, tz: string): number {
+  const [month, day, year] = inZone(ms, tz, { year: 'numeric', month: 'numeric', day: 'numeric' }).split('/').map(Number)
+  return Date.UTC(year, month - 1, day) / DAY_MS
+}
+
+/**
+ * A list's deadline in words. Within the coming week, `near` words it ("Monday at midnight", "tomorrow at
+ * midnight": deadlineText); further out a weekday alone would be ambiguous, so it names the date on the space's
+ * clock: "Monday, Oct 5 at midnight" (a midnight ends the day before it), "Monday, Oct 5 at 8:00 PM".
+ */
+export function listWhen(ms: number, tz: string, nowMs: number, near: (ms: number) => string): string {
+  const midnight = inZone(ms, tz, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) === '00:00'
+  const day = midnight ? ms - 1 : ms
+  if (dayIn(day, tz) - dayIn(nowMs, tz) < 7) return near(ms)
+  const date = inZone(day, tz, { weekday: 'long', month: 'short', day: 'numeric' })
+  return `${date} at ${midnight ? 'midnight' : inZone(ms, tz, { hour: 'numeric', minute: '2-digit' })}`
+}
+
+export interface StatusView {
+  title: string
+  subtitle: string
+  icon: IconName
+  urgent: boolean
+  /** Tapping opens the review sheet. */
+  opens: boolean
+}
+
+export interface MonthlyStatusInput {
+  result: WeekResult
+  me: UID
+  /** The space's current members: only they can still review, so only they are waited for. */
+  memberIds: UID[]
+  /** Your part from reviewParts. */
+  part: { open: boolean; targets: UID[] }
+  month: string
+  /** The list's deadline in words. */
+  due: string
+  latePenalty: number
+  /** Missed monthly reviews cost nothing (the month's last week is paused). */
+  penaltyFree: boolean
+  name: (uid: UID) => string
+}
+
+/**
+ * The monthly part's review line on the monthly screen, in its review window until the reveal: your reviews are
+ * due, there is nobody to review (confirm), or you're waiting, for friends or, when only someone who left holds
+ * it, for the deadline (SPEC §9.6). Null otherwise.
+ */
+export function monthlyReviewStatus({ result, me, memberIds, part, month, due, latePenalty, penaltyFree, name }: MonthlyStatusInput): StatusView | null {
+  const mine = result.members[me]
+  if (result.phase !== 'review' || result.revealed || !mine?.participating) return null
+  const friends = Object.values(result.members)
+    .filter((m) => m.participating && m.uid !== me && memberIds.includes(m.uid))
+    .map((m) => m.uid)
+  if (!mine.hasSubmitted) {
+    if (!part.open) return null
+    if (part.targets.length > 0) {
+      let subtitle = `Due ${due}. Each friend you skip costs you ${latePenalty} points.`
+      if (mine.judge) subtitle = `Due ${due}. Your friends’ results wait for you.`
+      else if (penaltyFree) subtitle = `Due ${due}.`
+      return { title: 'Your review is due', subtitle, icon: 'person2', urgent: true, opens: true }
+    }
+    if (friends.length === 0) return null
+    return { title: 'Nothing to review', subtitle: `None of your friends has a list for ${month}. Confirm so results can unlock.`, icon: 'checkmark', urgent: false, opens: true }
+  }
+  const waiting = friends.filter((id) => !result.members[id].hasSubmitted)
+  if (waiting.length === 0) {
+    return { title: 'Reviews in', subtitle: `Results come in at the deadline, ${due}. A friend who left can’t review anymore.`, icon: 'clock', urgent: false, opens: false }
+  }
+  return {
+    title: `Submitted. Waiting for ${waiting.length}`,
+    subtitle: `${listNames(waiting.map(name))} still reviewing. Results ${due} at the latest.`,
+    icon: 'clock',
+    urgent: false,
+    opens: false,
+  }
 }

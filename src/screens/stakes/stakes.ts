@@ -265,6 +265,8 @@ export function stakesCard({ space, me, stakes, nowMs, thisWeek, monthly, name, 
   } else {
     const fresh = subjects
       .flatMap((s) => (stakes[s] && nowMs - stakes[s].updatedAt < NEWS_DAYS * DAY ? [stakes[s]] : []))
+      // Not news once you agreed to them since (your Agree came after the change).
+      .filter((s) => !((s.agreed[me]?.at ?? -Infinity) >= s.updatedAt))
       .filter((s) => !seen(`stakesSeen.${space.id}.${s.uid}.${s.updatedAt}`))
       .sort((a, b) => b.updatedAt - a.updatedAt)[0]
     if (fresh) {
@@ -340,12 +342,13 @@ export function streakLine(streak: number | null | undefined): string | null {
 
 export const NO_OWN_FOOTER = 'Set what you get and what you give, the same for everyone or per friend. They count as soon as your friends tap Agree.'
 
-/** A friend's status row in "Your stakes". */
-export function friendStatus(own: MemberStakes, friend: UID): { kind: 'agreed' } | { kind: 'waiting'; subtitle: string } | { kind: 'missing' } {
+/** A friend's status row in "Your stakes": "Agreed", "Waiting" (with what counts meanwhile), or missing terms. */
+export function friendStatus(own: MemberStakes, friend: UID, inForce?: TermsInForce): { kind: 'agreed' } | { kind: 'waiting'; subtitle: string } | { kind: 'missing' } {
   const status = agreementStatus(own, friend)
   if (status === 'agreed') return { kind: 'agreed' }
   if (status === 'missing') return { kind: 'missing' }
-  return { kind: 'waiting', subtitle: own.agreed[friend] ? 'What they agreed before counts for now' : 'The house stakes count for now' }
+  const earlier = inForce ? inForce.reward.source === 'agreed' || inForce.penalty.source === 'agreed' || inForce.tiers.length > 0 : !!own.agreed[friend]
+  return { kind: 'waiting', subtitle: earlier ? 'What they agreed before counts for now' : 'The house stakes count for now' }
 }
 
 /** A friend's section footer: "Waiting for Sam and you" / "Waiting for Sam" / "Everyone agreed". */

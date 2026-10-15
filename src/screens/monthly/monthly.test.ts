@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { computeMonthly } from '../../domain/scoring.ts'
 import { monthlyBounds, weekBounds } from '../../domain/time.ts'
 import type { MonthlyData, MonthlyList, Plan, Progress, Review, Space, UID, Week, WeekData } from '../../domain/types.ts'
-import { judgeDetail, monthlyCardView, monthlyPill, noListNote, planningFooter } from './copy.ts'
+import { judgeDetail, listWhen, monthlyCardView, monthlyPill, monthlyReviewStatus, noListNote, planningFooter } from './copy.ts'
 import { reviewParts } from './review.ts'
 
 const HOUR = 3_600_000
@@ -161,9 +161,9 @@ describe('monthlyCardView', () => {
     expect(card(monthlyData(list()), planning)).toEqual({
       title: 'Your October list',
       subtitle: 'Optional: a few bigger things for October. Locks Monday at midnight.',
-      lead: { kind: 'icon', icon: 'calendar' },
+      icon: 'calendar',
     })
-    expect(card(monthlyData(list(), { a: 3 }), planning)).toMatchObject({ title: 'Your October list', subtitle: '3 tasks · locks Monday at midnight', lead: { kind: 'ring', done: 0, total: 3 } })
+    expect(card(monthlyData(list(), { a: 3 }), planning)).toMatchObject({ title: 'Your October list', subtitle: '3 tasks · locks Monday at midnight', icon: 'calendar' })
     expect(card(monthlyData(list(), { a: 1 }), planning)?.subtitle).toBe('1 task · locks Monday at midnight')
   })
 
@@ -181,7 +181,7 @@ describe('monthlyCardView', () => {
     expect(card(monthlyData(list({ judges: ['a'] })), planning, 'a', judgeSpace)).toEqual({
       title: 'October lists',
       subtitle: 'You rate them in October’s last week.',
-      lead: { kind: 'icon', icon: 'person2' },
+      icon: 'person2',
     })
     expect(card(monthlyData(list({ judges: ['a'] }), { b: 1 }), active, 'a', judgeSpace)?.subtitle).toBe('You rate them in October’s last week.')
     expect(card(monthlyData(list({ judges: ['a'] }), { b: 1 }), REVIEW, 'a', judgeSpace)?.subtitle).toBe('In review · due tonight at midnight')
@@ -190,7 +190,7 @@ describe('monthlyCardView', () => {
   it('tracks your list after the lock: done so far, in review, then the score', () => {
     const progress: Record<UID, Progress> = { a: { uid: 'a', updatedAt: SEP1, done: { a0: true, a1: true } } }
     const after = card(monthlyData(list(), { a: 3, b: 1 }, progress), active)
-    expect(after).toMatchObject({ title: 'Your October list', subtitle: '2 of 3 done', lead: { kind: 'ring', done: 2, total: 3 }, score: { provisional: true } })
+    expect(after).toMatchObject({ title: 'Your October list', subtitle: '2 of 3 done', icon: 'calendar', score: { provisional: true } })
     expect(after?.score?.value).toBeCloseTo(66.667, 2)
     expect(card(monthlyData(list(), { a: 3, b: 1 }, progress), REVIEW)?.subtitle).toBe('In review · due tonight at midnight')
     const marks = { a0: 1, a1: 1, a2: 0.5 } as const
@@ -203,7 +203,7 @@ describe('monthlyCardView', () => {
     expect(card(monthlyData(list(), { b: 2, c: 1 }), active)).toEqual({
       title: 'October lists',
       subtitle: 'Lena and Sam have one. Yours is optional; you’ll review theirs in October’s last week.',
-      lead: { kind: 'icon', icon: 'calendar' },
+      icon: 'calendar',
     })
     expect(card(monthlyData(list(), { b: 2 }), active)?.subtitle).toBe('Lena has one. Yours is optional; you’ll review theirs in October’s last week.')
     expect(card(monthlyData(list(), { b: 2 }), REVIEW)?.subtitle).toBe('In review · due tonight at midnight')
@@ -242,5 +242,87 @@ describe('monthly screen copy', () => {
     expect(judgeDetail({ ...judge, missedReviewsOf: ['a'] }, 'closed', false)).toBe('Didn’t review')
     expect(judgeDetail(judge, 'closed', false)).toBe('Nothing to review')
     expect(judgeDetail(judge, 'closed', true)).toBe('Left · Nothing to review')
+  })
+})
+
+describe('listWhen', () => {
+  const near = () => 'NEAR'
+  // October's list locks Tuesday Oct 6 00:00 in Berlin: "Monday at midnight" (Oct 5).
+  const lock = listBounds.lockAt
+
+  it('leaves the coming week to deadlineText', () => {
+    expect(listWhen(lock, BERLIN, lock - 2 * DAY, near)).toBe('NEAR')
+    // Tuesday Sep 29 at noon: the lock ends Monday Oct 5, six days on.
+    expect(listWhen(lock, BERLIN, lock - 6 * DAY - 12 * HOUR, near)).toBe('NEAR')
+  })
+
+  it('names the date further out, where “next Monday” would be wrong', () => {
+    // Planning from 8 days before the month’s first week: Monday Sep 21, two weeks before the lock.
+    expect(listWhen(lock, BERLIN, lock - 15 * DAY, near)).toBe('Monday, Oct 5 at midnight')
+    expect(listWhen(lock, BERLIN, lock - 7 * DAY - 12 * HOUR, near)).toBe('Monday, Oct 5 at midnight')
+    // A lock at 8:00 PM on the space’s own times.
+    expect(listWhen(lock - 4 * HOUR, BERLIN, lock - 15 * DAY, near)).toBe('Monday, Oct 5 at 8:00 PM')
+  })
+})
+
+describe('monthlyReviewStatus', () => {
+  const names: Record<UID, string> = { a: 'Ann', b: 'Lena', c: 'Sam' }
+  const status = (data: MonthlyData, me: UID, s: Space = space(), penaltyFree = false, nowMs = REVIEW) => {
+    const result = computeMonthly(data, s, nowMs)
+    return monthlyReviewStatus({
+      result,
+      me,
+      memberIds: s.memberIds,
+      part: reviewParts(undefined, data, me, s, nowMs).monthly,
+      month: 'October',
+      due: 'tonight at midnight',
+      latePenalty: 5,
+      penaltyFree,
+      name: (uid) => names[uid],
+    })
+  }
+
+  it('says your reviews are due, with what a skip costs', () => {
+    expect(status(monthlyData(list(), { b: 2, c: 1 }), 'a')).toEqual({
+      title: 'Your review is due',
+      subtitle: 'Due tonight at midnight. Each friend you skip costs you 5 points.',
+      icon: 'person2',
+      urgent: true,
+      opens: true,
+    })
+    // A paused last week: the lists are still reviewed, but skipping costs nothing.
+    expect(status(monthlyData(list(), { b: 2 }), 'a', space(), true)?.subtitle).toBe('Due tonight at midnight.')
+    // A judge holds the results, and loses nothing.
+    expect(status(monthlyData(list({ judges: ['a'] }), { b: 2 }), 'a')?.subtitle).toBe('Due tonight at midnight. Your friends’ results wait for you.')
+  })
+
+  it('asks for a confirm when nobody has a list', () => {
+    expect(status(monthlyData(list()), 'a')).toEqual({
+      title: 'Nothing to review',
+      subtitle: 'None of your friends has a list for October. Confirm so results can unlock.',
+      icon: 'checkmark',
+      urgent: false,
+      opens: true,
+    })
+  })
+
+  it('waits for friends still in the space, or for the deadline when only a leaver holds it', () => {
+    const waiting = status(monthlyData(list({ submittedBy: ['a'] }), { a: 1, b: 2, c: 1 }), 'a')
+    expect(waiting).toMatchObject({ title: 'Submitted. Waiting for 2', subtitle: 'Lena and Sam still reviewing. Results tonight at midnight at the latest.', opens: false })
+    // Sam left after the lock: he can’t review, so the deadline reveals the lists.
+    const left = space({ memberIds: ['a', 'b'], leftAt: { c: listBounds.lockAt + DAY } })
+    expect(status(monthlyData(list({ submittedBy: ['a', 'b'] }), { a: 1, b: 2, c: 1 }), 'a', left)).toEqual({
+      title: 'Reviews in',
+      subtitle: 'Results come in at the deadline, tonight at midnight. A friend who left can’t review anymore.',
+      icon: 'clock',
+      urgent: false,
+      opens: false,
+    })
+  })
+
+  it('is quiet outside the review window, once revealed, and for someone outside the lists', () => {
+    expect(status(monthlyData(list(), { b: 2 }), 'a', space(), false, listBounds.reviewOpenAt - HOUR)).toBeNull()
+    expect(status(monthlyData(list({ submittedBy: ['a', 'b', 'c'] }), { b: 2 }), 'a')).toBeNull()
+    expect(status(monthlyData(list({ members: ['b', 'c'] }), { b: 2 }), 'a')).toBeNull()
   })
 })

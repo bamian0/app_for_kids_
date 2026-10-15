@@ -8,7 +8,7 @@ import { authState } from '../../src/data/session.ts'
 import type { UserProfile } from '../../src/domain/types.ts'
 import { adminGet, as, createUser, eventually, loadRules, observe, rejectsWith, RULES, seed, setupEmulators, teardownEmulators, ts, type TestUser } from './helpers.ts'
 
-const NO_ACCESS = "You don't have access to this."
+const NO_ACCESS = 'You don’t have access to this.'
 const BAD_PHOTO = 'Try a different photo.'
 const JPEG = 'data:image/jpeg;base64,'
 const PHOTO = `${JPEG}/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2Q==`

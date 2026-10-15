@@ -236,8 +236,9 @@ export function ReviewSheet({ space, weekId, close }: Props) {
   const monthlyTasks = monthlyTargets.includes(reviewee) ? tasksIn(monthlyPart, reviewee) : null
   const checkedIn = (part: Part | null, tasks: Task[] | null) => (tasks ?? []).filter((t) => isTaskDone(t, part?.progress[reviewee]?.done ?? {})).length
   const checked = checkedIn(weeklyPart, weeklyTasks) + checkedIn(monthlyPart, monthlyTasks)
-  // Whether this friend reviews you in this window (judges and friends you have no list for don't).
-  const reviewsMe = [weeklyPart && !paused ? { part: weeklyPart, data: data as WeekData | MonthlyData } : null, monthlyPart && monthly ? { part: monthlyPart, data: monthly } : null].some(
+  // Whether this friend reviews you in this window (judges, friends you have no list for and anyone who left don't).
+  const former = !space.memberIds.includes(reviewee)
+  const reviewsMe = !former && [weeklyPart && !paused ? { part: weeklyPart, data: data as WeekData | MonthlyData } : null, monthlyPart && monthly ? { part: monthlyPart, data: monthly } : null].some(
     (p) => p !== null && reviewTargets(p.data, reviewee, membersAt(space, p.part.period.lockAt)).includes(me),
   )
   const last = index === people.length - 1
@@ -317,7 +318,7 @@ export function ReviewSheet({ space, weekId, close }: Props) {
           <div className="s-review-person">
             <Avatar name={person.name} color={person.color} photo={person.photo} size={64} />
             <div className="s-review-person__name">{person.name}</div>
-            <div className="s-review-person__meta">{metaLine(weeklyTasks, monthlyTasks, month, checked)}</div>
+            <div className="s-review-person__meta">{`${former ? 'Left · ' : ''}${metaLine(weeklyTasks, monthlyTasks, month, checked)}`}</div>
           </div>
           {sections.map((section, i) => {
             const ticks = section.part.progress[reviewee]?.done ?? {}

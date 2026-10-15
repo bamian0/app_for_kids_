@@ -2,9 +2,9 @@
 import { FirebaseError } from 'firebase/app'
 
 export const MSG = {
-  offline: "You're offline. Check your connection and try again.",
-  closed: "You can't change this anymore.",
-  noAccess: "You don't have access to this.",
+  offline: 'You’re offline. Check your connection and try again.',
+  closed: 'You can’t change this anymore.',
+  noAccess: 'You don’t have access to this.',
   wrongCredentials: 'Wrong email or password.',
   wrongPassword: 'Wrong password.',
   busy: 'The server is busy. Try again in a minute.',
@@ -17,7 +17,7 @@ const AUTH: Record<string, string> = {
   'auth/weak-password': 'Use at least 6 characters for your password.',
   'auth/password-does-not-meet-requirements': 'Use at least 6 characters for your password.',
   'auth/missing-password': 'Enter your password.',
-  'auth/invalid-email': "That email address doesn't look right.",
+  'auth/invalid-email': 'That email address doesn’t look right.',
   'auth/missing-email': 'Enter your email address.',
   'auth/invalid-credential': MSG.wrongCredentials,
   'auth/invalid-login-credentials': MSG.wrongCredentials,

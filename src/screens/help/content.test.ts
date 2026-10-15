@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { REMINDER_TIMES, RULES, WEEK_TIMELINE, WEEKDAY_LETTERS, helpSections, introPages } from './content.ts'
+import { scheduleProblem } from '../../domain/schedule.ts'
+import { DEFAULT_SCHEDULE } from '../../domain/time.ts'
+import type { WeekSchedule } from '../../domain/types.ts'
+import { REMINDER_TIMES, RULES, WEEK_TIMELINE, WEEKDAY_LETTERS, glanceFooter, helpSections, introPages, reviewDayOf, weekTimeline } from './content.ts'
 
 const sections = helpSections()
 const pages = introPages()
@@ -14,9 +17,9 @@ describe('help content', () => {
   })
 
   it('quotes the rules of the game exactly', () => {
-    expect(RULES).toEqual({ threshold: 90, latePenalty: 5, maxMembers: 8, maxSteps: 8 })
+    expect(RULES).toEqual({ threshold: 90, latePenalty: 5, maxMembers: 8, maxSteps: 8, schedule: DEFAULT_SCHEDULE })
     expect(section('spaces')).toContain('up to 7 friends')
-    expect(section('spaces')).toContain('first lists lock')
+    expect(section('spaces')).toContain('after Monday’s lock')
     expect(section('week')).toContain('before Monday at midnight')
     expect(section('week')).toContain('up to 8 steps')
     expect(section('week')).toContain('Until Thursday at midnight')
@@ -49,9 +52,39 @@ describe('help content', () => {
     expect(introPages({ ...RULES, threshold: 75 })[3].title).toBe('Hit 75% and they owe you')
   })
 
-  it('reads in about two minutes', () => {
+  it('covers the batch-2 features (SPEC §9.12)', () => {
+    // Stakes: the house stakes, your own, Agree, and a month's stakes set when it ends (not at its first lock).
+    expect(section('spaces')).toContain('house stakes, set by the owner')
+    expect(section('spaces')).toContain('count as soon as friends tap Agree')
+    expect(section('spaces')).toContain('the same for everyone needs all of them')
+    expect(section('spaces')).toContain('A month’s stakes are set when it ends.')
+    expect(section('spaces')).not.toContain('first lists lock')
+    expect(section('spaces')).not.toContain('Anyone in the space can change the stakes')
+    // Judges and custom times.
+    expect(section('spaces')).toContain('Turn on Only Rate Friends')
+    expect(section('spaces')).toContain('weeks you judge count as 0%')
+    expect(section('spaces')).toContain('Changes start at least a day ahead, and everyone gets a notice.')
+    // Monthly lists.
+    expect(section('week')).toContain('it locks with the second week’s list and counts as one extra week')
+    expect(section('review')).toContain('you also review your friends’ monthly lists')
+    // Pause, streaks and per-pair settling.
+    expect(section('scores')).toContain('ask to pause a week before its reviews open')
+    expect(section('scores')).toContain('One pause a month.')
+    expect(section('scores')).toContain('several months in a row for streak rewards')
+    expect(section('scores')).toContain('a month under 90% starts it over')
+    expect(section('scores')).toContain('your friends owe you your reward')
+    expect(section('scores')).toContain('marks each one Settled')
+    expect(section('reminders')).toContain('Spaces with their own times follow them.')
+    expect(REMINDER_TIMES).toBe(
+      'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK.',
+    )
+  })
+
+  it('reads in about three minutes', () => {
     const words = helpText.split(/\s+/).filter(Boolean).length
-    expect(words).toBeLessThanOrEqual(520)
+    // SPEC §9.12: 689 words with the batch-2 paragraphs; the cap is 700.
+    expect(words).toBe(689)
+    expect(words).toBeLessThanOrEqual(700)
     for (const s of sections) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })
 
@@ -99,5 +132,92 @@ describe('week timeline', () => {
       [4, 'Friday'],
       [5, 'Saturday'],
     ])
+    expect(weekTimeline()).toEqual(WEEK_TIMELINE)
+    expect(WEEK_TIMELINE.map((t) => t.detail)).toEqual(['Lists lock at midnight', 'Last day to add tasks', 'Reviews due by midnight', 'Results are in'])
+  })
+
+  it('follows a space’s own times', () => {
+    // Lists lock Monday at 8:00 PM, reviews open Thursday at 6:00 PM and are due Saturday at noon.
+    const own: WeekSchedule = { lock: 1200, reviewOpen: 3 * 1440 + 1080, deadline: 5 * 1440 + 720 }
+    expect(scheduleProblem(own)).toBeNull()
+    expect(weekTimeline(own)).toEqual([
+      { day: 0, icon: 'lock', title: 'Monday', detail: 'Lists lock at 8:00 PM' },
+      { day: 3, icon: 'plusCircle', title: 'Thursday', detail: 'Add tasks until 6:00 PM' },
+      { day: 5, icon: 'person2', title: 'Saturday', detail: 'Reviews due by noon, then results' },
+    ])
+    expect(weekTimeline(own, 'h23')[0].detail).toBe('Lists lock at 20:00')
+    // Due Saturday at midnight: results on Sunday.
+    expect(weekTimeline({ ...DEFAULT_SCHEDULE, deadline: 6 * 1440 }).slice(-2).map((t) => [t.title, t.detail])).toEqual([
+      ['Saturday', 'Reviews due by midnight'],
+      ['Sunday', 'Results are in'],
+    ])
+  })
+
+  it('keeps both stops when two fall on the same day', () => {
+    // Reviews open Friday at 6:00 PM and are due Friday at 9:00 PM.
+    const stops = weekTimeline({ lock: 1440, reviewOpen: 4 * 1440 + 1080, deadline: 4 * 1440 + 1260 })
+    expect(stops.map((t) => [t.day, t.detail])).toEqual([
+      [0, 'Lists lock at midnight'],
+      [4, 'Add tasks until 6:00 PM'],
+      [4, 'Reviews due by 9:00 PM, then results'],
+    ])
+    // The strip draws one icon per day: the later stop's.
+    expect(new Map(stops.map((t) => [t.day, t.icon])).get(4)).toBe('person2')
+  })
+
+  it('leaves out a results stop beyond Sunday', () => {
+    const stops = weekTimeline({ ...DEFAULT_SCHEDULE, deadline: 10080 })
+    expect(stops.map((t) => t.icon)).not.toContain('trophy')
+    expect(stops[stops.length - 1]).toEqual({ day: 6, icon: 'person2', title: 'Sunday', detail: 'Reviews due by midnight, then results' })
+  })
+
+  it('shows a lock as the week starts on Monday', () => {
+    expect(weekTimeline({ ...DEFAULT_SCHEDULE, lock: 0 })[0]).toEqual({ day: 0, icon: 'lock', title: 'Monday', detail: 'Lists lock as the week starts' })
+  })
+})
+
+describe('help for a space’s own times', () => {
+  const own: WeekSchedule = { lock: 1440 + 1200, reviewOpen: 4 * 1440 + 1080, deadline: 5 * 1440 + 720 }
+  const custom = helpSections({ ...RULES, schedule: own })
+  const of = (id: string) => custom.find((s) => s.id === id)?.paragraphs.join(' ') ?? ''
+
+  it('words the usual times exactly as before', () => {
+    expect(helpSections({ ...RULES, schedule: DEFAULT_SCHEDULE })).toEqual(sections)
+    expect(sections.find((s) => s.id === 'review')?.title).toBe('Friday review')
+    expect(section('review')).toContain('On Friday, mark each friend’s tasks')
+    expect(section('week')).toContain('are reviewed on Friday like the rest')
+    expect(reviewDayOf()).toBe('Friday')
+  })
+
+  it('changes the week and review copy and the review title', () => {
+    expect(of('week')).toContain('Plan your tasks before Tuesday at 8:00 PM, when your list locks.')
+    expect(of('week')).toContain('Until Friday at 6:00 PM you can still add tasks.')
+    expect(of('week')).toContain('are reviewed with the rest')
+    expect(of('week')).not.toMatch(/Monday|Thursday/)
+    expect(custom.find((s) => s.id === 'review')?.title).toBe('Friday review')
+    expect(of('review')).toContain('From Friday at 6:00 PM, mark each friend’s tasks')
+    expect(of('review')).toContain('Submit once, before Saturday at noon.')
+    expect(of('spaces')).toContain('If you join after Tuesday’s lock')
+    // Reviews that open on Thursday evening name Thursday, as the review sheet does.
+    expect(helpSections({ ...RULES, schedule: { ...own, reviewOpen: 3 * 1440 + 1080 } }).find((s) => s.id === 'review')?.title).toBe('Thursday review')
+    expect(helpSections({ ...RULES, schedule: own, hourCycle: 'h23' }).find((s) => s.id === 'week')?.paragraphs[0]).toBe(
+      'Plan your tasks before Tuesday at 20:00, when your list locks. You can plan next week any time.',
+    )
+  })
+
+  it('stays within the limits', () => {
+    const text = custom.flatMap((s) => [s.title, ...s.paragraphs]).join('\n')
+    expect(text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(700)
+    expect(text).not.toMatch(/['"]/)
+    for (const s of custom) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
+  })
+
+  it('says whose times they are under the strip', () => {
+    expect(glanceFooter()).toBeUndefined()
+    expect(glanceFooter('Berlin')).toBe('Every deadline in this space runs on Berlin time.')
+    expect(glanceFooter('Berlin', DEFAULT_SCHEDULE)).toBe('Every deadline in this space runs on Berlin time.')
+    expect(glanceFooter('Berlin', own)).toBe('This space’s own times, on Berlin time.')
+    expect(glanceFooter('Berlin', own, true)).toBe('This space’s own times, on Berlin time. You’re a judge here.')
+    expect(glanceFooter('Berlin', undefined, true)).toBe('Every deadline in this space runs on Berlin time. You’re a judge here.')
   })
 })

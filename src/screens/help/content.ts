@@ -1,9 +1,14 @@
 // What Help and the intro say, kept as data: the numbers come from one place, and the unit tests hold
-// the copy to the rules of the game (docs/SPEC.md §1 and §6). Pure, so Node can test it.
+// the copy to the rules of the game (docs/SPEC.md §1, §6 and §9.12). Days and times come from the space's
+// own schedule, so the usual times read exactly as before. Pure, so Node can test it.
 import { MAX_SUBTASKS } from '../../domain/ids.ts'
+import { isUsualSchedule, momentDay, momentText, splitMoment, timeLabel } from '../../domain/schedule.ts'
+import type { HourCycle } from '../../domain/schedule.ts'
+import { DEFAULT_SCHEDULE } from '../../domain/time.ts'
+import type { WeekSchedule } from '../../domain/types.ts'
 import type { IconName } from '../../ui/icons.tsx'
 
-/** The numbers the copy quotes. Every space uses these today; a space's own schedule will feed in later. */
+/** The numbers the copy quotes, and the week's times (a space's own, else the usual ones). */
 export interface HelpRules {
   /** Percent a month must reach. */
   threshold: number
@@ -12,9 +17,27 @@ export interface HelpRules {
   /** People in a space, you included. */
   maxMembers: number
   maxSteps: number
+  /** When lists lock and reviews open and close. Absent: the usual times. */
+  schedule?: WeekSchedule
+  /** How times read: "6:00 PM" (h12, the default) or "18:00". */
+  hourCycle?: HourCycle
 }
 
-export const RULES: HelpRules = { threshold: 90, latePenalty: 5, maxMembers: 8, maxSteps: MAX_SUBTASKS }
+export const RULES: HelpRules = { threshold: 90, latePenalty: 5, maxMembers: 8, maxSteps: MAX_SUBTASKS, schedule: DEFAULT_SCHEDULE }
+
+const DAY_MINUTES = 1440
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const
+
+/** Review day: the weekday the review window opens on ("Friday" for the usual times, whose window opens as
+ *  Thursday ends), as the review sheet's title says it. */
+export function reviewDayOf(schedule: WeekSchedule = DEFAULT_SCHEDULE): string {
+  return DAY_NAMES[Math.min(6, Math.floor(schedule.reviewOpen / DAY_MINUTES))]
+}
+
+/** A moment at the end of its day ("midnight"), as opposed to a time within it. */
+function isMidnight(m: number): boolean {
+  return m % DAY_MINUTES === 0
+}
 
 export interface HelpSection {
   id: 'spaces' | 'week' | 'review' | 'scores' | 'money' | 'reminders'
@@ -25,13 +48,17 @@ export interface HelpSection {
 
 const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
 
-/** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4). */
+/** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4, §9.11). */
 export const REMINDER_TIMES =
-  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in.'
+  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK.'
 
-/** The Help sheet, in the order a newcomer meets things. Two minutes of reading, at most. */
+/** The Help sheet, in the order a newcomer meets things. About three minutes of reading, at most. */
 export function helpSections(rules: HelpRules = RULES): HelpSection[] {
-  const { threshold, latePenalty, maxMembers, maxSteps } = rules
+  const { threshold, latePenalty, maxMembers, maxSteps, hourCycle } = rules
+  const { lock, reviewOpen, deadline } = rules.schedule ?? DEFAULT_SCHEDULE
+  const reviewDay = reviewDayOf(rules.schedule)
+  // "On Friday" for a window that opens as a day starts, else "From Thursday at 6:00 PM".
+  const reviewStart = isMidnight(reviewOpen) ? `On ${reviewDay}` : `From ${momentText(reviewOpen, hourCycle)}`
   return [
     {
       id: 'spaces',
@@ -39,9 +66,12 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       title: 'Spaces and stakes',
       paragraphs: [
         `A space is you and up to ${maxMembers - 1} friends. Start one, or join with an invite link or code.`,
-        'Each space has its stakes: a reward the others owe you when you hit the bar, and a penalty you owe them when you miss.',
-        'Anyone in the space can change the stakes. Each month’s are set once its first lists lock; a later change counts from the next month.',
-        'Deadlines follow the time zone the space was created in. If you join after Monday’s lock, you start with the next week.',
+        'Each space has house stakes, set by the owner. You can also set your own: what friends owe you when you hit the bar, and what you owe when you miss.',
+        'Your stakes count as soon as friends tap Agree; a line that’s the same for everyone needs all of them, and until then the last agreed or house stakes count.',
+        'A month’s stakes are set when it ends.',
+        `Deadlines follow the time zone the space was created in. If you join after ${momentDay(lock)}’s lock, you start with the next week.`,
+        'Prefer to only rate? Turn on Only Rate Friends: you review everyone, with no list and nothing owed. In a month you also play, weeks you judge count as 0%.',
+        'The owner can change when lists lock and reviews open and close. Changes start at least a day ahead, and everyone gets a notice.',
       ],
     },
     {
@@ -49,22 +79,24 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       icon: 'listBullet',
       title: 'Your week',
       paragraphs: [
-        'Plan your tasks before Monday at midnight, when your list locks. You can plan next week any time.',
+        `Plan your tasks before ${momentText(lock, hourCycle)}, when your list locks. You can plan next week any time.`,
         'From the lock on, the week counts, even if you leave the space. An empty list scores 0%.',
         `Break a task into up to ${maxSteps} steps and tick them off one by one. The task is done when every step is.`,
-        'Until Thursday at midnight you can still add tasks. Added tasks can’t be changed, show the day you added them, and are reviewed on Friday like the rest.',
+        `Until ${momentText(reviewOpen, hourCycle)} you can still add tasks. Added tasks can’t be changed, show the day you added them, and are reviewed ${isMidnight(reviewOpen) ? `on ${reviewDay} like` : 'with'} the rest.`,
         'Tick tasks off as you finish them. Everyone in the space sees your ticks.',
+        'Each month can also have a list of bigger things. Plan it in its first week; it locks with the second week’s list and counts as one extra week.',
       ],
     },
     {
       id: 'review',
       icon: 'person2',
-      title: 'Friday review',
+      title: `${reviewDay} review`,
       paragraphs: [
-        'On Friday, mark each friend’s tasks: Done, Half or Not done. You review everyone who had tasks that week.',
+        `${reviewStart}, mark each friend’s tasks: Done, Half or Not done. You review everyone who had tasks that week.`,
         'It’s blind: nobody sees any marks until everyone has submitted, or the deadline passes.',
-        'Submit once, before Friday at midnight. Reviews are final.',
+        `Submit once, before ${momentText(deadline, hourCycle)}. Reviews are final.`,
         `Every friend you don’t review costs you ${points(latePenalty)} off your month.`,
+        'In a month’s last week, you also review your friends’ monthly lists.',
       ],
     },
     {
@@ -74,8 +106,10 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       paragraphs: [
         'Your week’s score comes from your friends’ marks: Done counts fully, Half counts half. If nobody reviews you, your own ticks count instead.',
         `Your month is the average of its weeks, minus ${points(latePenalty)} for each review you missed. A week belongs to the month its Friday falls in.`,
-        `Hit ${threshold}% for the month and the others owe you the reward. Miss it and you owe them the penalty.`,
-        'Nothing is paid in the app. Settle up in real life, then whoever was owed marks it Settled.',
+        `Hit ${threshold}% for the month and your friends owe you your reward. Miss it and you owe them your penalty.`,
+        'Nothing is paid in the app. Settle up in real life, then whoever was owed marks each one Settled.',
+        'Need a break? Anyone can ask to pause a week before its reviews open. If everyone says OK, it doesn’t count. One pause a month.',
+        `Hit ${threshold}% several months in a row for streak rewards. A month you sit out doesn’t break a streak; a month under ${threshold}% starts it over.`,
       ],
     },
     {
@@ -98,6 +132,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
         'Reminders only work from the installed app; turn them on in your profile. They nudge you before your list locks and before reviews are due, and tell you when results are in.',
         'On Wednesday evening they nudge you if nothing is ticked yet, and on Thursday evening if tasks are still open.',
         'The installed app signs in on its own, separate from Safari. Same email, same password.',
+        'Spaces with their own times follow them.',
       ],
     },
   ]
@@ -113,13 +148,42 @@ export interface TimelineStop {
 
 export const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const
 
-/** The week at a glance, for the little illustration at the top of Help. */
-export const WEEK_TIMELINE: TimelineStop[] = [
-  { day: 0, icon: 'lock', title: 'Monday', detail: 'Lists lock at midnight' },
-  { day: 3, icon: 'plusCircle', title: 'Thursday', detail: 'Last day to add tasks' },
-  { day: 4, icon: 'person2', title: 'Friday', detail: 'Reviews due by midnight' },
-  { day: 5, icon: 'trophy', title: 'Saturday', detail: 'Results are in' },
-]
+/**
+ * The week at a glance, for the little illustration at the top of Help and the Week Schedule preview: the lock
+ * on its day ("Lists lock at midnight", "at 8:00 PM"; a lock as the week starts shows on Monday), the last day to
+ * add tasks on the day reviews open ("Add tasks until 6:00 PM" when they open within it), the reviews on the day
+ * they're due, and the results the next day when they're due at a midnight before Sunday (else the review stop
+ * ends ", then results"). In order, Monday first; two stops can share a day (the later one draws the strip's icon).
+ */
+export function weekTimeline(schedule: WeekSchedule = DEFAULT_SCHEDULE, hourCycle?: HourCycle): TimelineStop[] {
+  const { lock, reviewOpen, deadline } = schedule
+  const at = (m: number) => {
+    const label = timeLabel(splitMoment(m).time, hourCycle)
+    return label === 'Midnight' || label === 'Noon' ? label.toLowerCase() : label
+  }
+  const stop = (day: number, icon: IconName, detail: string): TimelineStop => ({ day, icon, title: DAY_NAMES[day], detail })
+  const stops: TimelineStop[] = []
+  stops.push(lock <= 0 ? stop(0, 'lock', 'Lists lock as the week starts') : stop(splitMoment(lock).day, 'lock', `Lists lock at ${at(lock)}`))
+  stops.push(stop(splitMoment(reviewOpen).day, 'plusCircle', isMidnight(reviewOpen) ? 'Last day to add tasks' : `Add tasks until ${at(reviewOpen)}`))
+  const dueDay = splitMoment(deadline).day
+  const resultsNext = isMidnight(deadline) && dueDay + 1 <= 6
+  stops.push(stop(dueDay, 'person2', `Reviews due by ${at(deadline)}${resultsNext ? '' : ', then results'}`))
+  if (resultsNext) stops.push(stop(dueDay + 1, 'trophy', 'Results are in'))
+  return stops
+}
+
+/** The usual week. */
+export const WEEK_TIMELINE: TimelineStop[] = weekTimeline()
+
+/** Under the strip, from a space: whose clock the times run on (`city`, e.g. "Berlin"), whether they're the
+ *  space's own, and your role there. Undefined from a tab (no space). */
+export function glanceFooter(city?: string, schedule?: WeekSchedule, judge?: boolean): string | undefined {
+  const parts: string[] = []
+  if (schedule && !isUsualSchedule(schedule)) parts.push(city ? `This space’s own times, on ${city} time.` : 'This space’s own times.')
+  else if (city) parts.push(`Every deadline in this space runs on ${city} time.`)
+  if (judge) parts.push('You’re a judge here.')
+  return parts.length > 0 ? parts.join(' ') : undefined
+}
 
 export interface IntroPage {
   id: 'welcome' | 'plan' | 'review' | 'month' | 'money'

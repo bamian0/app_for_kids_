@@ -93,7 +93,8 @@ export function MemberCard({
     subtitle = n === 0 ? 'No tasks' : `${done} of ${n} done`
   } else {
     subtitle = n === 0 ? 'Nothing planned' : `${done} of ${n} done`
-    if (phase === 'review' && !isMe) subtitle += member.hasSubmitted ? ' · reviews in' : ' · still reviewing'
+    // Someone who left can't review anymore: no "still reviewing" for them.
+    if (phase === 'review' && !isMe && (member.hasSubmitted || !former)) subtitle += member.hasSubmitted ? ' · reviews in' : ' · still reviewing'
     if (n > 0) score = <MiniScore value={member.provisionalScore} threshold={threshold} caption="Provisional" iridescent={false} />
   }
   if (former) subtitle = `Left · ${subtitle}`

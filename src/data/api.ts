@@ -2,7 +2,6 @@
 // Writes live in sibling modules; this file holds the React hooks and re-exports everything.
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { now } from '../domain/clock.ts'
-import { weekIdsInMonth } from '../domain/time.ts'
 import type {
   MemberStakes,
   MonthData,
@@ -26,7 +25,7 @@ import { startSettlements } from './settlements.ts'
 import { startMySpaces, startSpace } from './spaces.ts'
 import { startStakes } from './stakes.ts'
 import { combine, useLive } from './store.ts'
-import { mergeWeeks, startWeek, weekKey } from './weeks.ts'
+import { startWeek, weekKey } from './weeks.ts'
 
 export interface Live<T> {
   data: T | undefined
@@ -174,20 +173,6 @@ export { ensureSpace } from './months.ts'
 // ---------- Months ----------
 
 /**
- * Live WeekData for every week of the month (weekIdsInMonth). Does not create week docs.
- * @deprecated Batch 2: use useMonthData, which adds the month's list once it can count.
- */
-export function useMonth(space: Space, monthId: MonthId): Live<WeekData[]> {
-  const { uid } = useAuth()
-  return useLive(uid ? `${uid}|month|${space.id}|${monthId}` : null, (emit) =>
-    combine(
-      weekIdsInMonth(monthId).map((weekId) => ({ key: weekKey(uid as UID, space.id, weekId), start: startWeek(space.id, weekId, uid as UID) })),
-      mergeWeeks,
-    )(emit),
-  )
-}
-
-/**
  * The month's weeks and, from the computed start of the month's last week on (before that it can't
  * count yet), its monthly list: what computeMonth(space, monthId, data.weeks, nowMs, data.monthly)
  * needs. Space cards and Overview use this; MonthView passes useMonthly's list instead, to show it all
@@ -246,22 +231,17 @@ export function useMonthStakes(space: Space, monthId: MonthId): Live<MonthStakes
   }, [live, space.reward, space.penalty])
 }
 
-/**
- * One month's settlements, old per-member docs and per-pair docs (SPEC §9.7). Without `monthId`, every
- * settlement ever written (deprecated: it grows every month).
- */
-export function useSettlements(spaceId: string, monthId?: MonthId): Live<Settlement[]> {
+/** One month's settlements: old per-member docs and per-pair docs (SPEC §9.7). */
+export function useSettlements(spaceId: string, monthId: MonthId): Live<Settlement[]> {
   const { uid } = useAuth()
-  const key = uid && spaceId ? (monthId === undefined ? `${uid}|settlements|${spaceId}` : `${uid}|settlements|${spaceId}|${monthId}`) : null
-  return useLive<Settlement[]>(key, (emit) => startSettlements(spaceId, monthId)(emit))
+  return useLive<Settlement[]>(uid && spaceId ? `${uid}|settlements|${spaceId}|${monthId}` : null, (emit) => startSettlements(spaceId, monthId)(emit))
 }
 
 /**
  * settlePairs(spaceId, monthId, keys, settled): marks every pair of a debt line in one batch (a group
- * line is one tap). setSettled(spaceId, monthId, uid, settled) is the per-member shape from before
- * batch 2 (deprecated).
+ * line is one tap). New clients never write the per-member shape from before batch 2; old docs still count.
  */
-export { setSettled, settlePairs } from './settlements.ts'
+export { settlePairs } from './settlements.ts'
 
 // ---------- Per-person stakes and streaks (SPEC §9.7, §9.8) ----------
 

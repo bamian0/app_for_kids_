@@ -28,7 +28,6 @@ import { isRevealed, isTaskDone, joinedAfterLock, judgesOf } from '../domain/sco
 import { boundsDiffer, weekBounds, type WeekBounds } from '../domain/time.ts'
 import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId, WeekSchedule } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
-import type { Live } from './api.ts'
 import { isMark, toMonthly, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { earnedAtChange, earningRef, inBackground, keepsEarned, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
@@ -303,13 +302,6 @@ export function watchPeriod<T>(
     stopExtra()
     stops.forEach((stop) => stop())
   }
-}
-
-/** Merges per-week states for useMonth: data once every week has loaded, the first error otherwise. */
-export function mergeWeeks(states: Live<WeekData>[]): Live<WeekData[]> {
-  const error = states.find((s) => s.error)?.error ?? null
-  if (states.every((s) => s.data)) return { data: states.map((s) => s.data as WeekData), loading: false, error }
-  return { data: undefined, loading: error === null, error }
 }
 
 const filled = new Set<string>()

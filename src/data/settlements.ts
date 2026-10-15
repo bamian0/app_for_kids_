@@ -1,33 +1,22 @@
 // Honor-system "Settled" toggles: per pair since batch 2 (SPEC §9.7), per member per month before.
-import { collection, doc, onSnapshot, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore'
+import { collection, doc, onSnapshot, query, serverTimestamp, where, writeBatch } from 'firebase/firestore'
 import { settlementDocId } from '../domain/ids.ts'
-import type { MonthId, Settlement, SettlementKey, UID } from '../domain/types.ts'
+import type { MonthId, Settlement, SettlementKey } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import { toSettlement } from './convert.ts'
 import { humanError, MSG } from './errors.ts'
 import { requireUser } from './session.ts'
 import type { Start } from './store.ts'
 
-/** One month's settlements (old per-member docs and per-pair docs), or without `monthId` every one ever written (deprecated). */
-export function startSettlements(spaceId: string, monthId?: MonthId): Start<Settlement[]> {
-  const all = collection(getFirebase().db, 'spaces', spaceId, 'settlements')
+/** One month's settlements: old per-member docs and per-pair docs. */
+export function startSettlements(spaceId: string, monthId: MonthId): Start<Settlement[]> {
+  const month = query(collection(getFirebase().db, 'spaces', spaceId, 'settlements'), where('monthId', '==', monthId))
   return (emit) =>
     onSnapshot(
-      monthId === undefined ? all : query(all, where('monthId', '==', monthId)),
+      month,
       (snap) => emit({ data: snap.docs.map(toSettlement), loading: false, error: null }),
       (error) => emit({ data: undefined, loading: false, error: humanError(error, MSG.noAccess) }),
     )
-}
-
-/** @deprecated Writes the per-member shape from before batch 2. Use settlePairs. */
-export async function setSettled(spaceId: string, monthId: MonthId, uid: UID, settled: boolean): Promise<void> {
-  const me = requireUser().uid
-  const ref = doc(getFirebase().db, 'spaces', spaceId, 'settlements', settlementDocId(monthId, uid))
-  try {
-    await setDoc(ref, { monthId, uid, settled, settledBy: me, settledAt: serverTimestamp() })
-  } catch (e) {
-    throw humanError(e, MSG.noAccess)
-  }
 }
 
 /**

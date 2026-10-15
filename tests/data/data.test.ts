@@ -14,8 +14,8 @@ import {
   resetInviteCode,
   savePlan,
   sendPasswordReset,
-  setSettled,
   setTaskDone,
+  settlePairs,
   signIn,
   signOut,
   signUp,
@@ -25,12 +25,13 @@ import {
 } from '../../src/data/api.ts'
 import type { Live } from '../../src/data/api.ts'
 import { mergeProfiles, startProfile } from '../../src/data/auth.ts'
+import { monthListCounts, startMonthData } from '../../src/data/monthly.ts'
 import { startMonthStakes } from '../../src/data/months.ts'
 import { authState } from '../../src/data/session.ts'
 import { startSettlements } from '../../src/data/settlements.ts'
 import { startMySpaces, startSpace } from '../../src/data/spaces.ts'
 import { combine, peek, watch } from '../../src/data/store.ts'
-import { mergeWeeks, startWeek, weekKey } from '../../src/data/weeks.ts'
+import { startWeek } from '../../src/data/weeks.ts'
 import { now } from '../../src/domain/clock.ts'
 import { computeMonth, computeWeek, membersAt, reviewTargets } from '../../src/domain/scoring.ts'
 import { colorForUid, formatInviteCode } from '../../src/domain/ids.ts'
@@ -666,21 +667,20 @@ describe('the lock is a commitment: leaving after it never helps the leaver', ()
 })
 
 describe('months, settlements and profiles', () => {
-  it('combines the weeks of a month without creating week docs', async () => {
+  it('combines the weeks of a month and its list without creating docs', async () => {
     await as(alex)
     const month = '2026-09'
     const weekIds = weekIdsInMonth(month)
-    const live = observe(
-      combine(
-        weekIds.map((weekId) => ({ key: weekKey(alex.uid, space.id, weekId), start: startWeek(space.id, weekId, alex.uid) })),
-        mergeWeeks,
-      ),
-    )
-    const state = await live.until((l) => l.data !== undefined && l.data.find((w) => w.weekId === REVIEW_WEEK)?.reviews.length === 6)
-    expect(state.data?.map((w) => w.weekId)).toEqual(weekIds)
-    expect(state.data?.find((w) => w.weekId === '2026-09-07')?.week).toBeNull()
+    // As useMonthData loads a finished month: its weeks and its list (this space has none).
+    expect(monthListCounts(space, month, now())).toBe(true)
+    const live = observe(startMonthData(space.id, month, alex.uid, true))
+    const state = await live.until((l) => l.data !== undefined && l.data.weeks.find((w) => w.weekId === REVIEW_WEEK)?.reviews.length === 6)
+    expect(state.data?.weeks.map((w) => w.weekId)).toEqual(weekIds)
+    expect(state.data?.weeks.find((w) => w.weekId === '2026-09-07')?.week).toBeNull()
+    expect(state.data?.monthly?.monthly).toBeNull()
     live.stop()
     expect(await adminGet(weekPath('2026-09-07'))).toBeUndefined()
+    expect(await adminGet(`spaces/${space.id}/monthly/${month}`)).toBeUndefined()
   })
 
   it('freezes a month\'s house stakes only once it is complete, so an owner\'s edit counts at once for the month in progress', async () => {
@@ -705,16 +705,20 @@ describe('months, settlements and profiles', () => {
     await updateSpace(space.id, { penalty: space.penalty })
   })
 
-  it('stores settlements', async () => {
+  it('stores settlements per pair, and reads only that month', async () => {
     await as(sam)
     // Lee has left, and still owes or is owed for the months Lee played.
-    await setSettled(space.id, '2026-09', lee.uid, true)
-    await setSettled(space.id, '2026-09', alex.uid, true)
-    expect(await adminGet(`spaces/${space.id}/settlements/2026-09_${alex.uid}`)).toMatchObject({ monthId: '2026-09', uid: alex.uid, settled: true, settledBy: sam.uid })
-    const live = observe(startSettlements(space.id))
+    await settlePairs(space.id, '2026-09', [{ uid: lee.uid, other: sam.uid }, { uid: alex.uid, other: sam.uid }], true)
+    expect(await adminGet(`spaces/${space.id}/settlements/2026-09_${alex.uid}_${sam.uid}`)).toMatchObject({
+      monthId: '2026-09', uid: alex.uid, other: sam.uid, settled: true, settledBy: sam.uid,
+    })
+    expect(await adminGet(`spaces/${space.id}/settlements/2026-09_${lee.uid}_${sam.uid}`)).toMatchObject({ uid: lee.uid, settled: true })
+    await settlePairs(space.id, '2026-08', [{ uid: alex.uid, other: sam.uid }], true)
+    const live = observe(startSettlements(space.id, '2026-09'))
     const mine = (l: Live<{ uid: string; settled: boolean }[]>) => l.data?.find((x) => x.uid === alex.uid)
     await live.until((l) => l.data?.length === 2 && mine(l)?.settled === true)
-    await setSettled(space.id, '2026-09', alex.uid, false)
+    expect(live.current().data?.every((x) => x.monthId === '2026-09')).toBe(true)
+    await settlePairs(space.id, '2026-09', [{ uid: alex.uid, other: sam.uid }], false)
     await live.until((l) => mine(l)?.settled === false)
     live.stop()
   })

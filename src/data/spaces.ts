@@ -251,7 +251,7 @@ async function dropStaleJudge(ref: DocumentReference, uid: UID): Promise<void> {
 
 /** Drops everything cached about a space for this user (after joining or leaving it). */
 export function forgetSpace(uid: UID, spaceId: string): void {
-  const exact = [`${uid}|space|${spaceId}`, `${uid}|settlements|${spaceId}`, `${uid}|stakes|${spaceId}`]
+  const exact = [`${uid}|space|${spaceId}`, `${uid}|stakes|${spaceId}`]
   const prefixes = [
     `${uid}|week|${spaceId}|`,
     `${uid}|month|${spaceId}|`,

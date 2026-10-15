@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { submitMonthlyReviews, submitReviews, useAuth, useMonthly, useProfiles, useWeek } from '../data/api.ts'
+import { submitMonthlyReviews, submitReviews, useAuth, useMonthly, useProfiles, useSpace, useWeek } from '../data/api.ts'
 import { isWeekPaused } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
 import { addedAfterLock, isRevealed, isTaskDone, membersAt, reviewTargets } from '../domain/scoring.ts'
@@ -23,6 +23,7 @@ import { reviewParts } from './monthly/review.ts'
 type Marks = Record<UID, Record<string, Mark>>
 
 interface Props {
+  /** The space as it was when the sheet opened; the sheet follows it live from then on. */
   space: Space
   weekId: WeekId
   close: () => void
@@ -53,7 +54,9 @@ function metaLine(weekly: Task[] | null, monthly: Task[] | null, month: string, 
   return parts.join(' · ')
 }
 
-export function ReviewSheet({ space, weekId, close }: Props) {
+export function ReviewSheet({ space: opened, weekId, close }: Props) {
+  // The sheet stays open while the space changes (a pause recorded, a friend leaving, new times): follow it.
+  const space = useSpace(opened.id).data ?? opened
   const { uid } = useAuth()
   const me = uid ?? ''
   const monthId = isMonthlyReviewWeek(weekId) ? monthIdForWeek(weekId) : null

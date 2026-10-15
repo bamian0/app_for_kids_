@@ -2,7 +2,9 @@
 // `firebase emulators:exec` sets the *_EMULATOR_HOST variables; the defaults match firebase.json.
 import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
-import { getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore'
+import { getFirestore, Timestamp, type DocumentReference, type Firestore } from 'firebase-admin/firestore'
+import { settlementDocId } from '../../src/domain/ids.ts'
+import type { PairTerms, WeekSchedule } from '../../src/domain/types.ts'
 
 export const PROJECT_ID = 'demo-stakes'
 process.env.FIRESTORE_EMULATOR_HOST ??= '127.0.0.1:8080'
@@ -52,25 +54,38 @@ export interface SeedSpace {
   inviteCode: string
   /** When the space was created and everyone joined. */
   at: number
+  /** Someone who joined later than `at`. */
+  joinedAt?: Record<string, number>
+  /** Former members: when they left (they are no longer in `members`). */
+  leftAt?: Record<string, number>
+  /** Batch 2 (SPEC §9): the space's own times, the members who only rate, a completed pause per month. */
+  schedule?: WeekSchedule
+  judges?: string[]
+  paused?: Record<string, string>
 }
 
 /** A space and its invite, as createSpace and joining leave them. */
 export async function setSpace(spaceId: string, s: SeedSpace): Promise<void> {
   const owner = s.members[0]
-  await db.doc(`spaces/${spaceId}`).set({
+  const doc: Record<string, unknown> = {
     name: s.name,
     reward: s.reward,
     penalty: s.penalty,
     ownerId: owner,
     memberIds: s.members,
-    joinedAt: Object.fromEntries(s.members.map((uid) => [uid, ts(s.at)])),
+    joinedAt: Object.fromEntries(s.members.map((uid) => [uid, ts(s.joinedAt?.[uid] ?? s.at)])),
     timezone: s.timezone,
     utcOffsetMin: s.utcOffsetMin,
     inviteCode: s.inviteCode,
     threshold: 90,
     latePenalty: 5,
     createdAt: ts(s.at),
-  })
+  }
+  if (s.leftAt) doc.leftAt = Object.fromEntries(Object.entries(s.leftAt).map(([uid, ms]) => [uid, ts(ms)]))
+  if (s.schedule) doc.schedule = s.schedule
+  if (s.judges) doc.judges = s.judges
+  if (s.paused) doc.paused = s.paused
+  await db.doc(`spaces/${spaceId}`).set(doc)
   const inviter = (await db.doc(`users/${owner}`).get()).get('name') as string
   await db.doc(`invites/${s.inviteCode}`).set({
     spaceId,
@@ -83,6 +98,8 @@ export async function setSpace(spaceId: string, s: SeedSpace): Promise<void> {
   })
 }
 
+export const spaceDoc = (spaceId: string) => db.doc(`spaces/${spaceId}`)
+
 export interface SeedWeek {
   startAt: number
   lockAt: number
@@ -90,21 +107,31 @@ export interface SeedWeek {
   deadlineAt: number
   members: string[]
   submittedBy: string[]
+  /** Batch 2: the schedule its bounds follow (absent = the usual one) and its judges snapshot. */
+  schedule?: WeekSchedule
+  judges?: string[]
 }
 
 export function weekDoc(spaceId: string, weekId: string) {
   return db.doc(`spaces/${spaceId}/weeks/${weekId}`)
 }
 
-export async function setWeek(spaceId: string, weekId: string, w: SeedWeek): Promise<void> {
-  await weekDoc(spaceId, weekId).set({
+function periodFields(w: SeedWeek): Record<string, unknown> {
+  const doc: Record<string, unknown> = {
     startAt: ts(w.startAt),
     lockAt: ts(w.lockAt),
     reviewOpenAt: ts(w.reviewOpenAt),
     deadlineAt: ts(w.deadlineAt),
     members: w.members,
     submittedBy: w.submittedBy,
-  })
+  }
+  if (w.schedule) doc.schedule = w.schedule
+  if (w.judges) doc.judges = w.judges
+  return doc
+}
+
+export async function setWeek(spaceId: string, weekId: string, w: SeedWeek): Promise<void> {
+  await weekDoc(spaceId, weekId).set(periodFields(w))
 }
 
 /** `added`: tasks appended after the lock, with their add times. */
@@ -123,6 +150,161 @@ export async function setReview(spaceId: string, weekId: string, reviewerId: str
     .collection('reviews')
     .doc(`${reviewerId}_${revieweeId}`)
     .set({ reviewerId, revieweeId, marks, submittedAt: ts(at) })
+}
+
+// ---------- Batch 2: monthly lists, stakes, month freezes, results, settlements ----------
+
+export function monthlyDoc(spaceId: string, monthId: string) {
+  return db.doc(`spaces/${spaceId}/monthly/${monthId}`)
+}
+
+/** A month's list (SPEC §9.5): a week's shape with `judges` always present and never a `schedule`. */
+export async function setMonthly(spaceId: string, monthId: string, w: Omit<SeedWeek, 'schedule'>): Promise<void> {
+  const { judges, ...period } = w
+  await monthlyDoc(spaceId, monthId).set({ ...periodFields(period), judges: judges ?? [] })
+}
+
+export async function setMonthlyPlan(spaceId: string, monthId: string, uid: string, tasks: SeedTask[], at: number): Promise<void> {
+  await monthlyDoc(spaceId, monthId).collection('plans').doc(uid).set({ tasks, updatedAt: ts(at) })
+}
+
+export async function setMonthlyProgress(spaceId: string, monthId: string, uid: string, done: Record<string, boolean>, at: number): Promise<void> {
+  await monthlyDoc(spaceId, monthId).collection('progress').doc(uid).set({ done, updatedAt: ts(at) })
+}
+
+/** One friend's agreement as stored: the current terms at `at`, earlier ones (oldest first) in `past`. */
+export interface SeedAgreement {
+  at: number
+  terms: PairTerms
+  past?: (PairTerms & { at: number })[]
+}
+
+export interface SeedStakes {
+  rewardMode: 'group' | 'each'
+  penaltyMode: 'group' | 'each'
+  reward: string
+  penalty: string
+  per?: Record<string, { reward: string; penalty: string }>
+  tiers?: { months: number; reward: string }[]
+  agreed?: Record<string, SeedAgreement>
+  updatedAt: number
+}
+
+/** spaces/{id}/stakes/{uid} as saveMyStakes and agreeToStakes leave it (SPEC §9.7). */
+export async function setStakes(spaceId: string, uid: string, s: SeedStakes): Promise<void> {
+  const agreed = Object.fromEntries(
+    Object.entries(s.agreed ?? {}).map(([friend, a]) => [friend, { at: ts(a.at), terms: a.terms, past: (a.past ?? []).map((p) => ({ ...p, at: ts(p.at) })) }]),
+  )
+  await db.doc(`spaces/${spaceId}/stakes/${uid}`).set({
+    rewardMode: s.rewardMode,
+    penaltyMode: s.penaltyMode,
+    reward: s.reward,
+    penalty: s.penalty,
+    per: s.per ?? {},
+    tiers: s.tiers ?? [],
+    agreed,
+    updatedAt: ts(s.updatedAt),
+  })
+}
+
+/** The exact pair terms a friend agrees to: what pairTerms gives for them. */
+export function pairOf(s: Pick<SeedStakes, 'rewardMode' | 'penaltyMode' | 'reward' | 'penalty' | 'per' | 'tiers'>, friend: string): PairTerms {
+  return {
+    rewardMode: s.rewardMode,
+    penaltyMode: s.penaltyMode,
+    reward: s.rewardMode === 'group' ? s.reward : (s.per?.[friend]?.reward ?? ''),
+    penalty: s.penaltyMode === 'group' ? s.penalty : (s.per?.[friend]?.penalty ?? ''),
+    tiers: s.tiers ?? [],
+  }
+}
+
+export function monthStakesDoc(spaceId: string, monthId: string) {
+  return db.doc(`spaces/${spaceId}/months/${monthId}`)
+}
+
+/** A month's frozen house stakes (`months/{monthId}`), e.g. the previous app's early freeze at a first lock. */
+export async function setMonthStakes(spaceId: string, monthId: string, m: { reward: string; penalty: string; createdAt: number }): Promise<void> {
+  await monthStakesDoc(spaceId, monthId).set({ reward: m.reward, penalty: m.penalty, createdAt: ts(m.createdAt) })
+}
+
+/** A month's results doc as the reminders job writes it (SPEC §9.8). */
+export async function setResults(
+  spaceId: string,
+  monthId: string,
+  r: { completeAt: number; members: Record<string, { score: number | null; passed: boolean | null; streak: number; tierRuns?: Record<string, number> }>; createdAt: number },
+): Promise<void> {
+  await db.doc(`spaces/${spaceId}/results/${monthId}`).set({ monthId, completeAt: ts(r.completeAt), members: r.members, createdAt: ts(r.createdAt) })
+}
+
+export interface SeedSettlement {
+  monthId: string
+  uid: string
+  /** Absent: the legacy per-member doc from before batch 2. */
+  other?: string
+  tier?: number
+  settled: boolean
+  settledBy: string
+  settledAt: number
+}
+
+export function settlementDoc(spaceId: string, monthId: string, uid: string, other?: string, tier?: number) {
+  return db.doc(`spaces/${spaceId}/settlements/${settlementDocId(monthId, uid, other, tier)}`)
+}
+
+export async function setSettlement(spaceId: string, s: SeedSettlement): Promise<void> {
+  const doc: Record<string, unknown> = { monthId: s.monthId, uid: s.uid, settled: s.settled, settledBy: s.settledBy, settledAt: ts(s.settledAt) }
+  if (s.other !== undefined) doc.other = s.other
+  if (s.tier !== undefined) doc.tier = s.tier
+  await settlementDoc(spaceId, s.monthId, s.uid, s.other, s.tier).set(doc)
+}
+
+/**
+ * A week that has been played and reviewed: the doc, a plan per player, everything ticked, and a review from
+ * every player of every other player marking each task `marks[reviewee]` (default 1), with everyone submitted.
+ * `skip` lists reviewers who never reviewed (they aren't in submittedBy and lose 5 points per friend).
+ */
+export async function setPlayedWeek(
+  spaceId: string,
+  weekId: string,
+  bounds: { startAt: number; lockAt: number; reviewOpenAt: number; deadlineAt: number },
+  plans: Record<string, SeedTask[]>,
+  opts: { marks?: Record<string, 0 | 0.5 | 1>; skip?: string[]; judges?: string[]; members?: string[] } = {},
+): Promise<void> {
+  const players = Object.keys(plans)
+  const members = opts.members ?? [...players, ...(opts.judges ?? [])]
+  const reviewers = members.filter((uid) => !(opts.skip ?? []).includes(uid))
+  await setWeek(spaceId, weekId, { ...bounds, members, submittedBy: reviewers, ...(opts.judges ? { judges: opts.judges } : {}) })
+  for (const [uid, tasks] of Object.entries(plans)) {
+    await setPlan(spaceId, weekId, uid, tasks, bounds.startAt)
+    await setProgress(spaceId, weekId, uid, Object.fromEntries(tasks.map((t) => [t.id, true])), bounds.reviewOpenAt)
+  }
+  for (const reviewer of reviewers) {
+    for (const reviewee of players) {
+      if (reviewee === reviewer) continue
+      const mark = opts.marks?.[reviewee] ?? 1
+      await setReview(spaceId, weekId, reviewer, reviewee, Object.fromEntries(plans[reviewee].map((t) => [t.id, mark])), bounds.reviewOpenAt + 3_600_000)
+    }
+  }
+}
+
+/**
+ * Ends a month at `deadlineAt` as the server sees it (SPEC §9.6: its last week's stored deadline, or its list's
+ * if later): moves the last week's stored deadline and, when a list exists, the list's too, keeping each
+ * timeline in order.
+ */
+export async function endMonthAt(spaceId: string, lastWeekId: string, monthId: string, deadlineAt: number): Promise<void> {
+  const move = async (ref: DocumentReference) => {
+    const snap = await ref.get()
+    if (!snap.exists) return false
+    const ms = (key: string) => (snap.get(key) as Timestamp).toMillis()
+    const reviewOpenAt = Math.min(ms('reviewOpenAt'), deadlineAt - 3 * 3_600_000)
+    const lockAt = Math.min(ms('lockAt'), reviewOpenAt - 3_600_000)
+    const startAt = Math.min(ms('startAt'), lockAt - 3_600_000)
+    await ref.update({ startAt: ts(startAt), lockAt: ts(lockAt), reviewOpenAt: ts(reviewOpenAt), deadlineAt: ts(deadlineAt) })
+    return true
+  }
+  if (!(await move(weekDoc(spaceId, lastWeekId)))) throw new Error(`No week doc ${lastWeekId} to end ${monthId} with`)
+  await move(monthlyDoc(spaceId, monthId))
 }
 
 // ---------- Money (users/{uid}/...) ----------

@@ -1,18 +1,53 @@
-// Space settings: name and stakes, members, invite, the rules, and leaving.
+// Space settings: the name, the house stakes (the owner's) and your own stakes, your role, members, the invite,
+// the week's times and the rules, pausing a week, and leaving.
 import { useEffect, useState } from 'react'
-import { leaveSpace, removeMember, resetInviteCode, updateSpace, useAuth, useMonthStakes, useProfiles, useSpace } from '../data/api.ts'
+import {
+  askToPause,
+  leaveSpace,
+  removeMember,
+  resetInviteCode,
+  setJudge,
+  updateSpace,
+  useAuth,
+  useMonthData,
+  useMonthly,
+  useProfiles,
+  useSpace,
+  useWeek,
+  withdrawPause,
+} from '../data/api.ts'
 import { formatInviteCode } from '../domain/ids.ts'
-import { addMonths } from '../domain/time.ts'
-import type { Space, UID } from '../domain/types.ts'
+import { isWeekPaused, pauseChoices, pauseView } from '../domain/pause.ts'
+import { boundsFor, firstUnlockedWeek } from '../domain/schedule.ts'
+import { judgesOf, spaceJudges } from '../domain/scoring.ts'
+import { addWeeks, monthIdForWeek, weekIdFor } from '../domain/time.ts'
+import type { MonthlyData, Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, EmptyState, GlassButton, Row, Screen, Section, TextArea, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
 import { Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
-import { monthName } from './components/format.ts'
 import { InviteCard } from './components/InviteCard.tsx'
-import { HelpScreen } from './help/HelpSheet.tsx'
-import { currentMonth } from './components/month.ts'
 import { firstName, nameOf, personOf } from './components/people.ts'
-import { cityOf } from './components/zone.ts'
+import { StakesList } from './components/Stakes.tsx'
+import { cityOf, deadlineText, deviceHourCycle } from './components/zone.ts'
+import { HelpScreen } from './help/HelpSheet.tsx'
+import { ScheduleScreen } from './space/ScheduleScreen.tsx'
+import {
+  PAUSE_FOOTER,
+  houseFooter,
+  houseSaved,
+  judgeConfirm,
+  memberSubtitle,
+  pauseAskedToast,
+  pauseRow,
+  pauseSheet,
+  playConfirm,
+  roleFooter,
+  scheduleFooter,
+  scheduleSummary,
+  weekFor,
+} from './space/space.ts'
+import { StakesScreen } from './stakes/StakesScreen.tsx'
+import { termsNow } from './stakes/stakes.ts'
 
 export function SpaceSettingsScreen({ spaceId }: { spaceId: string }) {
   const live = useSpace(spaceId)
@@ -27,27 +62,38 @@ export function SpaceSettingsScreen({ spaceId }: { spaceId: string }) {
 }
 
 const joinedFormat = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+const failed = (e: unknown) => (e instanceof Error ? e.message : undefined)
 
 function SettingsContent({ space }: { space: Space }) {
   const nav = useNav()
   const toast = useToast()
   const { confirm, actionSheet } = useAlert()
   const { uid } = useAuth()
+  const me = uid ?? ''
   const nowMs = useNow()
   const profiles = useProfiles(space.memberIds)
-  const isOwner = uid === space.ownerId
-  // Stakes freeze once a month's first lists lock: after that an edit starts next month.
-  const month = currentMonth(space, nowMs)
-  const frozen = useMonthStakes(space, month).data?.frozen ?? false
-  const stakesFooter = frozen
-    ? `Applies from ${monthName(addMonths(month, 1))}. ${monthName(month)} keeps its stakes.`
-    : `Applies to everyone, starting with ${monthName(month)}.`
-  const [name, setName] = useState(space.name)
+  const isOwner = me === space.ownerId
+  const name = (id: UID) => firstName(nameOf(profiles, id))
+  const when = (ms: number) => deadlineText(ms, space.timezone, nowMs)
+  const city = cityOf(space.timezone)
+
+  // This week and next (pausing, your role), and this month's list (when this month's terms end).
+  const thisWeek = weekIdFor(nowMs, space.timezone)
+  const nextWeek = addWeeks(thisWeek, 1)
+  const thisData = useWeek(space, thisWeek).data
+  const nextData = useWeek(space, nextWeek).data
+  const thisDoc = thisData?.week ?? null
+  const nextDoc = nextData?.week ?? null
+  const monthly = useMonthly(space, monthIdForWeek(thisWeek)).data
+  const now = termsNow(space, nowMs, thisDoc, monthly?.monthly ?? null)
+
+  const [name_, setName] = useState(space.name)
   const [reward, setReward] = useState(space.reward)
   const [penalty, setPenalty] = useState(space.penalty)
   const [saving, setSaving] = useState(false)
-  const dirty = name !== space.name || reward !== space.reward || penalty !== space.penalty
-  const valid = name.trim() !== '' && reward.trim() !== '' && penalty.trim() !== ''
+  const stakesDirty = isOwner && (reward !== space.reward || penalty !== space.penalty)
+  const dirty = name_ !== space.name || stakesDirty
+  const valid = name_.trim() !== '' && (!isOwner || (reward.trim() !== '' && penalty.trim() !== ''))
 
   // A friend's edit shows up live unless you're changing things yourself.
   useEffect(() => {
@@ -61,14 +107,16 @@ function SettingsContent({ space }: { space: Space }) {
   const save = async () => {
     if (!valid || saving) return
     setSaving(true)
+    const stakesChanged = isOwner && (reward.trim() !== space.reward || penalty.trim() !== space.penalty)
     try {
-      await updateSpace(space.id, { name: name.trim(), reward: reward.trim(), penalty: penalty.trim() })
-      setName(name.trim())
+      // Only the owner changes the house stakes; everyone can rename.
+      await updateSpace(space.id, isOwner ? { name: name_.trim(), reward: reward.trim(), penalty: penalty.trim() } : { name: name_.trim() })
+      setName(name_.trim())
       setReward(reward.trim())
       setPenalty(penalty.trim())
-      toast({ title: 'Saved', tone: 'success' })
+      toast({ title: 'Saved', message: stakesChanged ? houseSaved(now) : undefined, tone: 'success' })
     } catch (e) {
-      toast({ title: 'Couldn’t save', message: e instanceof Error ? e.message : undefined, tone: 'error' })
+      toast({ title: 'Couldn’t save', message: failed(e), tone: 'error' })
     } finally {
       setSaving(false)
     }
@@ -93,7 +141,7 @@ function SettingsContent({ space }: { space: Space }) {
       await leaveSpace(space.id)
       toast({ title: `You left ${space.name}` })
     } catch (e) {
-      toast({ title: 'Couldn’t leave', message: e instanceof Error ? e.message : undefined, tone: 'error' })
+      toast({ title: 'Couldn’t leave', message: failed(e), tone: 'error' })
     }
   }
 
@@ -109,7 +157,7 @@ function SettingsContent({ space }: { space: Space }) {
       await removeMember(space.id, id)
       toast({ title: `${who} was removed` })
     } catch (e) {
-      toast({ title: 'Couldn’t remove', message: e instanceof Error ? e.message : undefined, tone: 'error' })
+      toast({ title: 'Couldn’t remove', message: failed(e), tone: 'error' })
     }
   }
 
@@ -125,11 +173,43 @@ function SettingsContent({ space }: { space: Space }) {
       const code = await resetInviteCode(space.id)
       toast({ title: 'New invite code', message: formatInviteCode(code), icon: 'link' })
     } catch (e) {
-      toast({ title: 'Couldn’t reset the code', message: e instanceof Error ? e.message : undefined, tone: 'error' })
+      toast({ title: 'Couldn’t reset the code', message: failed(e), tone: 'error' })
+    }
+  }
+
+  // ----- Pausing a week -----
+  const thisW = weekFor(space, thisWeek, [thisDoc])
+  const nextW = weekFor(space, nextWeek, [nextDoc])
+  const choices = pauseChoices(space, me, nowMs, { thisWeek: { id: thisWeek, reviewOpenAt: thisW.reviewOpenAt }, nextWeek: { id: nextWeek, reviewOpenAt: nextW.reviewOpenAt } })
+  const requestWeek = space.pause ? weekFor(space, space.pause.weekId, [thisDoc, nextDoc]) : null
+  const view = requestWeek ? pauseView(space, me, nowMs, requestWeek) : ({ kind: 'none' } as const)
+  const pause = pauseRow(view, me, choices, { thisWeek, nextWeek })
+
+  const askPause = async () => {
+    const spec = pauseSheet(space.name, choices, { thisWeek: thisW.reviewOpenAt, nextWeek: nextW.reviewOpenAt }, when)
+    const choice = await actionSheet({ title: spec.title, message: spec.message, actions: spec.actions.map((label) => ({ label })) })
+    if (!choice) return
+    const weekId = choice === 'Pause This Week' ? thisWeek : nextWeek
+    try {
+      const outcome = await askToPause(space, weekId)
+      toast({ ...pauseAskedToast(outcome, weekId, thisWeek), icon: 'pause', tone: 'success' })
+    } catch (e) {
+      toast({ title: 'Couldn’t ask', message: failed(e), tone: 'error' })
+    }
+  }
+
+  const cancelPause = async () => {
+    const ok = await confirm({ title: 'Cancel the request?', confirmLabel: 'Cancel Request', cancelLabel: 'Keep It', destructive: true })
+    if (!ok) return
+    try {
+      await withdrawPause(space)
+    } catch (e) {
+      toast({ title: 'Couldn’t cancel', message: failed(e), tone: 'error' })
     }
   }
 
   const members = [...space.memberIds].sort((a, b) => (space.joinedAt[a] ?? 0) - (space.joinedAt[b] ?? 0))
+  const judges = spaceJudges(space)
 
   return (
     <Screen
@@ -144,26 +224,40 @@ function SettingsContent({ space }: { space: Space }) {
       }
     >
       <Section header="Name">
-        <TextFieldRow value={name} onChange={setName} placeholder="Space name" maxLength={40} aria-label="Space name" autoCapitalize="words" />
+        <TextFieldRow value={name_} onChange={setName} placeholder="Space name" maxLength={40} aria-label="Space name" autoCapitalize="words" />
       </Section>
-      <Section header={`If you hit ${space.threshold}%, they owe you…`}>
-        <TextArea value={reward} onChange={setReward} placeholder="Dinner, on them" maxLength={120} minRows={1} maxRows={4} aria-label="Reward" />
-      </Section>
-      <Section header="If you miss, you owe them…" footer={stakesFooter}>
-        <TextArea value={penalty} onChange={setPenalty} placeholder="Coffee for everyone, for a week" maxLength={120} minRows={1} maxRows={4} aria-label="Penalty" />
-      </Section>
+
+      {isOwner ? (
+        <>
+          <Section header={`House stakes: if you hit ${space.threshold}%, they owe you…`}>
+            <TextArea value={reward} onChange={setReward} placeholder="Dinner, on them" maxLength={120} minRows={1} maxRows={4} aria-label="Reward" />
+          </Section>
+          <Section header="If you miss, you owe them…" footer={houseFooter(now, true, name(space.ownerId))}>
+            <TextArea value={penalty} onChange={setPenalty} placeholder="Coffee for everyone, for a week" maxLength={120} minRows={1} maxRows={4} aria-label="Penalty" />
+          </Section>
+          <Section>
+            <YourStakesRow spaceId={space.id} />
+          </Section>
+        </>
+      ) : (
+        <Section header="House stakes" footer={houseFooter(now, false, name(space.ownerId))}>
+          <StakesList reward={space.reward} penalty={space.penalty} threshold={space.threshold} />
+          <YourStakesRow spaceId={space.id} />
+        </Section>
+      )}
+
+      <RoleSection space={space} me={me} nowMs={nowMs} thisData={thisData} nextData={nextData} when={when} />
 
       <Section header={`Members · ${space.memberIds.length} of 8`} footer={isOwner && space.memberIds.length > 1 ? 'You’re the owner: tap someone to remove them.' : undefined}>
         {members.map((id) => {
           const person = personOf(profiles, id)
           const joined = space.joinedAt[id]
-          const role = [id === space.ownerId ? 'Owner' : null, joined ? `Joined ${joinedFormat.format(joined)}` : null].filter(Boolean).join(' · ') || undefined
           return (
             <Row
               key={id}
               leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={32} />}
               title={id === uid ? `${person.name} (You)` : person.name}
-              subtitle={role}
+              subtitle={memberSubtitle(id === space.ownerId, judges.includes(id), joined ? joinedFormat.format(joined) : null)}
               onPress={isOwner && id !== uid ? () => void remove(id) : undefined}
             />
           )
@@ -177,9 +271,30 @@ function SettingsContent({ space }: { space: Space }) {
         </Section>
       )}
 
-      <Section footer={`Lists lock Monday at midnight and reviews are due Friday at midnight, ${cityOf(space.timezone)} time.`}>
-        <Row icon="info" title="How Stakes Works" chevron onPress={() => nav.push(<HelpScreen timezone={cityOf(space.timezone)} />, { title: 'How Stakes Works' })} />
-        <Row icon="clock" title="Time Zone" detail={cityOf(space.timezone)} />
+      <Section footer={scheduleFooter(space.schedule, city, deviceHourCycle())}>
+        <Row icon="calendar" title="Week Schedule" detail={scheduleSummary(space.schedule)} chevron onPress={() => nav.push(<ScheduleScreen spaceId={space.id} />, { title: 'Week Schedule' })} />
+        <Row
+          icon="info"
+          title="How Stakes Works"
+          chevron
+          onPress={() => nav.push(<HelpScreen timezone={city} schedule={space.schedule} judge={judges.includes(me)} />, { title: 'How Stakes Works' })}
+        />
+        <Row icon="clock" title="Time Zone" detail={city} />
+      </Section>
+
+      <Section footer={PAUSE_FOOTER}>
+        {pause.enabled ? (
+          <Row icon="pause" title="Pause a Week" chevron onPress={() => void askPause()} />
+        ) : (
+          <Row
+            icon="pause"
+            iconBackground="var(--system-gray3)"
+            title={pause.detail ? pause.title : <span className="c-tertiary">{pause.title}</span>}
+            detail={pause.detail}
+            subtitle={pause.subtitle}
+          />
+        )}
+        {pause.canCancel && <Row title="Cancel Request" destructive onPress={() => void cancelPause()} />}
       </Section>
 
       <Section>
@@ -187,4 +302,98 @@ function SettingsContent({ space }: { space: Space }) {
       </Section>
     </Screen>
   )
+}
+
+function YourStakesRow({ spaceId }: { spaceId: string }) {
+  const nav = useNav()
+  return <Row icon="person" title="Your Stakes" chevron onPress={() => nav.push(<StakesScreen spaceId={spaceId} />, { title: 'Stakes' })} />
+}
+
+interface RoleProps {
+  space: Space
+  me: UID
+  nowMs: number
+  thisData: WeekData | undefined
+  nextData: WeekData | undefined
+  when: (ms: number) => string
+}
+
+/** Only Rate Friends (SPEC §9.4): your choice, from the next week and monthly list that haven't locked. */
+function RoleSection({ space, me, nowMs, thisData, nextData, when }: RoleProps) {
+  const toast = useToast()
+  const { confirm } = useAlert()
+  const judging = spaceJudges(space).includes(me)
+  // The switch moves at once; the space doc catches up a moment later (or the change fails and it moves back).
+  const [pending, setPending] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (pending !== null && judging === pending) setPending(null)
+  }, [judging, pending])
+
+  const thisWeek = weekIdFor(nowMs, space.timezone)
+  const thisDoc = thisData?.week ?? null
+  const fromWeek = firstUnlockedWeek(space, thisDoc, nowMs)
+  const fromData = fromWeek === thisWeek ? thisData : nextData
+  const month = monthIdForWeek(fromWeek)
+  const list = useMonthly(space, month).data
+  const weeks = useMonthData(space, month).data?.weeks ?? []
+
+  // This week's snapshot, once it has locked: your role there no longer follows the switch.
+  const thisRole = thisDoc && nowMs >= thisDoc.lockAt && thisDoc.members.includes(me) ? (judgesOf(thisDoc).includes(me) ? 'judge' : 'player') : null
+
+  const toggle = async (next: boolean) => {
+    if (pending !== null) return
+    const message = next ? judgeMessage(space, me, nowMs, fromWeek, thisWeek, fromData, list, weeks) : playMessage(space, me, nowMs, fromWeek, thisWeek, fromData, weeks, when)
+    const ok = await confirm({ title: message.title, message: message.message, confirmLabel: message.confirmLabel })
+    if (!ok) return
+    setPending(next)
+    try {
+      await setJudge(space.id, next)
+    } catch (e) {
+      setPending(null)
+      toast({ title: 'Couldn’t change your role', message: failed(e), tone: 'error' })
+    }
+  }
+
+  const on = pending ?? judging
+  return (
+    <Section header="Your role" footer={roleFooter(on, thisRole, addWeeks(thisWeek, 1))}>
+      <Row title="Only Rate Friends" toggle={on} onToggle={(v) => void toggle(v)} />
+    </Section>
+  )
+}
+
+/** Weeks of the month before `fromWeek` that locked with you in them, as a player or as a judge (not paused). */
+function lockedRoles(space: Space, me: UID, nowMs: number, fromWeek: WeekId, weeks: WeekData[]): { played: boolean; judged: boolean } {
+  let played = false
+  let judged = false
+  for (const w of weeks) {
+    const doc = w.week
+    if (!doc || w.weekId >= fromWeek || nowMs < doc.lockAt || !doc.members.includes(me) || isWeekPaused(space, w.weekId)) continue
+    if (judgesOf(doc).includes(me)) judged = true
+    else played = true
+  }
+  return { played, judged }
+}
+
+/** Your month's list as a player, with tasks on it: still open, or locked (it counts either way once locked). */
+function myListState(list: MonthlyData | undefined, me: UID, nowMs: number): 'unlocked' | 'locked' | null {
+  const doc = list?.monthly
+  if (!list || !doc || !doc.members.includes(me) || judgesOf(doc).includes(me) || (list.plans[me]?.tasks.length ?? 0) === 0) return null
+  return nowMs < doc.lockAt ? 'unlocked' : 'locked'
+}
+
+function judgeMessage(space: Space, me: UID, nowMs: number, fromWeek: WeekId, thisWeek: WeekId, fromData: WeekData | undefined, list: MonthlyData | undefined, weeks: WeekData[]) {
+  const listState = myListState(list, me, nowMs)
+  return judgeConfirm({
+    fromWeek,
+    thisWeek,
+    plannedTasks: (fromData?.plans[me]?.tasks.length ?? 0) > 0,
+    monthlyList: listState,
+    played: lockedRoles(space, me, nowMs, fromWeek, weeks).played || listState === 'locked',
+  })
+}
+
+function playMessage(space: Space, me: UID, nowMs: number, fromWeek: WeekId, thisWeek: WeekId, fromData: WeekData | undefined, weeks: WeekData[], when: (ms: number) => string) {
+  const lockAt = boundsFor(space, fromWeek, fromData?.week ?? null).lockAt
+  return playConfirm(fromWeek, thisWeek, when(lockAt), lockedRoles(space, me, nowMs, fromWeek, weeks).judged)
 }

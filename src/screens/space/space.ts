@@ -4,10 +4,11 @@
 // Pause a Week row, the Only Rate Friends footer and confirms, and the house stakes footer and toast.
 import { pauseNeeded } from '../../domain/pause.ts'
 import type { PauseChoice, PauseView } from '../../domain/pause.ts'
-import { isUsualSchedule, momentText, scheduleChangeLines, splitMoment, joinMoment, timeLabel } from '../../domain/schedule.ts'
+import { boundsFor, isUsualSchedule, momentText, scheduleChangeLines, splitMoment, joinMoment, timeLabel } from '../../domain/schedule.ts'
 import type { HourCycle } from '../../domain/schedule.ts'
 import { DEFAULT_SCHEDULE, addWeeks, monthIdForWeek } from '../../domain/time.ts'
-import type { MonthId, Space, UID, WeekId, WeekSchedule } from '../../domain/types.ts'
+import type { WeekBounds } from '../../domain/time.ts'
+import type { MonthId, Space, UID, Week, WeekId, WeekSchedule } from '../../domain/types.ts'
 import { monthName } from '../components/format.ts'
 import { compactNames, listNames } from '../components/people.ts'
 
@@ -26,6 +27,19 @@ export function weekPhrase(weekId: WeekId, thisWeek: WeekId): string {
   if (weekId === thisWeek) return 'this week'
   if (weekId === addWeeks(thisWeek, 1)) return 'next week'
   return `the week of ${weekLabel(weekId)}`
+}
+
+/** When a change of times starts, in a sentence: "this week", "next week", "the week of Oct 26". */
+export const startsPhrase = weekPhrase
+
+/**
+ * A week as the pause helpers need it (SPEC §9.3): its stored members and bounds when the doc is known, else
+ * the current members (before its lock that is who is in it) and the bounds on the space's times.
+ */
+export function weekFor(space: Pick<Space, 'memberIds' | 'timezone' | 'schedule'>, weekId: WeekId, docs: (Week | null | undefined)[]): { members: UID[] } & WeekBounds {
+  const doc = docs.find((w) => w && w.id === weekId)
+  const bounds = boundsFor(space, weekId, doc ?? null)
+  return { ...bounds, members: doc ? doc.members : space.memberIds }
 }
 
 function capitalize(text: string): string {
@@ -454,8 +468,13 @@ export function playConfirm(fromWeek: WeekId, thisWeek: WeekId, lockText: string
   return { title: `Play again from ${rolePhrase(fromWeek, thisWeek)}?`, message: parts.join(' '), confirmLabel: 'Play' }
 }
 
-/** Your own section in a week you judge. */
-export function judgeSelf(phase: 'planning' | 'active' | 'review' | 'closed', revealed: boolean, member: { hasSubmitted: boolean; missedReviewsOf: UID[] }): { title: string; subtitle: string } {
+/** Your own section in a week you judge ("next week" on the Next Week tab). */
+export function judgeSelf(
+  phase: 'planning' | 'active' | 'review' | 'closed',
+  revealed: boolean,
+  member: { hasSubmitted: boolean; missedReviewsOf: UID[] },
+  which: 'this week' | 'next week' = 'this week',
+): { title: string; subtitle: string } {
   if (phase === 'closed') {
     const subtitle =
       member.missedReviewsOf.length > 0
@@ -465,8 +484,8 @@ export function judgeSelf(phase: 'planning' | 'active' | 'review' | 'closed', re
           : 'There was nothing to review.'
     return { title: 'You judged this week', subtitle }
   }
-  if (phase === 'review' && revealed) return { title: 'You’re judging this week', subtitle: 'Thanks for judging.' }
-  return { title: 'You’re judging this week', subtitle: 'You rate everyone on review day. No list, no score.' }
+  if (phase === 'review' && revealed) return { title: `You’re judging ${which}`, subtitle: 'Thanks for judging.' }
+  return { title: `You’re judging ${which}`, subtitle: 'You rate everyone on review day. No list, no score.' }
 }
 
 export const NOBODY_PLAYING = { title: 'Nobody’s playing this week', message: 'Everyone here is a judge. Turn off Only Rate Friends in Settings to plan a list.' }

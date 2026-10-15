@@ -3,7 +3,7 @@ import { debtLines, nextAgreement, pairTerms } from '../../domain/stakes.ts'
 import type { Debt } from '../../domain/stakes.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
 import { weekBounds } from '../../domain/time.ts'
-import type { MemberStakes, MonthResults, Space, TermsInForce, UID } from '../../domain/types.ts'
+import type { MemberStakes, MonthResults, Space, TermsInForce, UID, Week } from '../../domain/types.ts'
 import {
   canSettleLine,
   debtLineSubtitle,
@@ -27,6 +27,7 @@ import {
   draftValid,
   friendRows,
   groupedText,
+  isJudging,
   ownFooter,
   saveMessage,
   stakesAfterSave,
@@ -201,6 +202,17 @@ describe('the stakes card', () => {
     expect(kim.pending).toEqual({ kind: 'judge', text: 'You’re judging: nothing’s owed while you only rate.' })
     // A judge isn't asked to agree.
     expect(kim.news?.kind).not.toBe('agree')
+  })
+
+  it('judges by this week’s snapshot when it exists, else by the space’s list', () => {
+    const sp = space(['marco', 'lena', 'kim'], { judges: ['kim'] })
+    const week = (judges: UID[]) => ({ members: ['marco', 'lena', 'kim'], judges }) as unknown as Week
+    // Kim turned on Only Rate Friends during a locked week she plays: not a judge this week.
+    expect(isJudging(sp, 'kim', week([]))).toBe(false)
+    // Lena turned it off during a locked week she judges: still a judge this week.
+    expect(isJudging(sp, 'lena', week(['lena']))).toBe(true)
+    expect(isJudging(sp, 'kim', null)).toBe(true)
+    expect(isJudging(sp, 'lena', null)).toBe(false)
   })
 
   it('alone: the house rows and nothing else', () => {

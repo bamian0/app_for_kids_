@@ -53,8 +53,17 @@ describe('deadline wording', () => {
     expect(deadlineText(b.lockAt, ROME, b.startAt + HOUR, 'Europe/Berlin')).toBe('tonight at midnight')
   })
 
-  it('falls back to a clock time for a week that does not end at midnight', () => {
-    expect(deadlineText(b.lockAt - HOUR, ROME, b.startAt, ROME)).toMatch(/^Mon (11:00 PM|23:00)$/)
+  it('names other times on the same clock (SPEC §9.2)', () => {
+    const at = (h: number) => b.startAt + h * HOUR
+    // Monday 18:00 seen Monday morning: after 5 PM it is "tonight".
+    expect(deadlineText(at(18), ROME, at(9), ROME, 'h12')).toBe('tonight at 6:00 PM')
+    expect(deadlineText(at(16), ROME, at(9), ROME, 'h12')).toBe('today at 4:00 PM')
+    expect(deadlineText(at(20), ROME, at(9), ROME, 'h23')).toBe('tonight at 20:00')
+    expect(deadlineText(at(24 + 9), ROME, at(9), ROME, 'h12')).toBe('tomorrow at 9:00 AM')
+    expect(deadlineText(at(4 * 24 + 18), ROME, at(9), ROME, 'h12')).toBe('Friday at 6:00 PM')
+    expect(deadlineText(at(5 * 24 + 12), ROME, at(9), ROME, 'h12')).toBe('Saturday at noon')
+    expect(deadlineText(at(7 * 24 + 1), ROME, at(9), ROME, 'h12')).toBe('next Monday at 1:00 AM')
+    expect(deadlineText(b.lockAt - HOUR, ROME, b.startAt, ROME, 'h12')).toBe('tonight at 11:00 PM')
   })
 })
 
@@ -123,6 +132,56 @@ describe('spaceStatus', () => {
     const out = week('active', [member('a', { participating: false })])
     expect(spaceStatus(out, b, 'a', t, { ...ctx, joinedLate: true }).text).toBe('You’re in from next week')
     expect(spaceStatus(out, b, 'a', t, ctx).text).toBe('Sitting this week out')
+  })
+
+  it('leads with a due review, then a pause to answer, then an urgent plan', () => {
+    const ask = { ...ctx, pauseAsk: 'Lena asks to pause next week' }
+    expect(spaceStatus(week('review', [member('a'), member('b')]), b, 'a', friday, ask).text).toBe('Review due in 22h')
+    const monday = b.lockAt - 5 * HOUR
+    expect(spaceStatus(week('planning', [member('a', { taskCount: 0 })]), b, 'a', monday, ask)).toEqual({ text: 'Lena asks to pause next week', icon: 'pause', tone: 'urgent' })
+    expect(spaceStatus(week('planning', [member('a', { taskCount: 0 })]), b, 'a', monday, ctx)).toMatchObject({ text: 'Plan your week · locks in 5h', tone: 'urgent' })
+  })
+
+  it('never shows a paused week’s plan, lock, empty list or 0% lines', () => {
+    const paused = (phase: WeekResult['phase'], m: MemberWeekResult) => ({ ...week(phase, [m, member('b')]), paused: true })
+    const monday = b.lockAt - 5 * HOUR
+    expect(spaceStatus(paused('planning', member('a', { taskCount: 0 })), b, 'a', monday, ctx)).toEqual({ text: 'Paused this week', icon: 'pause', tone: 'default' })
+    expect(spaceStatus(paused('active', member('a', { taskCount: 0 })), b, 'a', b.lockAt + DAY, ctx).text).toBe('Paused this week')
+    expect(spaceStatus(paused('review', member('a')), b, 'a', friday, ctx).text).toBe('Paused this week')
+    // In a paused last week the monthly lists are still reviewed.
+    expect(spaceStatus(paused('review', member('a')), b, 'a', friday, { ...ctx, monthlyDue: true })).toMatchObject({ text: 'Review due in 22h', tone: 'urgent' })
+    // The verdict and the notice wait behind it.
+    expect(spaceStatus(paused('active', member('a')), b, 'a', b.lockAt + DAY, { ...ctx, notice: 'New times from next week' }).text).toBe('Paused this week')
+  })
+
+  it('reviews a friend who left after the lock', () => {
+    const left = { ...ctx, memberIds: ['a'], counted: ['a', 'b'] }
+    expect(spaceStatus(week('review', [member('a'), member('b')]), b, 'a', friday, left)).toMatchObject({ text: 'Review due in 22h', tone: 'urgent' })
+  })
+
+  it('shows a judge’s week', () => {
+    const judge = member('a', { taskCount: 0, provisionalScore: null, judge: true })
+    expect(spaceStatus(week('planning', [judge, member('b')]), b, 'a', b.lockAt - 5 * HOUR, ctx)).toEqual({ text: 'Judging this week · locks in 5h', icon: 'person2', tone: 'default' })
+    expect(spaceStatus(week('active', [judge, member('b')]), b, 'a', b.lockAt + DAY, ctx)).toEqual({ text: 'Judging this week', icon: 'person2', tone: 'default' })
+    expect(spaceStatus(week('review', [judge, member('b')]), b, 'a', friday, ctx)).toMatchObject({ text: 'Review due in 22h', tone: 'urgent' })
+  })
+
+  it('puts the verdict or the schedule notice over the usual line, not over urgent ones', () => {
+    const verdict = { text: 'September: Ben owes you', icon: 'trophy' as const, tone: 'done' as const }
+    const active = week('active', [member('a'), member('b')])
+    expect(spaceStatus(active, b, 'a', b.lockAt + DAY, { ...ctx, verdict })).toEqual(verdict)
+    expect(spaceStatus(active, b, 'a', b.lockAt + DAY, { ...ctx, notice: 'New times from next week' })).toEqual({ text: 'New times from next week', icon: 'clock', tone: 'default' })
+    const empty = week('active', [member('a', { taskCount: 0 }), member('b')])
+    expect(spaceStatus(empty, b, 'a', b.lockAt + DAY, { ...ctx, verdict }).text).toBe('Nothing planned this week')
+  })
+
+  it('looks ahead to a paused or judged next week on the weekend', () => {
+    const t = b.deadlineAt + DAY
+    const closed = week('closed', [member('a')], true)
+    expect(spaceStatus(closed, b, 'a', t, { ...ctx, nextWeekTasks: 0, nextPaused: true }).text).toBe('Results are in')
+    const out = week('closed', [member('a', { participating: false })])
+    expect(spaceStatus(out, b, 'a', t, { ...ctx, nextPaused: true })).toEqual({ text: 'Next week is paused', icon: 'pause', tone: 'default' })
+    expect(spaceStatus(out, b, 'a', t, { ...ctx, judgingNext: true }).text).toBe('Judging next week')
   })
 
   it('turns the weekend into a nudge to plan next week', () => {

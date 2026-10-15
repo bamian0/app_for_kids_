@@ -56,8 +56,11 @@ export function reviewTargetsOf(result: WeekResult, uid: UID, memberIds: UID[]):
 }
 
 export interface StatusContext {
-  /** The space's current members (someone who left isn't waited for or reviewed). */
+  /** The space's current members (someone who left isn't waited for). */
   memberIds: UID[]
+  /** Who counts for the week, `membersAt(space, lockAt)`: whom you review (someone who left after the lock still
+   *  does, SPEC §9.6). Defaults to `memberIds`. */
+  counted?: UID[]
   /** True when `uid` joined after this week's lock (as opposed to a week that started without them). */
   joinedLate: boolean
   /** Tasks on next week's list; only known on the weekend (null otherwise). */
@@ -87,10 +90,9 @@ export interface StatusContext {
  */
 export function spaceStatus(result: WeekResult, bounds: WeekBounds, uid: UID, nowMs: number, ctx: StatusContext): StatusLine {
   const me = result.members[uid]
-  if (result.phase === 'review' && !result.revealed && me?.participating && !me.hasSubmitted) {
-    const weeklyDue = !result.paused && reviewTargetsOf(result, uid, ctx.memberIds).length > 0
-    if (weeklyDue || ctx.monthlyDue) return { text: `Review due in ${formatCountdown(bounds.deadlineAt - nowMs)}`, icon: 'clock', tone: 'urgent' }
-  }
+  const weeklyDue =
+    result.phase === 'review' && !result.revealed && !result.paused && !!me?.participating && !me.hasSubmitted && reviewTargetsOf(result, uid, ctx.counted ?? ctx.memberIds).length > 0
+  if (weeklyDue || (ctx.monthlyDue && result.phase === 'review')) return { text: `Review due in ${formatCountdown(bounds.deadlineAt - nowMs)}`, icon: 'clock', tone: 'urgent' }
   if (ctx.pauseAsk) return { text: ctx.pauseAsk, icon: 'pause', tone: 'urgent' }
   const usual = usualLine(result, bounds, uid, nowMs, ctx)
   if (usual.tone === 'urgent' || usual === PAUSED) return usual

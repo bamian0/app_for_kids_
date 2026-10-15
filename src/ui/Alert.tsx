@@ -1,5 +1,5 @@
 // iOS 26 alerts (centered card, capsule buttons side by side or stacked) and action sheets.
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
@@ -68,16 +68,24 @@ export function useAlert(): UseAlert {
 
 // ---- Rendering ----
 
-function orderedAlertActions(actions: DialogAction[]): DialogAction[] {
+function orderedAlertActions(actions: DialogAction[], row: boolean): DialogAction[] {
   const cancel = actions.filter((a) => a.style === 'cancel')
   const rest = actions.filter((a) => a.style !== 'cancel')
   // Side by side: cancel on the left. Stacked: cancel at the bottom.
-  return actions.length === 2 ? [...cancel, ...rest] : [...rest, ...cancel]
+  return row ? [...cancel, ...rest] : [...rest, ...cancel]
 }
 
 function AlertCard({ spec, onSelect }: { spec: DialogSpec; onSelect: (a: DialogAction) => void }) {
-  const actions = orderedAlertActions(spec.actions)
-  const row = actions.length === 2
+  // Two buttons sit side by side unless a label doesn't fit; then they stack, as on iOS.
+  const [stacked, setStacked] = useState(false)
+  const actionsRef = useRef<HTMLDivElement>(null)
+  const row = spec.actions.length === 2 && !stacked
+  const actions = orderedAlertActions(spec.actions, row)
+  useLayoutEffect(() => {
+    if (!row || !actionsRef.current) return
+    const cut = [...actionsRef.current.children].some((button) => button.scrollWidth > button.clientWidth + 1)
+    if (cut) setStacked(true)
+  }, [row, spec])
   return (
     <motion.div
       className="ui-alert"
@@ -94,7 +102,7 @@ function AlertCard({ spec, onSelect }: { spec: DialogSpec; onSelect: (a: DialogA
           {spec.message && <div className="ui-alert__message">{spec.message}</div>}
         </div>
       )}
-      <div className={cx('ui-alert__actions', row && 'ui-alert__actions--row')}>
+      <div ref={actionsRef} className={cx('ui-alert__actions', row && 'ui-alert__actions--row')}>
         {actions.map((a, i) => (
           <button
             key={`${a.label}-${i}`}

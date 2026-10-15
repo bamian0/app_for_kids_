@@ -1,11 +1,12 @@
-// New space: name and stakes, then straight to inviting friends.
+// New space: name, the house stakes and your role, then straight to inviting friends.
 import { useState } from 'react'
 import { createSpace } from '../data/api.ts'
 import type { Space } from '../domain/types.ts'
-import { ActivityIndicator, GlassButton, NavigationStack, Screen, Section, TextArea, TextFieldRow, useNav } from '../ui/index.ts'
+import { ActivityIndicator, GlassButton, NavigationStack, Row, Screen, Section, TextArea, TextFieldRow, useNav } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
 import { InviteCard } from './components/InviteCard.tsx'
 import { cityOf, deviceZone } from './components/zone.ts'
+import { JUDGE_FOOTER_NEW } from './space/space.ts'
 
 interface Props {
   close: () => void
@@ -22,6 +23,7 @@ function CreateSpaceForm({ close, onOpen }: Props) {
   const [name, setName] = useState('')
   const [reward, setReward] = useState('')
   const [penalty, setPenalty] = useState('')
+  const [judge, setJudge] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const valid = name.trim() !== '' && reward.trim() !== '' && penalty.trim() !== ''
@@ -31,7 +33,7 @@ function CreateSpaceForm({ close, onOpen }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const space = await createSpace({ name, reward, penalty })
+      const space = await createSpace(judge ? { name, reward, penalty, judge } : { name, reward, penalty })
       nav.push(
         <InviteStep
           space={space}
@@ -72,9 +74,12 @@ function CreateSpaceForm({ close, onOpen }: Props) {
       </Section>
       <Section
         header="If you miss, you owe them…"
-        footer={error ? <ErrorText>{error}</ErrorText> : `Same stakes for everyone. Deadlines run on ${cityOf(deviceZone())} time.`}
+        footer={`Everyone starts on these. Each friend can set their own once they’re in. Deadlines run on ${cityOf(deviceZone())} time.`}
       >
         <TextArea value={penalty} onChange={setPenalty} placeholder="Coffee for everyone, for a week" maxLength={120} minRows={2} maxRows={4} aria-label="Penalty" />
+      </Section>
+      <Section footer={error ? <ErrorText>{error}</ErrorText> : JUDGE_FOOTER_NEW}>
+        <Row title="Only Rate Friends" toggle={judge} onToggle={setJudge} />
       </Section>
     </Screen>
   )

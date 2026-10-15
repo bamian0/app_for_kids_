@@ -573,6 +573,21 @@
   gap: 14px;
   padding: 11px 16px;
 }
+/* A row after the stakes rows (Settings' Your Stakes) keeps the separator between them. */
+.s-stakes + .ui-row {
+  position: relative;
+}
+.s-stakes + .ui-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
 .s-stakes__item + .s-stakes__item::before {
   content: "";
   position: absolute;

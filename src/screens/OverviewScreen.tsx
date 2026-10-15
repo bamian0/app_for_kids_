@@ -1,9 +1,11 @@
 // Overview: your week across every space, what your tasks earned, and where each month stands.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useAuth, useCurrency, useEarnings, useMonth, useMySpaces } from '../data/api.ts'
+import { useAuth, useCurrency, useEarnings, useMonthData, useMySpaces } from '../data/api.ts'
 import { earnedByWeek, earnedInMonth, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
-import { computeMonth, computeWeek, joinedAfterLock } from '../domain/scoring.ts'
-import { addWeeks, formatWeekRange, monthIdForWeek, weekBounds, weekIdFor } from '../domain/time.ts'
+import { isWeekPaused } from '../domain/pause.ts'
+import { boundsFor } from '../domain/schedule.ts'
+import { computeMonth, computeWeek, joinedAfterLock, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { addWeeks, formatWeekRange, monthIdForWeek, weekIdFor } from '../domain/time.ts'
 import type { CurrencyCode, Earning, Space, UID } from '../domain/types.ts'
 import { EmptyState, Icon, Row, ScoreRing, Screen, Section, cx, useNav, useTabBar } from '../ui/index.ts'
 import { Loading, MiniScore } from './components/Bits.tsx'
@@ -11,6 +13,7 @@ import { useNow } from './components/clock.ts'
 import { formatScore, monthName, wholePercent } from './components/format.ts'
 import { currentMonth } from './components/month.ts'
 import { spaceStatus } from './components/status.ts'
+import type { StatusLine } from './components/status.ts'
 import { deadlineDay } from './components/zone.ts'
 import { HelpButton } from './help/HelpSheet.tsx'
 import { EarningsChart } from './money/EarningsChart.tsx'
@@ -132,13 +135,15 @@ function WeekHero({ tallies, spaces }: { tallies: (WeekTally | undefined)[]; spa
 function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; report: (id: string, tally: WeekTally | null) => void; onOpen: () => void }) {
   const nowMs = useNow()
   const weekId = weekIdFor(nowMs, space.timezone)
-  const month = useMonth(space, monthIdForWeek(weekId))
-  const data = month.data?.find((w) => w.weekId === weekId)
-  const bounds = data?.week ?? weekBounds(weekId, space.timezone)
+  const month = useMonthData(space, monthIdForWeek(weekId))
+  const data = month.data?.weeks.find((w) => w.weekId === weekId)
+  const bounds = boundsFor(space, weekId, data?.week ?? null)
   const result = data ? computeWeek(data, space, nowMs) : null
   const me = result?.members[uid]
+  const paused = result?.paused === true
 
-  const tasks = me?.participating ? me.tasks : []
+  // A paused week's tasks are just for you: left out of the ring, like a judge's (who has none).
+  const tasks = me?.participating && !paused ? me.tasks : []
   const done = tasks.filter((t) => t.selfDone).length
   const fraction = tasks.reduce((total, t) => total + t.selfFraction, 0)
   const ready = result !== null
@@ -147,16 +152,21 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
   }, [ready, report, space.id, tasks.length, done, fraction])
   useEffect(() => () => report(space.id, null), [report, space.id])
 
-  const status = result
-    ? spaceStatus(result, bounds, uid, nowMs, {
-        memberIds: space.memberIds,
-        joinedLate: joinedAfterLock(space, uid, bounds.lockAt),
-        nextWeekTasks: null,
-        nextLock: deadlineDay(weekBounds(addWeeks(weekId, 1), space.timezone).lockAt, space.timezone),
-      })
-    : null
+  const status: StatusLine | null = !result
+    ? null
+    : paused && result.phase !== 'closed'
+      ? { text: 'Paused', icon: 'pause', tone: 'default' }
+      : spaceStatus(result, bounds, uid, nowMs, {
+          memberIds: space.memberIds,
+          counted: membersAt(space, bounds.lockAt),
+          joinedLate: joinedAfterLock(space, uid, bounds.lockAt),
+          nextWeekTasks: null,
+          nextLock: deadlineDay(boundsFor(space, addWeeks(weekId, 1)).lockAt, space.timezone),
+          nextPaused: isWeekPaused(space, addWeeks(weekId, 1)),
+          judgingNext: spaceJudges(space).includes(uid),
+        })
   // From Monday 00:00 ticks count, like the ring above; a list that's still empty has no score to show.
-  const showsScore = !!me?.participating && (me.score != null || me.taskCount > 0)
+  const showsScore = !!me?.participating && !paused && !me.judge && (me.score != null || me.taskCount > 0)
   const score = showsScore ? (me.score ?? me.provisionalScore) : null
   const revealed = me?.score != null
 
@@ -185,15 +195,18 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
 function SpaceMonthRow({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () => void }) {
   const nowMs = useNow()
   const monthId = currentMonth(space, nowMs)
-  const month = useMonth(space, monthId)
-  const mine = month.data ? computeMonth(space, monthId, month.data, nowMs)[uid] : undefined
+  const month = useMonthData(space, monthId)
+  const mine = month.data ? computeMonth(space, monthId, month.data.weeks, nowMs, month.data.monthly)[uid] : undefined
 
   let line = 'Loading…'
   let tone: 'default' | 'urgent' | 'done' = 'default'
   if (mine) {
     const score = mine.finalScore
-    if (score === null) line = 'No finished weeks yet'
-    else {
+    if (score === null) {
+      // Judged every week so far (and played none): nothing at stake this month.
+      const judgeOnly = ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && mine.weeks.every((w) => w.paused) && !mine.monthly
+      line = judgeOnly ? 'Judge · no score this month' : 'No finished weeks yet'
+    } else {
       const short = space.threshold - wholePercent(score)
       const points = `${short} ${short === 1 ? 'point' : 'points'}`
       if (mine.complete) line = short <= 0 ? 'Cleared the bar' : `Missed by ${points}`

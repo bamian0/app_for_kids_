@@ -1,6 +1,7 @@
 // The whole game, end to end, in two iPhone-sized browsers against the emulators with the real rules:
 // sign up, create a space, join by code, plan next week, then (seeded) a week in its Friday window
-// reviewed through the UI until the reveal, and a finished month with its verdict and Settled switch.
+// reviewed through the UI until the reveal, and a finished month with its verdict, settled per pair
+// (each line's check writes the pair's doc, SPEC §9.7).
 //
 // Run (no npm scripts needed; starts the emulators, the Vite dev server and Chromium):
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test"
@@ -309,24 +310,33 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await expect.poll(() => edgeGlows(marco)).toBe(glowsBefore + 1)
     await expect(marco.locator('.ui-edge-glow')).toHaveCount(0, { timeout: 10_000 })
 
-    const settled = marco.getByRole('switch', { name: 'Settled' }).first()
+    // Settling is per pair: each line has its own check, for whoever was owed (SPEC §9.7).
+    const settled = marco.getByRole('checkbox', { name: `Settled: Lena owes you: ${SPACE.reward}`, exact: true })
     await expect(settled).not.toBeChecked()
+    await expect(settled).toBeEnabled()
     await settled.click()
     await expect(settled).toBeChecked()
     await expect
-      .poll(async () => (await db.doc(`spaces/${spaceId}/settlements/${lastMonth}_${marcoUid}`).get()).data())
-      .toMatchObject({ monthId: lastMonth, uid: marcoUid, settled: true, settledBy: marcoUid })
-    await expect(shown(marco, 'Marked by you')).toBeVisible()
+      .poll(async () => (await db.doc(`spaces/${spaceId}/settlements/${lastMonth}_${marcoUid}_${lenaUid}`).get()).data())
+      .toMatchObject({ monthId: lastMonth, uid: marcoUid, other: lenaUid, settled: true, settledBy: marcoUid })
+    // New clients never write the per-member doc from before.
+    expect((await db.doc(`spaces/${spaceId}/settlements/${lastMonth}_${marcoUid}`).get()).exists).toBe(false)
+    await expect(shown(marco, /^Settled · marked by you, /)).toBeVisible()
+    // Lena's penalty is Marco's to mark too, and still open.
+    await expect(marco.getByRole('checkbox', { name: `Settled: Lena owes you: ${SPACE.penalty}`, exact: true })).not.toBeChecked()
     await snap(marco, '18-month-verdict')
-    // Lena sees the switch flip live, and who flipped it. She missed: no glow, and she can't mark her own debt.
+    // Lena sees the check flip live, and who checked it. She missed: no glow, and she can't mark her own debt.
     const lenaGlows = await edgeGlows(lena)
     await lena.getByRole('radio', { name: 'Month' }).click()
     await lena.getByRole('button', { name: 'Previous month' }).click()
     await expect(shown(lena, `You owe Marco: ${SPACE.penalty}`)).toBeVisible()
-    await expect(shown(lena, 'Marked by Marco')).toBeVisible()
-    await expect(shown(lena, 'Only the people you owe can mark this.')).toBeVisible()
-    // Neither row is hers to mark: Marco is owed his reward, and she can't settle her own debt.
-    await expect(lena.getByRole('switch', { name: 'Settled' })).toHaveCount(0)
+    await expect(shown(lena, /^Settled · marked by Marco, /)).toBeVisible()
+    await expect(shown(lena, 'Only Marco can mark this.')).toBeVisible()
+    // Neither line is hers to mark: Marco is owed his reward, and she can't settle her own debt.
+    const lenaReward = lena.getByRole('checkbox', { name: `Settled: You owe Marco: ${SPACE.reward}`, exact: true })
+    await expect(lenaReward).toBeChecked()
+    await expect(lenaReward).toBeDisabled()
+    await expect(lena.getByRole('checkbox', { name: `Settled: You owe Marco: ${SPACE.penalty}`, exact: true })).toBeDisabled()
     await lena.waitForTimeout(1000)
     expect(await edgeGlows(lena)).toBe(lenaGlows)
     await snap(lena, '18b-month-verdict-lena')

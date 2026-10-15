@@ -4,10 +4,11 @@ import type { ReactNode } from 'react'
 import { joinSpace, lookupInvite, useMySpaces } from '../data/api.ts'
 import { INVITE_ALPHABET, INVITE_CODE_LENGTH, normalizeInviteCode } from '../domain/ids.ts'
 import type { Invite } from '../domain/types.ts'
-import { ActivityIndicator, Avatar, Button, GlassButton, Screen, Section, TextFieldRow } from '../ui/index.ts'
+import { ActivityIndicator, Avatar, Button, GlassButton, Row, Screen, Section, TextFieldRow } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
 import { listNames } from './components/people.ts'
 import { StakesList } from './components/Stakes.tsx'
+import { JUDGE_FOOTER_NEW } from './space/space.ts'
 
 /** Keeps the field as XXXX-XXXX while typing; a pasted invite link becomes its code. */
 export function formatCodeInput(value: string): string {
@@ -33,6 +34,7 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
   const [lookup, setLookup] = useState<Lookup | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [judge, setJudge] = useState(false)
   const code = normalizeInviteCode(value)
   const typed = value.replace('-', '')
 
@@ -58,7 +60,7 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const spaceId = await joinSpace(code)
+      const spaceId = await joinSpace(code, judge ? { judge } : {})
       onJoined(spaceId, invite?.spaceName, true)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Couldn’t join.')
@@ -131,8 +133,13 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
             </div>
           </Section>
           {!alreadyIn && invite.reward && invite.penalty && (
-            <Section header="What’s at stake" footer="Settled every month. Friends review your week every Friday.">
+            <Section header="What’s at stake" footer="Everyone can set their own stakes after joining. Until you agree to theirs, these count.">
               <StakesList reward={invite.reward} penalty={invite.penalty} />
+            </Section>
+          )}
+          {!alreadyIn && (
+            <Section footer={JUDGE_FOOTER_NEW}>
+              <Row title="Only Rate Friends" toggle={judge} onToggle={setJudge} />
             </Section>
           )}
         </>

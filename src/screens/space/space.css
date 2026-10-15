@@ -1,0 +1,259 @@
+/* The Space screen's transient cards (pause, schedule notice) and the Week Schedule screen (SPEC §9.2, §9.3). */
+
+/* ---------- A card's head: a round glyph tile, a title and a subtitle ---------- */
+
+.sp-tile {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+}
+.sp-line__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sp-line__title {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.022em;
+  color: var(--label);
+}
+.sp-line__subtitle {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+
+/* One tappable line with a dismiss button (the notice, a declined or lapsed pause). */
+.sp-line {
+  display: flex;
+  align-items: stretch;
+  padding-right: 6px;
+}
+.sp-line__main {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  min-height: 60px;
+  padding: 12px 0 12px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+button.sp-line__main {
+  cursor: pointer;
+}
+.sp-line__main .sp-tile {
+  margin-top: 1px;
+}
+@media (hover: none) {
+  .sp-line:has(button.sp-line__main:active) {
+    background: var(--row-highlight);
+  }
+}
+@media (hover: hover) {
+  .sp-line:has(button.sp-line__main:hover) {
+    background: var(--quaternary-system-fill);
+  }
+}
+
+/* The xmark: a 44pt target around a small gray dot, like the stakes card's. */
+.sp-close {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  justify-content: center;
+  width: 44px;
+  padding: 14px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--secondary-label);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sp-close__dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--tertiary-system-fill);
+}
+.sp-close:active .sp-close__dot {
+  background: var(--secondary-system-fill);
+}
+
+/* ---------- The pause card ---------- */
+
+.sp-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+.sp-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.sp-head .sp-tile {
+  margin-top: 1px;
+}
+.sp-people {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 46px;
+}
+.sp-people__stack {
+  display: flex;
+  gap: 6px;
+}
+.sp-person {
+  position: relative;
+  border-radius: 50%;
+}
+.sp-person .ui-avatar {
+  display: flex;
+}
+.sp-person--waiting .ui-avatar {
+  opacity: 0.4;
+}
+.sp-person__check {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--label);
+  color: var(--on-label);
+  box-shadow: 0 0 0 2px var(--secondary-system-grouped-background);
+}
+.sp-people__count {
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+}
+.sp-status {
+  padding-left: 46px;
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+}
+.sp-actions {
+  display: flex;
+  gap: 10px;
+}
+.sp-actions > .ui-button {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+.sp-actions--single {
+  padding-left: 46px;
+  margin-top: -4px;
+}
+.sp-actions--single > .ui-button {
+  flex: 0 0 auto;
+}
+
+/* ---------- Week Schedule ---------- */
+
+/* A moment: its name, then a day and a time capsule, as in Calendar's Starts row. */
+.sp-moment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--row-min, 44px);
+  padding: 7px 12px 7px 16px;
+}
+.sp-moment + .sp-moment::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+.sp-moment__label {
+  flex-shrink: 1;
+  min-width: 0;
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.022em;
+  color: var(--label);
+}
+.sp-moment__capsules {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+.sp-capsule {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sp-capsule:has(.sp-capsule__select:focus-visible) {
+  outline: 2px solid var(--tint);
+  outline-offset: 1px;
+}
+/* The native picker covers the capsule, invisible: tapping it opens the system wheel. */
+.sp-capsule__select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+  appearance: none;
+}
+/* Narrower phones: tighter capsules, so a label like "Reviews open" stays on one line next to "Wednesday"
+   and "12:30 AM". */
+@media (max-width: 400px) {
+  .sp-moment {
+    padding-right: 10px;
+  }
+  .sp-moment__capsules {
+    gap: 5px;
+  }
+  .sp-capsule {
+    padding: 0 8px;
+    font-size: 16px;
+    letter-spacing: -0.02em;
+  }
+}
+@media (max-width: 340px) {
+  .sp-capsule {
+    padding: 0 6px;
+    font-size: 15px;
+  }
+}

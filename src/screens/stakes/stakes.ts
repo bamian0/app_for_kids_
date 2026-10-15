@@ -57,9 +57,9 @@ export function termsInForceNow(space: Space, subject: UID, stakes: StakesDocs |
   return memberTerms(space, subject, friends, stakes, houseOf(space), Infinity)
 }
 
-/** You judge: this week's snapshot, or the space's list (from the next unlocked week on). */
+/** You judge this week: its snapshot when the doc exists (a locked week keeps its role), else the space's list. */
 export function isJudging(space: Space, me: UID, thisWeek?: Week | null): boolean {
-  return spaceJudges(space).includes(me) || (!!thisWeek && judgesOf(thisWeek).includes(me))
+  return thisWeek ? judgesOf(thisWeek).includes(me) : spaceJudges(space).includes(me)
 }
 
 /** Current members other than `me` who play (not judges), in join order. */

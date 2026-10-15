@@ -1,11 +1,13 @@
 // Home: every space you're in as a card with your month score and the one thing that matters now.
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useAuth, useMonth, useMySpaces, useProfiles } from '../data/api.ts'
+import { useAuth, useMonthData, useMySpaces, useProfiles, useWeek } from '../data/api.ts'
 import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, pushSupport } from '../push/index.ts'
-import { computeMonth, computeWeek, joinedAfterLock } from '../domain/scoring.ts'
-import { addWeeks, monthIdForWeek, weekBounds, weekIdFor, weekPhase } from '../domain/time.ts'
-import type { Space, UID, WeekId } from '../domain/types.ts'
+import { isWeekPaused, pauseView } from '../domain/pause.ts'
+import { boundsFor } from '../domain/schedule.ts'
+import { computeMonth, computeWeek, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { addWeeks, isMonthlyReviewWeek, monthIdForWeek, weekIdFor, weekPhase } from '../domain/time.ts'
+import type { Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useTabBar, useToast } from '../ui/index.ts'
 import type { IconName } from '../ui/index.ts'
 import { usePress } from '../ui/press.ts'
@@ -19,13 +21,15 @@ import { firstName, nameOf, personOf } from './components/people.ts'
 import { spaceStatus } from './components/status.ts'
 import type { StatusContext, StatusLine } from './components/status.ts'
 import { firstTime, readLocal, writeLocal } from './components/storage.ts'
-import { deadlineDay } from './components/zone.ts'
+import { deadlineDay, deviceHourCycle } from './components/zone.ts'
 import { CreateSpaceSheet } from './CreateSpaceSheet.tsx'
 import { HelpButton } from './help/HelpSheet.tsx'
 import { InstallGuideSheet } from './InstallGuide.tsx'
 import { JoinSheet } from './JoinSheet.tsx'
+import { reviewParts } from './monthly/review.ts'
 import { ProfileSheet } from './ProfileSheet.tsx'
 import { SpaceScreen } from './SpaceScreen.tsx'
+import { pauseAskLine, scheduleNotice, weekFor } from './space/space.ts'
 
 const INSTALL_DISMISSED = 'installCardDismissed'
 const REMINDERS_DISMISSED = 'remindersCardDismissed'
@@ -165,15 +169,20 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
   const monthId = monthIdForWeek(weekId)
   // A month that ended less than a week ago: its verdict leads the card.
   const fresh = freshVerdictMonth(space, uid, nowMs)
-  const month = useMonth(space, monthId)
-  const verdictMonth = useMonth(space, fresh ?? monthId)
-  const weekData = month.data?.find((w) => w.weekId === weekId)
-  const bounds = weekData?.week ?? weekBounds(weekId, space.timezone)
+  const month = useMonthData(space, monthId)
+  const verdictMonth = useMonthData(space, fresh ?? monthId)
+  const weekData = month.data?.weeks.find((w) => w.weekId === weekId)
+  const weekDoc = weekData?.week ?? null
+  const bounds = boundsFor(space, weekId, weekDoc)
   const phase = weekPhase(bounds, nowMs)
   const week = weekData ? computeWeek(weekData, space, nowMs) : null
-  const mine = month.data ? computeMonth(space, monthId, month.data, nowMs)[uid] : undefined
-  const verdict = fresh && verdictMonth.data ? computeMonth(space, fresh, verdictMonth.data, nowMs)[uid] : undefined
+  const mine = month.data ? computeMonth(space, monthId, month.data.weeks, nowMs, month.data.monthly)[uid] : undefined
+  const verdict = fresh && verdictMonth.data ? computeMonth(space, fresh, verdictMonth.data.weeks, nowMs, verdictMonth.data.monthly)[uid] : undefined
   const profiles = useProfiles([...space.memberIds, ...(verdict?.others ?? [])])
+  const name = (id: UID) => firstName(nameOf(profiles, id))
+  const meWeek = week?.members[uid]
+  const judgeOnlyMonth =
+    !!mine && mine.finalScore === null && ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && mine.weeks.every((w) => w.paused) && !mine.monthly
 
   let ring: number | null = null
   let caption = ''
@@ -184,24 +193,49 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
   } else if (mine?.finalScore != null) {
     ring = mine.finalScore
     caption = mine.complete ? 'Month' : 'So far'
-  } else if (week && phase !== 'planning' && week.members[uid]?.participating) {
-    const m = week.members[uid]
-    ring = m.score ?? m.provisionalScore
+  } else if ((meWeek?.participating && meWeek.judge) || judgeOnlyMonth) {
+    // Judging: nothing at stake, so no score to show.
+    caption = 'Judge'
+  } else if (week && !week.paused && phase !== 'planning' && meWeek?.participating) {
+    ring = meWeek.score ?? meWeek.provisionalScore
     // Your own check-offs until friends' reviews are in: labelled, and never the prism.
-    caption = m.score != null ? 'This week' : 'Provisional'
-    iridescent = m.score != null
+    caption = meWeek.score != null ? 'This week' : 'Provisional'
+    iridescent = meWeek.score != null
   }
 
-  const verdictLine = fresh && verdict ? verdictStatus(fresh, verdict, uid, (id) => firstName(nameOf(profiles, id))) : null
-  const withVerdict = (status: StatusLine): StatusLine =>
-    verdict && verdictLine && status.tone !== 'urgent'
-      ? { text: verdictLine, icon: verdict.passed ? 'trophy' : 'flame', tone: verdict.passed && verdict.others.length > 0 ? 'done' : 'default' }
-      : status
-  const ctx = (nextWeekTasks: number | null): StatusContext => ({
+  const verdictLine = fresh && verdict ? verdictStatus(fresh, verdict, uid, name) : null
+  const seen = (key: string) => readLocal(key) !== null
+  const request = space.pause
+  const pause = request ? pauseView(space, uid, nowMs, weekFor(space, request.weekId, [weekDoc])) : null
+  const note = space.scheduleNote
+  const notice = scheduleNotice({
+    space,
+    me: uid,
+    nowMs,
+    thisWeek: weekId,
+    fromWeekDeadline: note ? weekFor(space, note.fromWeek, [weekDoc]).deadlineAt : null,
+    name,
+    seen,
+    hourCycle: deviceHourCycle(),
+  })
+  // In the month's last week the month's lists are reviewed too (even when the week is paused).
+  const parts = reviewParts(weekData, isMonthlyReviewWeek(weekId) ? month.data?.monthly : undefined, uid, space, nowMs)
+  const ctx = (next: WeekData | undefined): StatusContext => ({
     memberIds: space.memberIds,
+    counted: membersAt(space, bounds.lockAt),
     joinedLate: joinedAfterLock(space, uid, bounds.lockAt),
-    nextWeekTasks,
-    nextLock: deadlineDay(weekBounds(addWeeks(weekId, 1), space.timezone).lockAt, space.timezone),
+    nextWeekTasks: next ? (next.plans[uid]?.tasks.length ?? 0) : null,
+    nextLock: deadlineDay(boundsFor(space, addWeeks(weekId, 1), next?.week ?? null).lockAt, space.timezone),
+    monthlyDue: parts.monthly.open && parts.monthly.targets.length > 0,
+    pauseAsk: pause ? pauseAskLine(pause, weekId, name) : null,
+    nextPaused: isWeekPaused(space, addWeeks(weekId, 1)),
+    judgingNext: next?.week ? judgesOf(next.week).includes(uid) : spaceJudges(space).includes(uid),
+    verdict:
+      verdict && verdictLine
+        ? { text: verdictLine, icon: verdict.passed ? 'trophy' : 'flame', tone: verdict.passed && verdict.others.length > 0 ? 'done' : 'default' }
+        : null,
+    // "New times from next week" for those who knew the old times (not the newcomer's "own times" note).
+    notice: notice?.kind === 'change' ? notice.title : null,
   })
 
   const people = space.memberIds.map((id) => personOf(profiles, id))
@@ -228,7 +262,7 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
             iridescent={iridescent}
             size={68}
             stroke={7}
-            aria-label={ring == null ? 'No score yet' : `${caption}: ${wholePercent(ring)} percent`}
+            aria-label={ring == null ? (caption === 'Judge' ? 'Judge, no score' : 'No score yet') : `${caption}: ${wholePercent(ring)} percent`}
           >
             <span className={cx('s-space-card__ring-value t-tabular', ring == null && 'c-tertiary')}>{ring == null ? '—' : wholePercent(ring)}</span>
           </ScoreRing>
@@ -237,9 +271,9 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
       </span>
       {week ? (
         phase === 'closed' ? (
-          <WeekendStatus space={space} weekId={weekId} uid={uid} render={(next) => <StatusRow status={withVerdict(spaceStatus(week, bounds, uid, nowMs, ctx(next)))} />} />
+          <WeekendStatus space={space} weekId={weekId} render={(next) => <StatusRow status={spaceStatus(week, bounds, uid, nowMs, ctx(next))} />} />
         ) : (
-          <StatusRow status={withVerdict(spaceStatus(week, bounds, uid, nowMs, ctx(null)))} />
+          <StatusRow status={spaceStatus(week, bounds, uid, nowMs, ctx(undefined))} />
         )
       ) : (
         <StatusRow status={null} />
@@ -248,12 +282,10 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
   )
 }
 
-/** On the weekend the card also nudges you to plan next week, which needs next week's data. */
-function WeekendStatus({ space, weekId, uid, render }: { space: Space; weekId: WeekId; uid: UID; render: (nextWeekTasks: number | null) => ReactNode }) {
-  const next = addWeeks(weekId, 1)
-  const month = useMonth(space, monthIdForWeek(next))
-  const data = month.data?.find((w) => w.weekId === next)
-  return <>{render(data ? (data.plans[uid]?.tasks.length ?? 0) : null)}</>
+/** On the weekend the card also looks ahead to next week (plan it, or it's paused or judged), which needs its data. */
+function WeekendStatus({ space, weekId, render }: { space: Space; weekId: WeekId; render: (next: WeekData | undefined) => ReactNode }) {
+  const next = useWeek(space, addWeeks(weekId, 1))
+  return <>{render(next.data)}</>
 }
 
 function StatusRow({ status }: { status: StatusLine | null }) {

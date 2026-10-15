@@ -72,7 +72,7 @@
 .hp-stop {
   position: relative;
   display: grid;
-  grid-template-columns: 24px 76px minmax(0, 1fr);
+  grid-template-columns: 24px 88px minmax(0, 1fr);
   align-items: start;
   column-gap: 10px;
   padding: 10px 0;

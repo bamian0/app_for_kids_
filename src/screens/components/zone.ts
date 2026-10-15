@@ -1,5 +1,8 @@
-// Time zone helpers: the "deadlines follow Rome time" note, and deadlines in words. A space's
-// deadlines are midnights on its own clock; a friend on another clock gets the time on theirs.
+// Time zone helpers: the "deadlines follow Rome time" note, and deadlines in words. A space's deadlines are
+// on its own clock (midnights on the usual times, any half hour on its own times, SPEC §9.2); a friend on
+// another clock gets the time on theirs.
+import { timeLabel } from '../../domain/schedule.ts'
+import type { HourCycle } from '../../domain/schedule.ts'
 
 export function deviceZone(): string {
   try {
@@ -40,6 +43,11 @@ const HOUR_CYCLE = (() => {
   }
 })()
 
+/** The device's clock style for times we write ourselves ("6:00 PM" or "18:00"). */
+export function deviceHourCycle(): HourCycle {
+  return HOUR_CYCLE === 'h23' || HOUR_CYCLE === 'h24' ? 'h23' : 'h12'
+}
+
 function inZone(ms: number, zone: string, options: Intl.DateTimeFormatOptions): string {
   try {
     return new Intl.DateTimeFormat('en-US', { ...options, timeZone: zone }).format(ms)
@@ -64,19 +72,29 @@ function isMidnight(ms: number, zone: string): boolean {
 }
 
 /**
- * A deadline in words. On the space's own clock it is a midnight: "tonight at midnight", "tomorrow at
- * midnight", "Friday at midnight", "next Monday at midnight". On another clock (or for a skewed week
- * that doesn't end at midnight) it is the time on this device: "Mon 3:00 PM".
+ * A deadline in words, on the space's own clock: "tonight at midnight", "tomorrow at midnight", "Friday at
+ * midnight", "next Monday at midnight" (a midnight ends the day before it), and for other times "today at
+ * 6:00 PM", "tonight at 8:00 PM" (from 5 PM), "tomorrow at 9:00 AM", "Friday at noon", "next Monday at
+ * 1:00 AM". On another clock it is the time on this device: "Mon 3:00 PM".
  */
-export function deadlineText(ms: number, spaceZone: string, nowMs: number, device: string = deviceZone()): string {
-  if (zoneNote(spaceZone, device) !== null || !isMidnight(ms, spaceZone)) return deviceTime(ms, device)
-  // The deadline ends the day before it.
-  const day = ms - 1
+export function deadlineText(ms: number, spaceZone: string, nowMs: number, device: string = deviceZone(), hourCycle: HourCycle = deviceHourCycle()): string {
+  if (zoneNote(spaceZone, device) !== null) return deviceTime(ms, device)
+  const midnight = isMidnight(ms, spaceZone)
+  // A midnight ends the day before it.
+  const day = midnight ? ms - 1 : ms
   const ahead = Math.round((dayOf(day, spaceZone) - dayOf(nowMs, spaceZone)) / 86_400_000)
   const weekday = inZone(day, spaceZone, { weekday: 'long' })
-  if (ahead <= 0) return 'tonight at midnight'
-  if (ahead === 1) return 'tomorrow at midnight'
-  return `${ahead >= 7 ? 'next ' : ''}${weekday} at midnight`
+  if (midnight) {
+    if (ahead <= 0) return 'tonight at midnight'
+    if (ahead === 1) return 'tomorrow at midnight'
+    return `${ahead >= 7 ? 'next ' : ''}${weekday} at midnight`
+  }
+  const [hour, minute] = inZone(ms, spaceZone, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).split(':').map(Number)
+  const label = timeLabel(hour * 60 + minute, hourCycle)
+  const time = label === 'Noon' ? 'noon' : label
+  if (ahead <= 0) return `${hour >= 17 ? 'tonight' : 'today'} at ${time}`
+  if (ahead === 1) return `tomorrow at ${time}`
+  return `${ahead >= 7 ? 'next ' : ''}${weekday} at ${time}`
 }
 
 /** Short form for status lines: the day a deadline ends ("Mon"), or "Mon 3:00 PM" on another clock. */

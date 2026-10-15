@@ -355,6 +355,8 @@ const ICONS = {
       </>
     ),
   },
+  /** Pause (SF pause): two rounded bars. A paused week, asking to pause one. */
+  pause: { weight: 2.6, body: <path d="M8.75 5.75v12.5M15.25 5.75v12.5" /> },
   /** Help (questionmark). */
   questionmark: {
     weight: 2,

@@ -1,22 +1,28 @@
 // Your task list before it locks: edit titles in place, add with the trailing new row, swipe to delete.
 // Edits autosave; the list on screen stays local while you type so the server echo never moves the cursor.
 // Steps and revenue are edited in the task sheet, which hands the task back here: one writer.
+// The same editor plans a monthly list (SPEC §9.5): saved with saveMonthlyPlan, and without revenue.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { savePlan } from '../../data/api.ts'
+import { saveMonthlyPlan, savePlan } from '../../data/api.ts'
 import { newTaskId } from '../../domain/ids.ts'
-import type { CurrencyCode, Earning, Space, Task, WeekId } from '../../domain/types.ts'
+import type { CurrencyCode, Earning, Period, Space, Task, WeekId } from '../../domain/types.ts'
 import { CheckCircle, Icon, Row, Shimmer, cx, useSheet, useToast } from '../../ui/index.ts'
 import { AmountBadge, StepList, StepRing } from './Bits.tsx'
 import { stepCount } from './marks.ts'
 import { SwipeToDelete } from './SwipeToDelete.tsx'
-import { TaskSheet } from './TaskSheet.tsx'
+import { periodFrom, TaskSheet } from './TaskSheet.tsx'
 import { TaskTitleInput } from './TaskTitleInput.tsx'
 import '../tasks.css'
 
 export const MAX_TASKS = 25
 const SAVE_DELAY = 700
 
-function usePlanDraft(space: Space, weekId: WeekId, server: Task[]) {
+/** Saves a whole list to its week or monthly list. */
+function saveList(space: Space, period: Period, tasks: Task[]): Promise<void> {
+  return period.kind === 'month' ? saveMonthlyPlan(space, period.id, tasks) : savePlan(space, period.id, tasks)
+}
+
+function usePlanDraft(space: Space, period: Period, server: Task[]) {
   const toast = useToast()
   const [local, setLocal] = useState<Task[] | null>(null)
   const tasks = local ?? server
@@ -25,14 +31,14 @@ function usePlanDraft(space: Space, weekId: WeekId, server: Task[]) {
   const version = useRef(0)
   const timer = useRef<number | undefined>(undefined)
   const editing = useRef(false)
-  const target = useRef({ space, weekId })
-  target.current = { space, weekId }
+  const target = useRef({ space, period })
+  target.current = { space, period }
 
   const save = useCallback(
     async (next: Task[], v: number) => {
       timer.current = undefined
       try {
-        await savePlan(target.current.space, target.current.weekId, next)
+        await saveList(target.current.space, target.current.period, next)
       } catch (e) {
         if (v === version.current) setLocal(null)
         toast({ title: 'Couldn’t save your list', message: e instanceof Error ? e.message : undefined, tone: 'error' })
@@ -72,7 +78,7 @@ function usePlanDraft(space: Space, weekId: WeekId, server: Task[]) {
       if (timer.current === undefined && !title) return
       window.clearTimeout(timer.current)
       const list = title && latest.current.length < MAX_TASKS ? [...latest.current, { id: newTaskId(), title }] : latest.current
-      savePlan(target.current.space, target.current.weekId, list).catch(() => {})
+      saveList(target.current.space, target.current.period, list).catch(() => {})
     },
     [],
   )
@@ -82,7 +88,10 @@ function usePlanDraft(space: Space, weekId: WeekId, server: Task[]) {
 
 export interface PlanEditorProps {
   space: Space
-  weekId: WeekId
+  /** The week this list plans (when `period` isn't given). */
+  weekId?: WeekId
+  /** The week or monthly list this list plans; wins over `weekId`. A month has no revenue. */
+  period?: Period
   tasks: Task[]
   done: Record<string, boolean>
   /** Check-offs are possible once the week has started (Monday before the lock). */
@@ -90,13 +99,18 @@ export interface PlanEditorProps {
   /** `id` is a task id or a step id. */
   onToggleDone: (id: string, done: boolean) => void
   shimmer?: { id: string; stamp: number }
-  /** Your revenue tasks of this week, by task id. Amounts are only ever shown to you. */
+  /** Your revenue tasks of this week, by task id. Amounts are only ever shown to you. Ignored for a month. */
   earnings?: Record<string, Earning>
-  currency: CurrencyCode
+  /** Needed for a week's amounts; a month has none. */
+  currency?: CurrencyCode
 }
 
-export function PlanEditor({ space, weekId, tasks: server, done, canCheck, onToggleDone, shimmer, earnings = {}, currency }: PlanEditorProps) {
-  const { tasks, latest, edit, setEditing, pendingNew } = usePlanDraft(space, weekId, server)
+const NO_EARNINGS: Record<string, Earning> = {}
+
+export function PlanEditor({ space, weekId, period: periodProp, tasks: server, done, canCheck, onToggleDone, shimmer, earnings: earningsProp, currency = 'USD' }: PlanEditorProps) {
+  const period = periodFrom(periodProp, weekId)
+  const earnings = period.kind === 'week' ? (earningsProp ?? NO_EARNINGS) : NO_EARNINGS
+  const { tasks, latest, edit, setEditing, pendingNew } = usePlanDraft(space, period, server)
   const sheet = useSheet()
   const [adding, setAdding] = useState('')
   pendingNew.current = adding
@@ -138,7 +152,7 @@ export function PlanEditor({ space, weekId, tasks: server, done, canCheck, onTog
       (close) => (
         <TaskSheet
           space={space}
-          weekId={weekId}
+          period={period}
           mode={task ? { kind: 'edit', task } : { kind: 'new' }}
           close={close}
           onSave={saveFromSheet}

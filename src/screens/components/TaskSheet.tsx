@@ -1,18 +1,22 @@
 // The task sheet: a task's title, its steps, and whether it brings in money. Before the lock it edits
 // your list (the list editor saves, so a pending autosave can't drop the change). After the lock it
-// appends a final task, or shows a locked one where only the revenue can still change.
+// appends a final task, or shows a locked one where only the revenue can still change. A monthly list's
+// task (period kind 'month', SPEC §9.5) has no revenue and is never appended after the lock.
 import { useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import { addTaskAfterLock, setTaskRevenue, useAuth, useCurrency, useEarnings, useWeek } from '../../data/api.ts'
+import { addTaskAfterLock, setTaskRevenue, useAuth, useCurrency, useEarnings, useMonthly, useWeek } from '../../data/api.ts'
+import type { Live } from '../../data/api.ts'
 import { MAX_SUBTASKS, newTaskId } from '../../domain/ids.ts'
 import { earningId } from '../../domain/money.ts'
+import { boundsFor } from '../../domain/schedule.ts'
 import { addedAfterLock, isTaskDone } from '../../domain/scoring.ts'
-import { weekBounds } from '../../domain/time.ts'
-import type { Space, Subtask, Task, WeekId } from '../../domain/types.ts'
-import { Button, GlassButton, Icon, Row, Screen, Section, haptic, transitionFor, useAlert, useToast } from '../../ui/index.ts'
+import { monthlyBounds } from '../../domain/time.ts'
+import type { CurrencyCode, Earning, MonthId, Period, Space, Subtask, Task, WeekId } from '../../domain/types.ts'
+import { Button, EmptyState, GlassButton, Icon, Row, Screen, Section, haptic, transitionFor, useAlert, useToast } from '../../ui/index.ts'
 import { CheckDot, ErrorText, TaskBadge } from './Bits.tsx'
 import { useNow } from './clock.ts'
+import { monthName } from './format.ts'
 import { addedLabel, weekdayIn } from './marks.ts'
 import { MoneyField } from './MoneyField.tsx'
 import { SwipeToDelete } from './SwipeToDelete.tsx'
@@ -24,14 +28,17 @@ export type TaskSheetMode =
   | { kind: 'new' }
   /** Before the lock: one of your tasks. */
   | { kind: 'edit'; task: Task }
-  /** After the lock, until Friday: a task appended to the week. Final. */
+  /** After the lock, until reviews open: a task appended to the week. Final. Never for a monthly list. */
   | { kind: 'add' }
   /** After the lock: title and steps are fixed; the revenue can still change. */
   | { kind: 'locked'; task: Task }
 
 export interface TaskSheetProps {
   space: Space
-  weekId: WeekId
+  /** The week the task belongs to (when `period` isn't given). */
+  weekId?: WeekId
+  /** The week or monthly list the task belongs to; wins over `weekId`. A month: no revenue, never `add`. */
+  period?: Period
   mode: TaskSheetMode
   close: () => void
   /** new and edit: hands the task back to the list editor, which saves it. */
@@ -52,15 +59,70 @@ const OFF: Revenue = { on: false, amount: null }
 
 const TITLES = { new: 'New Task', edit: 'Edit Task', add: 'Add Task', locked: 'Details' } as const
 
-export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: TaskSheetProps) {
+/** The period a list editor or task sheet works on: `period`, else the week `weekId`. */
+export function periodFrom(period: Period | undefined, weekId: WeekId | undefined): Period {
+  if (period) return period
+  if (weekId === undefined) throw new Error('A week or a period is needed.')
+  return { kind: 'week', id: weekId }
+}
+
+export function TaskSheet(props: TaskSheetProps) {
+  const period = periodFrom(props.period, props.weekId)
+  return period.kind === 'month' ? <MonthlyTaskSheet {...props} monthId={period.id} /> : <WeeklyTaskSheet {...props} weekId={period.id} />
+}
+
+type InnerProps = Omit<TaskSheetProps, 'weekId' | 'period'>
+
+function WeeklyTaskSheet({ weekId, ...props }: InnerProps & { weekId: WeekId }) {
   const { uid } = useAuth()
-  const me = uid ?? ''
+  const week = useWeek(props.space, weekId)
+  const earnings = useEarnings()
+  const currency = useCurrency()
+  return (
+    <TaskSheetBody
+      {...props}
+      loaded={week.data !== undefined}
+      done={week.data?.progress[uid ?? '']?.done ?? {}}
+      lockAt={boundsFor(props.space, weekId, week.data?.week).lockAt}
+      money={{ weekId, earnings, currency }}
+    />
+  )
+}
+
+function MonthlyTaskSheet({ monthId, ...props }: InnerProps & { monthId: MonthId }) {
+  const { uid } = useAuth()
+  const live = useMonthly(props.space, monthId)
+  const lockAt = (live.data?.monthly ?? monthlyBounds(monthId, (w) => boundsFor(props.space, w))).lockAt
+  // Nothing is appended to a monthly list after its lock.
+  if (props.mode.kind === 'add') {
+    return (
+      <Screen title="Add Task" titleDisplay="inline" leading={<GlassButton icon="xmark" aria-label="Close" onClick={props.close} />}>
+        <EmptyState icon="lock" title={`Your ${monthName(monthId)} list is locked`} message="Nothing can be added to it now." />
+      </Screen>
+    )
+  }
+  return <TaskSheetBody {...props} loaded={live.data !== undefined} done={live.data?.progress[uid ?? '']?.done ?? {}} lockAt={lockAt} money={null} lockedNote={`Your ${monthName(monthId)} list is locked.`} />
+}
+
+interface BodyProps extends InnerProps {
+  /** The period's data has loaded (check-offs known). */
+  loaded: boolean
+  /** Your check-offs in the period. */
+  done: Record<string, boolean>
+  lockAt: number
+  /** A week's task can bring in money; a monthly list's can't (null). */
+  money: { weekId: WeekId; earnings: Live<Earning[]>; currency: CurrencyCode } | null
+  /** The locked sheet's footer when nothing can change (a monthly list). */
+  lockedNote?: string
+}
+
+function TaskSheetBody({ space, mode, close, onSave, onDelete, loaded, done, lockAt, money, lockedNote }: BodyProps) {
   const toast = useToast()
   const { actionSheet } = useAlert()
   const nowMs = useNow()
-  const week = useWeek(space, weekId)
-  const earnings = useEarnings()
-  const currency = useCurrency()
+  const earnings = money?.earnings
+  const currency = money?.currency ?? 'USD'
+  const weekId = money?.weekId ?? ''
   const task = mode.kind === 'edit' || mode.kind === 'locked' ? mode.task : null
   const editable = mode.kind !== 'locked'
 
@@ -76,11 +138,11 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
   const stepRefs = useRef(new Map<string, HTMLTextAreaElement>())
   const titleRef = useRef<HTMLTextAreaElement>(null)
 
-  const done = week.data?.progress[me]?.done ?? {}
-  const lockAt = (week.data?.week ?? weekBounds(weekId, space.timezone)).lockAt
   // An existing task's revenue is known once the earnings have loaded (or failed to: then it starts off).
-  const stored = task ? earnings.data?.find((e) => e.id === earningId(space.id, weekId, task.id)) : undefined
-  const storedRevenue: Revenue | null = !task ? OFF : earnings.data ? (stored ? { on: true, amount: stored.amount > 0 ? stored.amount : null } : OFF) : earnings.error ? OFF : null
+  // A monthly task has none.
+  const stored = task && earnings ? earnings.data?.find((e) => e.id === earningId(space.id, weekId, task.id)) : undefined
+  const storedRevenue: Revenue | null =
+    !task || !earnings ? OFF : earnings.data ? (stored ? { on: true, amount: stored.amount > 0 ? stored.amount : null } : OFF) : earnings.error ? OFF : null
   const revenue = revenueDraft ?? storedRevenue ?? OFF
   const revenueChanged =
     revenueDraft !== null && storedRevenue !== null && (revenueDraft.on !== storedRevenue.on || (revenueDraft.on && revenueDraft.amount !== storedRevenue.amount))
@@ -91,7 +153,8 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
   const valid = (!editable || title.trim() !== '') && !(revenue.on && revenue.invalid)
 
   const saveRevenue = (target: Pick<Task, 'id' | 'title'>, isDone: boolean) => {
-    setTaskRevenue(space, weekId, target, revenue.on ? (revenue.amount ?? 0) : null, isDone).catch((e: unknown) =>
+    if (!money) return
+    setTaskRevenue(space, money.weekId, target, revenue.on ? (revenue.amount ?? 0) : null, isDone).catch((e: unknown) =>
       toast({ title: 'Couldn’t save the amount', message: e instanceof Error ? e.message : undefined, tone: 'error' }),
     )
   }
@@ -104,10 +167,11 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
       return
     }
     if (mode.kind === 'add') {
+      if (!money) return
       setBusy(true)
       setError(null)
       try {
-        const added = await addTaskAfterLock(space, weekId, { id: addId, title, subtasks: steps.map((s) => s.title) })
+        const added = await addTaskAfterLock(space, money.weekId, { id: addId, title, subtasks: steps.map((s) => s.title) })
         if (revenue.on) saveRevenue(added, false)
         haptic()
         close()
@@ -123,7 +187,7 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
     onSave?.(next)
     // Steps added or deleted after check-offs (Monday) can make the task done or not: its earning follows.
     const nowDone = isTaskDone(next, done)
-    if (revenueChanged || (week.data && stored && (stored.earnedAt !== null) !== nowDone)) saveRevenue(next, nowDone)
+    if (revenueChanged || (loaded && stored && (stored.earnedAt !== null) !== nowDone)) saveRevenue(next, nowDone)
     close()
   }
 
@@ -152,9 +216,9 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
 
   let titleFooter = error ? <ErrorText>{error}</ErrorText> : undefined
   if (!error && mode.kind === 'add') {
-    titleFooter = <>The task joins this week’s list and gets reviewed on Friday. Friends see it was added on {weekdayIn(nowMs, space.timezone, true)}. Once added, it can’t be edited or removed.</>
+    titleFooter = <>The task joins this week’s list and gets reviewed when reviews open. Friends see it was added on {weekdayIn(nowMs, space.timezone, true)}. Once added, it can’t be edited or removed.</>
   } else if (!error && mode.kind === 'locked') {
-    titleFooter = <>Your list is locked, so only the revenue can change.</>
+    titleFooter = <>{money ? 'Your list is locked, so only the revenue can change.' : (lockedNote ?? 'Your list is locked.')}</>
   }
 
   const ticked = task?.subtasks?.filter((s) => done[s.id] === true).length ?? 0
@@ -291,39 +355,41 @@ export function TaskSheet({ space, weekId, mode, close, onSave, onDelete }: Task
         )
       )}
 
-      <Section footer="Only you see amounts.">
-        <Row
-          icon="banknote"
-          title="Generates revenue"
-          toggle={revenue.on}
-          disabled={storedRevenue === null}
-          onToggle={(on) => {
-            // A typo in a field that goes away doesn't hold up Done; switching back on starts the field afresh.
-            setRevenueDraft({ ...revenue, on, invalid: false })
-            setFocusAmount(on)
-          }}
-        />
-        <AnimatePresence initial={false}>
-          {revenue.on && (
-            <motion.div
-              key="amount"
-              className="tk-amount-row"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={transitionFor('snappy')}
-            >
-              <MoneyField
-                label="Amount"
-                value={revenue.amount}
-                onChange={(amount, invalid) => setRevenueDraft({ on: true, amount, invalid })}
-                currency={currency}
-                autoFocus={focusAmount}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </Section>
+      {money && (
+        <Section footer="Only you see amounts.">
+          <Row
+            icon="banknote"
+            title="Generates revenue"
+            toggle={revenue.on}
+            disabled={storedRevenue === null}
+            onToggle={(on) => {
+              // A typo in a field that goes away doesn't hold up Done; switching back on starts the field afresh.
+              setRevenueDraft({ ...revenue, on, invalid: false })
+              setFocusAmount(on)
+            }}
+          />
+          <AnimatePresence initial={false}>
+            {revenue.on && (
+              <motion.div
+                key="amount"
+                className="tk-amount-row"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={transitionFor('snappy')}
+              >
+                <MoneyField
+                  label="Amount"
+                  value={revenue.amount}
+                  onChange={(amount, invalid) => setRevenueDraft({ on: true, amount, invalid })}
+                  currency={currency}
+                  autoFocus={focusAmount}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Section>
+      )}
 
       {mode.kind === 'edit' && onDelete && (
         <Section>

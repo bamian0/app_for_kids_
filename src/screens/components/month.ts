@@ -1,8 +1,10 @@
 // Which month to show, and the month verdict in words (who owes whom, and who may mark it settled).
+import { scheduleOf } from '../../domain/schedule.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
+import type { DebtLine } from '../../domain/stakes.ts'
 import { addMonths, monthCompleteAt, monthIdForWeek, weekIdFor } from '../../domain/time.ts'
-import type { MonthId, Space, UID } from '../../domain/types.ts'
-import { monthName } from './format.ts'
+import type { MonthId, Settlement, Space, UID } from '../../domain/types.ts'
+import { monthName, shortDate } from './format.ts'
 import { compactNames, listNames } from './people.ts'
 
 const DAY = 86_400_000
@@ -23,10 +25,11 @@ export function firstMonth(space: Pick<Space, 'timezone' | 'createdAt'>, nowMs: 
  * A month that finished less than a week ago and that `me` was around for: its verdict is what
  * matters right now, so the month view and the home card show it first. null otherwise.
  */
-export function freshVerdictMonth(space: Pick<Space, 'timezone' | 'joinedAt'>, me: UID, nowMs: number): MonthId | null {
+export function freshVerdictMonth(space: Pick<Space, 'timezone' | 'joinedAt'> & Partial<Pick<Space, 'schedule'>>, me: UID, nowMs: number): MonthId | null {
   const current = currentMonth(space, nowMs)
   for (const monthId of [current, addMonths(current, -1)]) {
-    const completeAt = monthCompleteAt(monthId, space.timezone)
+    // On the space's own times (the usual ones without a schedule).
+    const completeAt = monthCompleteAt(monthId, space.timezone, scheduleOf(space))
     if (nowMs < completeAt) continue
     const joined = space.joinedAt[me]
     return nowMs < completeAt + VERDICT_DAYS * DAY && joined !== undefined && joined < completeAt ? monthId : null
@@ -35,7 +38,7 @@ export function freshVerdictMonth(space: Pick<Space, 'timezone' | 'joinedAt'>, m
 }
 
 /** The month the month view opens on: a fresh verdict, else the current month. */
-export function defaultMonth(space: Pick<Space, 'timezone' | 'joinedAt'>, me: UID, nowMs: number): MonthId {
+export function defaultMonth(space: Pick<Space, 'timezone' | 'joinedAt'> & Partial<Pick<Space, 'schedule'>>, me: UID, nowMs: number): MonthId {
   return freshVerdictMonth(space, me, nowMs) ?? currentMonth(space, nowMs)
 }
 
@@ -85,4 +88,95 @@ export function settleHint(result: MemberMonthResult, me: UID, name: (uid: UID) 
   if (canSettle(result, me)) return null
   if (result.passed) return `Only ${name(result.uid)} can mark this.`
   return result.uid === me ? 'Only the people you owe can mark this.' : `Only the people ${name(result.uid)} owes can mark this.`
+}
+
+// ---------- Per-pair debt lines (SPEC §9.7) ----------
+
+type Name = (uid: UID) => string
+
+/** "you" first in a list of people: "You, Sam and Kim", "Lena", "you and Sam". */
+function people(uids: UID[], me: UID, name: Name): string {
+  const names = uids.map((id) => (id === me ? 'you' : name(id)))
+  names.sort((a, b) => (a === 'you' ? -1 : b === 'you' ? 1 : 0))
+  return listNames(names)
+}
+
+/**
+ * A debt line in words: "You, Sam and Kim owe Lena: Weekend away", "Lena owes you: A coffee", "You owe Sam, Kim and
+ * Ana: Coffee for a week", "Sam and Kim owe you: A weekend away".
+ */
+export function debtLineText(line: Pick<DebtLine, 'kind' | 'subject' | 'debtors' | 'creditors' | 'what'>, me: UID, name: Name): string {
+  const debtors = line.debtors
+  const one = debtors.length === 1 && debtors[0] !== me
+  return `${cap(people(debtors, me, name))} ${one ? 'owes' : 'owe'} ${people(line.creditors, me, name)}: ${line.what}`
+}
+
+function creditorsLeft(line: Pick<DebtLine, 'creditors'>, memberIds: UID[]): boolean {
+  return line.creditors.length > 0 && line.creditors.every((id) => !memberIds.includes(id))
+}
+
+/** Who marks a line settled: whoever was owed (the subject for a reward or streak reward, the friends owed for a
+ *  penalty); when every one of them has left the space, its debtors instead. */
+export function canSettleLine(line: Pick<DebtLine, 'debtors' | 'creditors'>, me: UID, memberIds: UID[]): boolean {
+  return creditorsLeft(line, memberIds) ? line.debtors.includes(me) : line.creditors.includes(me)
+}
+
+/**
+ * The hint under a line that isn't settled: why you can't mark it ("Only Lena can mark this.", "Only the people you
+ * owe can mark this."), or that you may because they left ("Lena has left, so you can mark this yourself.").
+ * null when it's yours to mark as usual.
+ */
+export function settleLineHint(line: Pick<DebtLine, 'kind' | 'subject' | 'debtors' | 'creditors'>, me: UID, memberIds: UID[], name: Name): string | null {
+  if (creditorsLeft(line, memberIds)) {
+    if (line.debtors.includes(me)) {
+      const gone = line.creditors.map(name)
+      return `${listNames(gone)} ${gone.length === 1 ? 'has' : 'have'} left, so you can mark this yourself.`
+    }
+    return line.kind === 'penalty' ? `Only ${people(line.debtors, me, name)} can mark this.` : `Only the people who owe ${name(line.subject)} can mark this.`
+  }
+  if (line.creditors.includes(me)) return null
+  if (line.kind !== 'penalty') return `Only ${name(line.subject)} can mark this.`
+  // One friend owed: name them; a group: say who it is about.
+  if (line.creditors.length === 1) return `Only ${name(line.creditors[0])} can mark this.`
+  return line.subject === me ? 'Only the people you owe can mark this.' : `Only the people ${name(line.subject)} owes can mark this.`
+}
+
+/** "Settled · marked by you, Nov 2". */
+export function settledText(mark: Pick<Settlement, 'settledBy' | 'settledAt'>, me: UID, name: Name): string {
+  return `Settled · marked by ${mark.settledBy === me ? 'you' : name(mark.settledBy)}, ${shortDate(mark.settledAt)}`
+}
+
+/** A debt line's subtitle: the streak length, "Together" (a group line with ≥ 2 owing), then settled or the hint. */
+export function debtLineSubtitle(
+  line: Pick<DebtLine, 'kind' | 'subject' | 'debtors' | 'creditors' | 'together' | 'tier'>,
+  settled: { settled: boolean; last?: Pick<Settlement, 'settledBy' | 'settledAt'> },
+  me: UID,
+  memberIds: UID[],
+  name: Name,
+): string | undefined {
+  const parts = [
+    line.tier !== undefined ? `${line.tier} months in a row` : null,
+    line.together && line.debtors.length >= 2 ? 'Together' : null,
+    settled.settled && settled.last ? settledText(settled.last, me, name) : settled.settled ? null : settleLineHint(line, me, memberIds, name),
+  ].filter((p): p is string => !!p)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
+/** A month in progress, read as if it ended now: each score so far against the bar (no streak rewards yet). */
+export function soFar(results: Record<UID, MemberMonthResult>, threshold: number): Record<UID, MemberMonthResult> {
+  const out: Record<UID, MemberMonthResult> = {}
+  for (const [uid, r] of Object.entries(results)) {
+    out[uid] = r.complete || r.finalScore === null ? r : { ...r, passed: r.finalScore >= threshold - 1e-9 }
+  }
+  return out
+}
+
+/** The member plays the month: a week they didn't judge (not paused) or a monthly list. */
+export function playsMonth(result: MemberMonthResult): boolean {
+  return result.weeks.some((w) => !w.paused) || !!result.monthly
+}
+
+/** The member only judged this month (weeks or its lists) and has no score. */
+export function judgeOnly(result: MemberMonthResult): boolean {
+  return !playsMonth(result) && ((result.judged?.length ?? 0) > 0 || result.monthlyJudge === true)
 }

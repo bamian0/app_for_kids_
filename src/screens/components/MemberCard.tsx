@@ -38,9 +38,13 @@ export interface MemberCardProps {
   currency?: CurrencyCode
   /** Your own card: a tap on a task opens its details. */
   onOpenTask?: (taskId: string) => void
-  /** Your own card while tasks can still be added (after the lock, until Friday). */
+  /** Your own card while tasks can still be added (after the lock, until reviews open). */
   onAddTask?: () => void
   footer?: ReactNode
+  /** The week is paused (SPEC §9.3): the list is just for them, so no score ring, no review lines, no misses. */
+  paused?: boolean
+  /** Missed reviews cost nothing here (a monthly list whose month's last week is paused): no missed-review row. */
+  penaltyFree?: boolean
 }
 
 export function MemberCard({
@@ -63,12 +67,14 @@ export function MemberCard({
   onOpenTask,
   onAddTask,
   footer,
+  paused = false,
+  penaltyFree = false,
 }: MemberCardProps) {
   const isMe = member.uid === me
   const person = personOf(profiles, member.uid)
   const n = member.taskCount
   const done = member.tasks.filter((t) => t.selfDone).length
-  const scored = revealed && member.score !== null
+  const scored = revealed && member.score !== null && !paused
   const reviewed = member.reviewedBy.length > 0
   // After friends' marks are in, your own check-offs no longer change anything.
   const checkable = isMe && !!canCheck && !(scored && reviewed)
@@ -82,6 +88,9 @@ export function MemberCard({
     score = <MiniScore value={member.score} threshold={threshold} caption={phase === 'closed' || reviewed ? 'Final' : 'So far'} />
   } else if (phase === 'planning') {
     subtitle = n === 0 ? 'No tasks yet' : `${n} task${n === 1 ? '' : 's'} planned`
+  } else if (paused) {
+    // Nothing counts: what's done, without scores or review lines.
+    subtitle = n === 0 ? 'No tasks' : `${done} of ${n} done`
   } else {
     subtitle = n === 0 ? 'Nothing planned' : `${done} of ${n} done`
     if (phase === 'review' && !isMe) subtitle += member.hasSubmitted ? ' · reviews in' : ' · still reviewing'
@@ -158,7 +167,7 @@ export function MemberCard({
     )
   }
 
-  const missed = member.missedReviewsOf
+  const missed = paused || penaltyFree ? [] : member.missedReviewsOf
   return (
     <Section footer={footer}>
       <Row

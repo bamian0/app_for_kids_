@@ -19,6 +19,9 @@
   letter-spacing: -0.006em;
   color: var(--secondary-label);
   min-width: 0;
+  /* A header that wraps ("House stakes: if you hit 90%, they owe you…" at 375 points) splits evenly
+     instead of leaving two words alone on its second line. */
+  text-wrap: balance;
 }
 .ui-section__header--prominent {
   align-items: center;

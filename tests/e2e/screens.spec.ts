@@ -230,7 +230,7 @@ test('batch 2 screens the scenarios don’t reach', async ({ browser }) => {
     await expect(judges).toContainText(MARCO.name)
     // The Judges list is the page's last section: scroll to its end once the cards above have loaded.
     await lp.waitForTimeout(800)
-    await judges.evaluate((el) => el.scrollIntoView({ block: 'end' }))
+    await centerOn(judges, 'end')
     await snap(lp, 's-24-week-judges-list')
   })
 
@@ -238,6 +238,8 @@ test('batch 2 screens the scenarios don’t reach', async ({ browser }) => {
     await travel(mp, now)
     await openSpace(mp, 'Run Club')
     await expect(section(mp, 'You’re judging this week')).toBeVisible()
+    // The stakes card's status line comes with the stakes listener, after the house rows.
+    await expect(shown(mp, 'You’re judging: nothing’s owed while you only rate.')).toBeVisible()
     await snap(mp, 's-23-week-judge')
     await mp.getByRole('button', { name: 'Space settings' }).click()
     await expect(mp.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()

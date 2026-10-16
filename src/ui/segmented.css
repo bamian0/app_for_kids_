@@ -99,7 +99,21 @@
   :root:not([data-theme="light"]) .ui-segmented {
     --segment-thumb: #636366;
   }
+  /* Red on the gray dark thumb is barely legible (1.8:1): "Not done" gets a red-tinted thumb and a lighter
+     red label instead, like an iOS tinted button (3.7:1, above light mode's red on white). */
+  :root:not([data-theme="light"]) .ui-mark[data-mark="0"] .ui-mark__thumb {
+    background: color-mix(in srgb, var(--system-red) 25%, #2c2c2e);
+  }
+  :root:not([data-theme="light"]) .ui-mark[data-mark="0"] .ui-mark__option.is-selected {
+    color: color-mix(in srgb, var(--system-red) 80%, #fff);
+  }
 }
 :root[data-theme="dark"] .ui-segmented {
   --segment-thumb: #636366;
+}
+:root[data-theme="dark"] .ui-mark[data-mark="0"] .ui-mark__thumb {
+  background: color-mix(in srgb, var(--system-red) 25%, #2c2c2e);
+}
+:root[data-theme="dark"] .ui-mark[data-mark="0"] .ui-mark__option.is-selected {
+  color: color-mix(in srgb, var(--system-red) 80%, #fff);
 }

@@ -38,6 +38,11 @@ export async function phone(
 
 export const edgeGlows = (page: Page) => page.evaluate(() => (window as unknown as { __edgeGlows: number }).__edgeGlows)
 
+type Block = 'start' | 'center' | 'end' | 'nearest'
+/** What the next `snap` of a page keeps in view at each width. */
+const inView = new WeakMap<Page, { target: Locator; block: Block }>()
+const scrollTo = (target: Locator, block: Block) => target.evaluate((el, b) => el.scrollIntoView({ block: b }), block, { timeout: 2000 })
+
 async function lightAndDark(page: Page, path: string): Promise<void> {
   await page.screenshot({ path: `${path}-light.png` })
   // Colors cross-fade in 0.2s; software rendering needs longer before every layer has caught up.
@@ -57,18 +62,24 @@ export async function snap(page: Page, name: string, settle = 700, viewport?: { 
   const sizes = viewport ? [viewport] : WIDTHS.map((width) => ({ width, height: Math.round((width * 844) / 390) }))
   if (sizes.length === 0) return lightAndDark(page, `${SHOTS}/${name}`)
   const size = page.viewportSize() ?? iPhone.viewport
+  const keep = inView.get(page)
   for (const s of sizes) {
     await page.setViewportSize(s)
     await page.waitForTimeout(400)
+    // Another width reflows the page: bring back what the shot is about.
+    if (keep) await scrollTo(keep.target, keep.block).catch(() => {})
     await lightAndDark(page, `${SHOTS}/${name}-${s.width}${viewport ? `x${s.height}` : ''}`)
   }
+  inView.delete(page)
   await page.setViewportSize(size)
   await page.waitForTimeout(300)
 }
 
-/** Scrolls its screen so `target` sits mid-screen, for a screenshot of something below the fold. */
-export async function centerOn(target: Locator): Promise<void> {
-  await target.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+/** Scrolls its screen so `target` sits mid-screen (or, with `block: 'end'`, ends at the bottom), for a
+ *  screenshot of something below the fold. The next `snap` scrolls to it again at each width it shoots. */
+export async function centerOn(target: Locator, block: Block = 'center'): Promise<void> {
+  await target.evaluate((el, b) => el.scrollIntoView({ block: b }), block)
+  inView.set(target.page(), { target, block })
 }
 
 /** The top-most sheet. Pages under it stay mounted (inert), so sheet controls are looked up inside it. */

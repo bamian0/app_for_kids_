@@ -404,8 +404,9 @@ export function pausedWeekCard(weekId: WeekId, thisWeek: WeekId): { title: strin
   }
 }
 
-/** The footer under your list in a paused week. */
+/** The footer under your list in a paused week (past tense for a past week, like its status card). */
 export function pausedListFooter(weekId: WeekId, thisWeek: WeekId): string {
+  if (weekId < thisWeek) return 'Paused: your list was just for you.'
   return `Paused: your list is just for you ${weekId === addWeeks(thisWeek, 1) ? 'next week' : 'this week'}.`
 }
 

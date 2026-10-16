@@ -317,6 +317,7 @@ describe('a paused week', () => {
     expect(pausedWeekCard(NEXT, THIS).title).toBe('Next week is paused')
     expect(pausedListFooter(THIS, THIS)).toBe('Paused: your list is just for you this week.')
     expect(pausedListFooter(NEXT, THIS)).toBe('Paused: your list is just for you next week.')
+    expect(pausedListFooter('2026-09-28', THIS)).toBe('Paused: your list was just for you.')
     expect(monthlyReviewRow('2026-10')).toEqual({ title: 'Review the October Lists', subtitle: 'No points this week, just the monthly lists.' })
   })
 

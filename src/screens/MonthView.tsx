@@ -21,7 +21,7 @@ import { FIRST_RESULTS_MONTH, lineSettlement, monthHouse } from '../domain/stake
 import type { DebtLine } from '../domain/stakes.ts'
 import { addMonths, formatMonth, formatWeekRange, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
 import type { MonthId, Settlement, Space, UID, WeekData, WeekId } from '../domain/types.ts'
-import { Avatar, CheckCircle, EmptyState, Icon, Pill, Row, ScoreRing, Section, useEdgeGlow, useToast } from '../ui/index.ts'
+import { Avatar, CheckCircle, EmptyState, Facts, Icon, Pill, Row, ScoreRing, Section, useEdgeGlow, useToast } from '../ui/index.ts'
 import { Loading, MiniScore, formatScore } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { monthName } from './components/format.ts'
@@ -285,7 +285,9 @@ function MemberMonth(props: MemberMonthProps) {
               <div className="s-month-hero__caption">
                 {label} · bar is {space.threshold}%
               </div>
-              <div className="s-month-hero__summary">{summary}</div>
+              <div className="s-month-hero__summary">
+                <Facts text={summary} />
+              </div>
             </>
           )}
           {result.complete && (result.passed !== null || pill) && (
@@ -307,7 +309,7 @@ function MemberMonth(props: MemberMonthProps) {
         <Row
           leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={36} />}
           title={<span className="t-semibold">{person.name}</span>}
-          subtitle={[result.former ? 'Left' : null, onlyJudged ? 'Judge' : summary, pill && streak !== null ? `${streak} in a row` : null].filter(Boolean).join(' · ')}
+          subtitle={<Facts text={[result.former ? 'Left' : null, onlyJudged ? 'Judge' : summary, pill && streak !== null ? `${streak} in a row` : null].filter(Boolean).join(' · ')} />}
           accessory={<MiniScore value={result.finalScore} threshold={space.threshold} caption={onlyJudged ? 'Judge' : label} />}
         />
       )}
@@ -381,17 +383,18 @@ function DebtRow({ line, complete, space, me, name, settlements, monthId, onSett
           </span>
         }
         title={text}
-        subtitle={subtitle}
+        subtitle={<Facts text={subtitle} />}
       />
     )
   }
   const settled = lineSettlement(settlements, monthId, line)
   const can = canSettleLine(line, me, space.memberIds)
+  const subtitle = debtLineSubtitle(line, settled, me, space.memberIds, name)
   return (
     <Row
       leading={<CheckCircle checked={settled.settled} disabled={!can} onChange={() => onSettle(line, !settled.settled)} aria-label={`Settled: ${text}`} />}
       title={<span className="t-semibold">{text}</span>}
-      subtitle={debtLineSubtitle(line, settled, me, space.memberIds, name)}
+      subtitle={subtitle ? <Facts text={subtitle} /> : undefined}
     />
   )
 }

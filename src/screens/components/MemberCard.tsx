@@ -5,7 +5,7 @@ import { addedAfterLock } from '../../domain/scoring.ts'
 import type { MemberWeekResult, TaskResult } from '../../domain/scoring.ts'
 import type { WeekPhase } from '../../domain/time.ts'
 import type { CurrencyCode, Earning, UID } from '../../domain/types.ts'
-import { Avatar, CheckCircle, Icon, Row, Section, Shimmer, cx } from '../../ui/index.ts'
+import { Avatar, CheckCircle, Facts, Icon, Row, Section, Shimmer, cx } from '../../ui/index.ts'
 import { AmountBadge, CheckDot, MarkGlyph, MiniScore, StepList, StepRing, TaskBadge } from './Bits.tsx'
 import type { StepListProps } from './Bits.tsx'
 import { addedLabel, stepCount, summarizeMarks } from './marks.ts'
@@ -125,7 +125,8 @@ export function MemberCard({
     let subtitleText: string | undefined
     if (scored && task.source === 'self') {
       subtitleText = steps.length > 0 ? `${ticked} of ${steps.length} steps ticked` : task.selfDone ? 'Checked off' : 'Not checked off'
-    } else {
+    } else if (!paused) {
+      // A paused week has no review lines: nothing counts, so nobody's marks are shown.
       subtitleText = summarizeMarks(marks, me, who) || undefined
     }
 
@@ -174,13 +175,11 @@ export function MemberCard({
       <Row
         leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={36} />}
         title={<span className="t-semibold">{isMe ? `${person.name} (You)` : person.name}</span>}
-        subtitle={subtitle}
+        subtitle={<Facts text={subtitle} />}
         accessory={score}
       />
-      {/* An empty list after the lock is said once, in the subtitle ("Nothing planned", "No tasks"). */}
-      {n === 0
-        ? phase === 'planning' && <Row title={<span className="c-secondary">Still planning</span>} leading={<span className="s-row-spacer" />} />
-        : member.tasks.map(taskRow)}
+      {/* An empty list is said once, in the subtitle ("No tasks yet", "Nothing planned"). */}
+      {member.tasks.map(taskRow)}
       {onAddTask && (
         <Row
           leading={

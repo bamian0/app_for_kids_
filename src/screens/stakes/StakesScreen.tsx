@@ -238,7 +238,7 @@ function YourStakes({ space, own, friends, shown, terms, now, streak, judge, nam
   })
   const statusRows = shown.map((f) => {
     const person = personOf(profiles, f)
-    const avatar = <Avatar name={person.name} color={person.color} photo={person.photo} size={32} />
+    const avatar = <Avatar name={person.name} color={person.color} photo={person.photo} size={30} />
     const status = friendStatus(own, f, terms[f])
     if (status.kind === 'missing') {
       return judge ? (

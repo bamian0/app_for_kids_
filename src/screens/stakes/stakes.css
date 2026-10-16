@@ -135,6 +135,8 @@ button.sk-line,
 }
 .sk-line__title {
   color: var(--label);
+  /* Short titles beside a button: two even lines ("New stakes / from 3 friends"), never a lone word. */
+  text-wrap: balance;
 }
 .sk-line__title--strong {
   font-weight: 600;
@@ -376,9 +378,21 @@ button.sk-line,
   height: 30px;
   color: var(--label);
 }
-.sk-tiers + .ui-row::before,
+/* Add Streak Reward under the last streak reward: a hairline between them, inset like the rewards'. */
 .sk-tiers + .ui-row {
   position: relative;
+}
+.sk-tiers:not(:empty) + .ui-row::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
 }
 .sk-editor-footer {
   margin: -12px calc(var(--gutter) + var(--ui-safe-right) + 16px) 32px calc(var(--gutter) + var(--ui-safe-left) + 16px);

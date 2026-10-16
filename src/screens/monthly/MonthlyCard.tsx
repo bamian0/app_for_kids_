@@ -3,7 +3,7 @@
 import { useAuth, useMonthly } from '../../data/api.ts'
 import { computeMonthly } from '../../domain/scoring.ts'
 import type { MonthId, Space } from '../../domain/types.ts'
-import { Icon, Row, Section, useNav } from '../../ui/index.ts'
+import { Facts, Icon, Row, Section, useNav } from '../../ui/index.ts'
 import { MiniScore } from '../components/Bits.tsx'
 import { useNow } from '../components/clock.ts'
 import { monthName } from '../components/format.ts'
@@ -54,7 +54,7 @@ export function MonthlyCard({ space, monthId, profiles }: MonthlyCardProps) {
           </span>
         }
         title={<span className="t-semibold">{view.title}</span>}
-        subtitle={view.subtitle}
+        subtitle={<Facts text={view.subtitle} />}
         accessory={
           view.score ? (
             // "So far" like the month's own score: "Provisional" is too wide beside "Your September list" at 375.

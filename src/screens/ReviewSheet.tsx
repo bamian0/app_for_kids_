@@ -10,7 +10,7 @@ import { boundsFor } from '../domain/schedule.ts'
 import { addedAfterLock, isRevealed, isTaskDone, membersAt, reviewTargets } from '../domain/scoring.ts'
 import { formatCountdown, isMonthlyReviewWeek, monthIdForWeek } from '../domain/time.ts'
 import type { Mark, MonthlyData, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
-import { Avatar, Button, EmptyState, GlassButton, Icon, MarkPicker, ProgressBar, Screen, Section, Shimmer, cx, haptic, useAlert } from '../ui/index.ts'
+import { Avatar, Button, EmptyState, Facts, GlassButton, Icon, MarkPicker, ProgressBar, Screen, Section, Shimmer, cx, haptic, useAlert } from '../ui/index.ts'
 import { CheckDot, ErrorText, Loading, StepList, StepRing, TaskBadge } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { monthName } from './components/format.ts'
@@ -321,7 +321,9 @@ export function ReviewSheet({ space: opened, weekId, close }: Props) {
           <div className="s-review-person">
             <Avatar name={person.name} color={person.color} photo={person.photo} size={64} />
             <div className="s-review-person__name">{person.name}</div>
-            <div className="s-review-person__meta">{`${former ? 'Left · ' : ''}${metaLine(weeklyTasks, monthlyTasks, month, checked)}`}</div>
+            <div className="s-review-person__meta">
+              <Facts text={`${former ? 'Left · ' : ''}${metaLine(weeklyTasks, monthlyTasks, month, checked)}`} />
+            </div>
           </div>
           {sections.map((section, i) => {
             const ticks = section.part.progress[reviewee]?.done ?? {}

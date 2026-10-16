@@ -1,0 +1,11 @@
+/* Facts joined by middle dots (Facts.tsx): a block, so it can be measured; each fact an inline block. */
+.ui-facts {
+  display: block;
+}
+.ui-fact {
+  display: inline-block;
+  max-width: 100%;
+}
+.ui-fact__dot {
+  white-space: nowrap;
+}

@@ -1,8 +1,9 @@
 // Screenshots of batch 2 states the scenario specs don't pass through (build plan §5 item 11): the worst-case
 // Space screen top at 375 × 667, the stakes card's leaver line, the Stakes screen with new stakes waiting, the
-// editor in every mode, the Agree alert's other wordings, the asker's lapsed pause, Space Settings for a judge
-// who isn't the owner, the Spaces cards, Overview with a paused space and a judge's month, and Create and Join
-// with Only Rate Friends. Nothing here writes: every state is seeded, and the phone only looks.
+// editor in every mode, the Agree alert's other wordings, the asker's lapsed pause, a judge's week and the
+// Judges list on the space's own times, Space Settings for a judge who isn't the owner, the Spaces cards,
+// Overview with a paused space and a judge's month, and Create and Join with Only Rate Friends. Nothing here
+// writes: every state is seeded, and the phone only looks.
 //
 // It runs only when screenshots are asked for:
 //   E2E_SCREENSHOTS=<dir> E2E_WIDTHS=375,430 npx firebase emulators:exec --only auth,firestore \
@@ -222,9 +223,22 @@ test('batch 2 screens the scenarios don’t reach', async ({ browser }) => {
     await snap(mp, 's-16-pause-lapsed')
   })
 
+  await test.step('A judge’s week, and the Judges list a player sees', async () => {
+    await travel(lp, now)
+    await openSpace(lp, 'Run Club')
+    const judges = lp.locator('.ui-section').filter({ visible: true }).filter({ has: lp.getByRole('heading', { name: 'Judges', exact: true }) }).first()
+    await expect(judges).toContainText(MARCO.name)
+    // The Judges list is the page's last section: scroll to its end once the cards above have loaded.
+    await lp.waitForTimeout(800)
+    await judges.evaluate((el) => el.scrollIntoView({ block: 'end' }))
+    await snap(lp, 's-24-week-judges-list')
+  })
+
   await test.step('Space Settings for a judge who isn’t the owner', async () => {
     await travel(mp, now)
     await openSpace(mp, 'Run Club')
+    await expect(section(mp, 'You’re judging this week')).toBeVisible()
+    await snap(mp, 's-23-week-judge')
     await mp.getByRole('button', { name: 'Space settings' }).click()
     await expect(mp.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
     await expect(mp.getByRole('switch', { name: 'Only Rate Friends' })).toBeChecked()

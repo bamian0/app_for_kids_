@@ -388,7 +388,9 @@ test('the owner changes the week’s times: notice, read-only for friends, the n
     const review = sheet(lena)
     await expect(review.getByRole('heading', { name: 'Saturday Review' })).toBeVisible()
     await snap(lena, 'b2-07-saturday-review')
-    // The server judges the submit by the real clock: open the stored review window in real time too.
+    // The server judges the submit by the real clock: open the stored review window in real time too (and put
+    // it back afterwards, so the screens that follow don't read "This week’s times are off").
+    const storedOpen = (await weekDoc(SPACE_ID, nextWeek).get()).get('reviewOpenAt')
     await weekDoc(SPACE_ID, nextWeek).update({ reviewOpenAt: ts(Date.now() - HOUR) })
     await mark(review, MARCO_TASKS[0].title, 'Done')
     await mark(review, MARCO_TASKS[1].title, 'Half')
@@ -397,6 +399,7 @@ test('the owner changes the week’s times: notice, read-only for friends, the n
     await expect(shown(review, 'Reviews in.')).toBeVisible()
     await expect.poll(async () => (await weekDoc(SPACE_ID, nextWeek).collection('reviews').doc(`${lenaUid}_${marcoUid}`).get()).get('marks')).toEqual({ m1: 1, m2: 0.5 })
     await review.getByRole('button', { name: 'Done', exact: true }).click()
+    await weekDoc(SPACE_ID, nextWeek).update({ reviewOpenAt: storedOpen })
   })
 
   await test.step('Kim joins afterwards and is told once that this space has its own times', async () => {
@@ -886,6 +889,7 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await signIn(lena, LENA, on(weeks[0], 2, 12))
     await openSpace(lena)
     await expect(lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) })).toContainText(`Optional: a few bigger things for ${M}.`)
+    await centerOn(lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) }))
     await snap(lena, 'b2-29-monthly-card-planning')
     await lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) }).click()
     await expect(lena.getByRole('heading', { name: `${M} List`, exact: true })).toBeVisible()
@@ -934,11 +938,10 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await expect.poll(async () => (await db.doc(`spaces/${SPACE_ID}/monthly/${month}/progress/${lenaUid}`).get()).get('done')).toEqual({ [runId]: true })
   })
 
-  // Review day of the month's last week. The server judges both submits by the real clock: open the stored
-  // windows (the week's and the list's) in real time too. Lena has already reviewed Sam's week.
+  // Review day of the month's last week. Lena has already reviewed Sam's week.
   const t1 = Date.now()
-  await weekDoc(SPACE_ID, last).update({ reviewOpenAt: ts(t1 - HOUR), submittedBy: [lenaUid] })
-  await monthlyDoc(SPACE_ID, month).update({ reviewOpenAt: ts(t1 - HOUR), submittedBy: [lenaUid] })
+  await weekDoc(SPACE_ID, last).update({ submittedBy: [lenaUid] })
+  await monthlyDoc(SPACE_ID, month).update({ submittedBy: [lenaUid] })
   await setReview(SPACE_ID, last, lenaUid, samUid, { s1: 1, s2: 1 }, t1 - HOUR)
 
   await test.step('In the last week Sam reviews Lena’s week and her list in one go', async () => {
@@ -946,10 +949,15 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await openSpace(sam)
     await centerOn(sam.getByRole('button', { name: new RegExp(`^${M} lists`) }))
     await snap(sam, 'b2-29c-monthly-card-friends')
+    // The server judges both submits by the real clock: open the stored windows (the week's and the list's) in
+    // real time too, after the Space screen's shots (they'd read "This week’s times are off").
+    await weekDoc(SPACE_ID, last).update({ reviewOpenAt: ts(Date.now() - HOUR) })
+    await monthlyDoc(SPACE_ID, month).update({ reviewOpenAt: ts(Date.now() - HOUR) })
     await sam.getByRole('button', { name: 'Review Lena', exact: true }).click()
     const review = sheet(sam)
     await expect(shown(review, 'This week', true)).toBeVisible()
     await expect(shown(review, `${M} list`, true)).toBeVisible()
+    await snap(sam, 'b2-32a-review-two-parts-top')
     await mark(review, LENA_TASKS[0].title, 'Done')
     await mark(review, LENA_TASKS[1].title, 'Done')
     await mark(review, RUN, 'Done')
@@ -973,6 +981,8 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await expect(lena.locator('.s-hero-score')).toHaveText(`${average}%`)
     await expect(lena.getByRole('button', { name: new RegExp(`^${M} list`) }).filter({ visible: true }).first()).toContainText('75%')
     await snap(lena, 'b2-33-month-with-list')
+    await centerOn(lena.getByRole('button', { name: new RegExp(`^${M} list`) }).filter({ visible: true }).first())
+    await snap(lena, 'b2-33b-month-list-row')
   })
 
   await closeAll(browser, l, s)

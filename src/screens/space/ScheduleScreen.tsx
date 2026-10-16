@@ -115,7 +115,8 @@ function ScheduleContent({ space }: { space: Space }) {
         ) : undefined
       }
     >
-      <Section>
+      {/* While the draft can't work, the preview keeps the last times that do, dimmed: it isn't what you picked. */}
+      <Section className={problem ? 'sp-glance sp-glance--stale' : 'sp-glance'}>
         <WeekGlance stops={weekTimeline(problem ? saved : draft, HOUR_CYCLE)} />
       </Section>
 

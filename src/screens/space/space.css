@@ -32,19 +32,27 @@
   letter-spacing: -0.006em;
   color: var(--secondary-label);
 }
-/* "This space has its own times": one moment per line. */
+/* "This space has its own times": one moment per line; a moment that still wraps hangs, so its second line
+   never reads as a fourth moment. */
 .sp-own-time {
   display: block;
+  padding-left: 12px;
+  text-indent: -12px;
 }
 .sp-own-time__sep {
   display: none;
 }
 
-/* One tappable line with a dismiss button (the notice, a declined or lapsed pause). */
+/* One tappable line with a dismiss button (the notice, a declined or lapsed pause). The xmark sits beside the
+   title only, like a notification's: the subtitle runs the card's full width, so "Reviews due Saturday at
+   midnight" stays one line at 375 points. */
 .sp-line {
+  position: relative;
   display: flex;
   align-items: stretch;
-  padding-right: 6px;
+}
+.sp-line .sp-line__title {
+  padding-right: 32px;
 }
 .sp-line__main {
   display: flex;
@@ -53,7 +61,7 @@
   gap: 14px;
   min-width: 0;
   min-height: 60px;
-  padding: 12px 0 12px 16px;
+  padding: 12px 16px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -80,12 +88,15 @@ button.sp-line__main {
 
 /* The xmark: a 44pt target around a small gray dot, like the stakes card's. */
 .sp-close {
+  position: absolute;
+  top: 0;
+  right: 6px;
   display: flex;
-  flex-shrink: 0;
   align-items: flex-start;
   justify-content: center;
   width: 44px;
-  padding: 14px 0 0;
+  height: 44px;
+  padding: 12px 0 0;
   border: 0;
   background: transparent;
   color: var(--secondary-label);
@@ -182,6 +193,13 @@ button.sp-line__main {
 }
 
 /* ---------- Week Schedule ---------- */
+
+.sp-glance .hp-week {
+  transition: opacity 0.2s ease;
+}
+.sp-glance--stale .hp-week {
+  opacity: 0.35;
+}
 
 /* A moment: its name, then a day and a time capsule, as in Calendar's Starts row. */
 .sp-moment {

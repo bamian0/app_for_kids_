@@ -211,6 +211,13 @@
 .ui-screen__toolbar--full .ui-button--filled:not(:disabled) {
   box-shadow: var(--toolbar-button-shadow);
 }
+/* A disabled button floating over the list ("4 to mark") is a solid gray capsule with a gray label: faded
+   with opacity, the rows scrolling under it would show through its words. */
+.ui-screen__toolbar--full .ui-button--filled:disabled {
+  opacity: 1;
+  background: var(--system-gray5);
+  color: var(--system-gray);
+}
 
 @media (prefers-reduced-transparency: reduce) {
   .ui-bar__material {

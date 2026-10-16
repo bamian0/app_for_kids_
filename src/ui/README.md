@@ -275,6 +275,7 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 
 ## Typography and tokens
 - **`<Text variant color weight tabular rounded align as>`**: variants are `largeTitle`, `title1`, `title2`, `title3`, `headline`, `body`, `callout`, `subheadline`, `footnote`, `caption1`, `caption2`. Colors are `label`, `secondary`, `tertiary`, `red`, `green`, `inherit`.
+- **`<Facts text="0 of 2 done · reviews in" />`**: a line of facts joined by middle dots that wraps only between facts (a long fact still wraps inside itself) and never leaves a dot at the edge of a line. Use it for subtitles and meta lines that can wrap at 375 points.
 - The same styles exist as classes: `t-large-title`, `t-title1`, …, `t-footnote`, `t-caption2`; `t-semibold` / `t-bold`; `t-tabular` (scores, countdowns); `c-secondary` / `c-tertiary` / `c-red` / `c-green`; `ui-visually-hidden`.
 - CSS variables live on `:root` (light / dark via `prefers-color-scheme` and `[data-theme]`):
   - Backgrounds: `--system-grouped-background`, `--secondary-system-grouped-background`, `--tertiary-system-grouped-background`, `--system-background`.

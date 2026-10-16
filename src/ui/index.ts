@@ -44,6 +44,8 @@ export { Pill, Badge, ActivityIndicator, EmptyState, ProgressBar } from './Feedb
 export type { PillProps, PillTone, BadgeProps, ActivityIndicatorProps, EmptyStateProps, ProgressBarProps } from './Feedback.tsx'
 export { Text } from './Text.tsx'
 export type { TextProps, TextVariant, TextColor } from './Text.tsx'
+export { Facts } from './Facts.tsx'
+export type { FactsProps } from './Facts.tsx'
 export { Icon, iconNames } from './icons.tsx'
 export type { IconName, IconProps } from './icons.tsx'
 

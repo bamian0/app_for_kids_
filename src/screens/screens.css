@@ -699,11 +699,6 @@
   color: var(--system-red);
 }
 
-.s-row-spacer {
-  display: block;
-  width: 30px;
-}
-
 /* Read-only check-off and mark glyphs, sized to sit where a CheckCircle would. */
 .s-dot,
 .s-mark {

@@ -5,3 +5,13 @@
   color: var(--label);
   font-weight: 600;
 }
+
+/* "November 2026" and a long countdown ("Reviews open in 15d 11h") don't fit one 375-point row: the title stays
+   on one line and the pill moves under it. */
+.mo-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.mo-head .s-week-head__title {
+  white-space: nowrap;
+}

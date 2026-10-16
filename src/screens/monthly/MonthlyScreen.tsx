@@ -140,7 +140,7 @@ function MonthlyLists({ space, data, profiles }: { space: Space; data: MonthlyDa
 
   return (
     <>
-      <div className="s-week-head">
+      <div className="s-week-head mo-head">
         <div className="s-week-head__title">{formatMonth(monthId)}</div>
         <Pill icon={pill.icon} tone={pill.urgent ? 'filled' : 'gray'}>
           {pill.text}

@@ -177,11 +177,10 @@ export function MemberCard({
         subtitle={subtitle}
         accessory={score}
       />
-      {n === 0 ? (
-        <Row title={<span className="c-secondary">{phase === 'planning' ? 'Still planning' : 'No tasks this week'}</span>} leading={<span className="s-row-spacer" />} />
-      ) : (
-        member.tasks.map(taskRow)
-      )}
+      {/* An empty list after the lock is said once, in the subtitle ("Nothing planned", "No tasks"). */}
+      {n === 0
+        ? phase === 'planning' && <Row title={<span className="c-secondary">Still planning</span>} leading={<span className="s-row-spacer" />} />
+        : member.tasks.map(taskRow)}
       {onAddTask && (
         <Row
           leading={

@@ -38,24 +38,37 @@ export async function phone(
 
 export const edgeGlows = (page: Page) => page.evaluate(() => (window as unknown as { __edgeGlows: number }).__edgeGlows)
 
-/** Light and dark screenshots to $E2E_SCREENSHOTS, plus light ones at the widths in $E2E_WIDTHS. */
-export async function snap(page: Page, name: string, settle = 700): Promise<void> {
+async function lightAndDark(page: Page, path: string): Promise<void> {
+  await page.screenshot({ path: `${path}-light.png` })
+  // Colors cross-fade in 0.2s; software rendering needs longer before every layer has caught up.
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.waitForTimeout(700)
+  await page.screenshot({ path: `${path}-dark.png` })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.waitForTimeout(700)
+}
+
+/** Light and dark screenshots to $E2E_SCREENSHOTS: at the phone's own size, or, when $E2E_WIDTHS is set
+ *  (e.g. "375,430"), at each of those widths instead (`${name}-375-light.png`). `viewport` shoots exactly
+ *  that size once (e.g. 375 × 667, the smallest iPhone in use). */
+export async function snap(page: Page, name: string, settle = 700, viewport?: { width: number; height: number }): Promise<void> {
   if (!SHOTS) return
   await page.waitForTimeout(settle)
-  await page.screenshot({ path: `${SHOTS}/${name}-light.png` })
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await page.waitForTimeout(250)
-  await page.screenshot({ path: `${SHOTS}/${name}-dark.png` })
-  await page.emulateMedia({ colorScheme: 'light' })
-  if (WIDTHS.length === 0) return
+  const sizes = viewport ? [viewport] : WIDTHS.map((width) => ({ width, height: Math.round((width * 844) / 390) }))
+  if (sizes.length === 0) return lightAndDark(page, `${SHOTS}/${name}`)
   const size = page.viewportSize() ?? iPhone.viewport
-  for (const width of WIDTHS) {
-    await page.setViewportSize({ width, height: Math.round((width * 844) / 390) })
+  for (const s of sizes) {
+    await page.setViewportSize(s)
     await page.waitForTimeout(400)
-    await page.screenshot({ path: `${SHOTS}/${name}-light-${width}.png` })
+    await lightAndDark(page, `${SHOTS}/${name}-${s.width}${viewport ? `x${s.height}` : ''}`)
   }
   await page.setViewportSize(size)
   await page.waitForTimeout(300)
+}
+
+/** Scrolls its screen so `target` sits mid-screen, for a screenshot of something below the fold. */
+export async function centerOn(target: Locator): Promise<void> {
+  await target.evaluate((el) => el.scrollIntoView({ block: 'center' }))
 }
 
 /** The top-most sheet. Pages under it stay mounted (inert), so sheet controls are looked up inside it. */

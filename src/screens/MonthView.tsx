@@ -220,6 +220,20 @@ interface MemberMonthProps {
   onOpenMonthly?: (monthId: MonthId) => void
 }
 
+/** monthSummary's judge line split in two, so the count never lands alone on a second line: the bold caption
+ *  "Judge · no score this month", then (if any) "Didn’t review 2" in gray like other months' summary. */
+function JudgeCaption({ summary }: { summary: string }) {
+  const at = summary.indexOf(' · didn’t review ')
+  if (at < 0) return <div className="s-month-hero__caption">{summary}</div>
+  const missed = summary.slice(at + ' · '.length)
+  return (
+    <>
+      <div className="s-month-hero__caption">{summary.slice(0, at)}</div>
+      <div className="s-month-hero__summary">{missed.charAt(0).toUpperCase() + missed.slice(1)}</div>
+    </>
+  )
+}
+
 function MemberMonth(props: MemberMonthProps) {
   const { space, result, me, profiles, nowMs, hero, weeks, lines, settlements, streak, tierReached, hasList, onSettle, onOpenWeek, onOpenMonthly } = props
   const person = personOf(profiles, result.uid)
@@ -264,8 +278,8 @@ function MemberMonth(props: MemberMonthProps) {
             )}
           </ScoreRing>
           {onlyJudged ? (
-            // "Judge · no score this month", the hero's one line.
-            <div className="s-month-hero__caption">{summary}</div>
+            // "Judge · no score this month", and under it, in gray, "Didn’t review 2" when they skipped some.
+            <JudgeCaption summary={summary} />
           ) : (
             <>
               <div className="s-month-hero__caption">

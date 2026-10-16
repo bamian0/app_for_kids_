@@ -56,7 +56,7 @@ import {
   type SeedStakes,
   type SeedTask,
 } from './emulator.ts'
-import { phone, sheet, shown, snap } from './helpers.ts'
+import { centerOn, phone, sheet, shown, snap } from './helpers.ts'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -477,6 +477,7 @@ test('pause next week: asked, OK’d, paused, and the month’s pause is used', 
   await test.step('Lena sees the request and says OK; both see next week paused', async () => {
     await signIn(lena, LENA)
     await expect(lena.getByRole('button', { name: new RegExp(SPACE.name) }).first()).toContainText('Marco asks to pause next week')
+    await snap(lena, 'b2-10b-spaces-pause-ask', 1000)
     await openSpace(lena)
     const card = section(lena, 'Pause next week?')
     await expect(card).toContainText('Marco asked. It only happens if everyone says OK before reviews open')
@@ -641,6 +642,7 @@ test('pause: a finished month with a paused week, and a paused last week whose m
     await expect(lena.locator('.s-hero-score')).toHaveText('100%')
     await expect(weekRow(lena, pausedWeek)).toContainText('Paused')
     await expect(lena.getByText(/missed review/).filter({ visible: true })).toHaveCount(0)
+    await centerOn(weekRow(lena, pausedWeek))
     await snap(lena, 'b2-18-month-paused-week')
   })
 
@@ -909,7 +911,12 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
 
   await test.step('After the list locks she can’t add to it', async () => {
     await travel(lena, on(weeks[1], 2, 12))
-    await openList()
+    await openSpace(lena)
+    await expect(lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) })).toContainText('0 of 2 done')
+    await centerOn(lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) }))
+    await snap(lena, 'b2-29b-monthly-card-locked')
+    await lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) }).click()
+    await expect(lena.getByRole('heading', { name: `${M} List`, exact: true })).toBeVisible()
     await expect(shown(lena, RUN, true)).toBeVisible()
     await expect(lena.getByLabel('New task')).toHaveCount(0)
     await expect(lena.getByRole('button', { name: /^Add Task/ })).toHaveCount(0)
@@ -937,6 +944,8 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
   await test.step('In the last week Sam reviews Lena’s week and her list in one go', async () => {
     await signIn(sam, SAM, on(last, 4, 10))
     await openSpace(sam)
+    await centerOn(sam.getByRole('button', { name: new RegExp(`^${M} lists`) }))
+    await snap(sam, 'b2-29c-monthly-card-friends')
     await sam.getByRole('button', { name: 'Review Lena', exact: true }).click()
     const review = sheet(sam)
     await expect(shown(review, 'This week', true)).toBeVisible()
@@ -1182,6 +1191,7 @@ test('an agreed change counts at once; a finished month keeps its terms', async 
     await expect(shown(marco, 'Lena and Sam owe you: Lunch, on you')).toBeVisible()
     await expect(marco.getByText('Lena and Sam owe you: Dinner, on you').filter({ visible: true })).toHaveCount(0)
     await expect(marco.locator('.s-month-hero')).toContainText('You cleared the bar')
+    await centerOn(shown(marco, 'Lena and Sam owe you: Lunch, on you'))
     await snap(marco, 'b2-39-finished-month-keeps')
     await viewTab(marco, 'This Week').click()
   })
@@ -1211,6 +1221,7 @@ test('an agreed change counts at once; a finished month keeps its terms', async 
     await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
     await expect(shown(marco, 'Lena and Sam owe you: Dinner, on you')).toBeVisible()
     await expect(marco.getByText(/owe you: Pizza night, on you/).filter({ visible: true })).toHaveCount(0)
+    await centerOn(shown(marco, 'Lena and Sam owe you: Dinner, on you'))
     await snap(marco, 'b2-40-month-final-terms')
   })
 
@@ -1261,6 +1272,7 @@ test('the house stakes: the owner’s edit counts at once (the early freeze does
     await snap(lena, 'b2-41-house-owner')
     await editHouse(FIRST)
     await expect(toast(lena, 'Saved')).toContainText('The new house stakes count now.')
+    await snap(lena, 'b2-41b-house-saved-toast', 150, { width: 375, height: 812 })
     await expect.poll(async () => (await spaceDoc(SPACE_ID).get()).get('reward')).toBe(FIRST.reward)
     expect((await spaceDoc(SPACE_ID).get()).get('stakesNote.by')).toBe(lenaUid)
     // The finished previous month was frozen first, with the old stakes (when the rules check it).
@@ -1272,6 +1284,7 @@ test('the house stakes: the owner’s edit counts at once (the early freeze does
     await back(lena)
     await expect(stakesCard(lena)).toContainText(FIRST.reward)
     await expect(stakesCard(lena)).toContainText(FIRST.penalty)
+    await snap(lena, 'b2-41c-card-after-house-edit')
   })
 
   await test.step('Kim sees them on her card at once, with a notice that sticks once dismissed', async () => {
@@ -1324,6 +1337,7 @@ test('the house stakes: the owner’s edit counts at once (the early freeze does
     await expect(lena.locator('.s-month-switch__sub')).toHaveText('Final')
     await expect(shown(lena, `Kim owes you: ${FIRST.reward}`)).toBeVisible()
     await expect(lena.getByText(`Kim owes you: ${SECOND.reward}`).filter({ visible: true })).toHaveCount(0)
+    await centerOn(shown(lena, `Kim owes you: ${FIRST.reward}`))
     await snap(lena, 'b2-44-month-house-final')
   })
 
@@ -1398,6 +1412,7 @@ test('settling per pair: a streak reward, a group line, a line owed to someone w
     const tier = marco.getByRole('checkbox', { name: 'Settled: Lena and Sam owe you: Weekend away', exact: true })
     await expect(tier).toBeVisible()
     await expect(shown(marco, /^3 months in a row · Together/)).toBeVisible()
+    await centerOn(shown(marco, 'Lena owes you: Lunch', true))
     await snap(marco, 'b2-45-month-debt-lines')
     await marco.getByRole('checkbox', { name: 'Settled: Lena owes you: Lunch', exact: true }).click()
     await tier.click()
@@ -1425,6 +1440,7 @@ test('settling per pair: a streak reward, a group line, a line owed to someone w
     const benLine = marco.getByRole('checkbox', { name: `Settled: You, Lena and Sam owe Ben: ${SPACE.reward}`, exact: true })
     await expect(benLine).toBeEnabled()
     await expect(shown(marco, 'Ben has left, so you can mark this yourself.', false)).toBeVisible()
+    await centerOn(benLine)
     await snap(marco, 'b2-46-month-leaver-line')
     await benLine.click()
     for (const uid of [marcoUid, lenaUid, samUid]) {

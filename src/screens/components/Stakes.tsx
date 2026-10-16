@@ -21,6 +21,12 @@ export interface StakesItem {
   note?: string
 }
 
+/** "Lena: A beer · Sam: A paperback · Kim: Flowers" wraps after a dot, never before one: a line never starts
+ *  with "·". */
+function keepDots(text: string): string {
+  return text.replaceAll(' · ', '\u00a0· ')
+}
+
 /** Stakes rows: an icon tile (filled for what you're owed), a small label, then the text. */
 export function StakesItems({ items }: { items: StakesItem[] }) {
   return (
@@ -32,7 +38,7 @@ export function StakesItems({ items }: { items: StakesItem[] }) {
           </span>
           <span className="s-stakes__text">
             <span className="s-stakes__label">{item.label}</span>
-            <span className="s-stakes__value">{item.text}</span>
+            <span className="s-stakes__value">{keepDots(item.text)}</span>
             {item.note && <span className="s-stakes__label">{item.note}</span>}
           </span>
         </div>

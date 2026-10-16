@@ -5,8 +5,8 @@
 //
 // Run (no npm scripts needed; starts the emulators, the Vite dev server and Chromium):
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test"
-// Screenshots (light and dark) of every step go to $E2E_SCREENSHOTS when it is set, plus light
-// screenshots at the widths in $E2E_WIDTHS (e.g. "375,430").
+// Screenshots (light and dark) of every step go to $E2E_SCREENSHOTS when it is set, at the widths in
+// $E2E_WIDTHS (e.g. "375,430") when that is set too.
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { addMonths, monthIdForWeek, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { db, resetEmulators, setPlan, setProgress, setReview, setWeek, ts, uidOf, weekDoc, type SeedTask } from './emulator.ts'

@@ -241,6 +241,8 @@ body {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+  /* No lone last words ("week", "now.", "19?"): text that wraps keeps at least two words on its last line. */
+  text-wrap: pretty;
 }
 
 #root {
@@ -254,6 +256,8 @@ textarea,
   -webkit-touch-callout: default;
   -webkit-user-select: text;
   user-select: text;
+  /* Plain wrapping while typing: words don't jump between lines as the last one grows. */
+  text-wrap: wrap;
 }
 
 button {

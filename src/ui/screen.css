@@ -3,6 +3,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  overflow: clip;
   background: var(--screen-bg);
 }
 .ui-screen--plain {

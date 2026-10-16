@@ -11,6 +11,22 @@ export interface ScheduleNoticeProps {
   onDismiss: (seenKey: string) => void
 }
 
+/** "Lists lock … · Reviews open … · Reviews due …." reads as three short lines, one per moment. The dots and the
+ *  last period stay in the text (screen readers and copy get the sentence), just not on screen. */
+function OwnTimes({ line }: { line: string }) {
+  const parts = line.replace(/\.$/, '').split(' · ')
+  return (
+    <>
+      {parts.map((part, i) => (
+        <span key={i} className="sp-own-time">
+          {part}
+          <span className="sp-own-time__sep">{i < parts.length - 1 ? ' · ' : '.'}</span>
+        </span>
+      ))}
+    </>
+  )
+}
+
 export function ScheduleNotice({ view, onOpen, onDismiss }: ScheduleNoticeProps) {
   return (
     <Section className="sp-notice">
@@ -21,7 +37,7 @@ export function ScheduleNotice({ view, onOpen, onDismiss }: ScheduleNoticeProps)
           </span>
           <span className="sp-line__text">
             <span className="sp-line__title">{view.title}</span>
-            <span className="sp-line__subtitle">{view.subtitle}</span>
+            <span className="sp-line__subtitle">{view.kind === 'own' ? <OwnTimes line={view.subtitle} /> : view.subtitle}</span>
           </span>
         </button>
         <button type="button" className="sp-close" aria-label="Dismiss" onClick={() => onDismiss(view.seenKey)}>

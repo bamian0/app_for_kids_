@@ -8,7 +8,7 @@ import type { MonthlyList, Space, UID, Week } from '../../domain/types.ts'
 import { Avatar, AvatarStack, Button, Icon, Section, useNav, useSheet } from '../../ui/index.ts'
 import type { IconName } from '../../ui/index.ts'
 import { firstName, nameOf, personOf } from '../components/people.ts'
-import type { Profiles } from '../components/people.ts'
+import type { Person, Profiles } from '../components/people.ts'
 import { StakesItems } from '../components/Stakes.tsx'
 import { readLocal, writeLocal } from '../components/storage.ts'
 import { StakesEditorSheet } from './StakesEditorSheet.tsx'
@@ -141,13 +141,29 @@ function NewsLine({ news, people, onOpen, onDismiss }: { news: CardNews; people:
   )
 }
 
+/** Who you wait for, in the glyph column so the words line up with the rows above: one avatar, or two
+ *  overlapping on the diagonal (like a group in Messages) when it's more than one friend. */
+function Waiting({ people }: { people: Person[] }) {
+  if (people.length === 1) {
+    const [p] = people
+    return <Avatar name={p.name} color={p.color} photo={p.photo} size={28} />
+  }
+  return (
+    <span className="sk-cluster">
+      {people.slice(0, 2).map((p, i) => (
+        <Avatar key={p.id ?? i} name={p.name} color={p.color} photo={p.photo} size={20} className={i === 0 ? 'sk-cluster__back' : 'sk-cluster__front'} />
+      ))}
+    </span>
+  )
+}
+
 function PendingLine({ pending, people, onOpen, onEdit }: { pending: CardPending; people: Profiles; onOpen: () => void; onEdit: (focus?: UID) => void }) {
   switch (pending.kind) {
     case 'waiting':
       return (
         <button type="button" className="sk-line" onClick={onOpen}>
           <span className="sk-line__lead" aria-hidden>
-            <AvatarStack people={pending.uids.map((uid) => personOf(people, uid))} size={24} max={3} />
+            <Waiting people={pending.uids.map((uid) => personOf(people, uid))} />
           </span>
           <span className="sk-line__text">
             <span className="sk-line__title">{pending.text}</span>

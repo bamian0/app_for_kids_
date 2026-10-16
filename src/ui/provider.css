@@ -4,6 +4,8 @@
   /* Ends at the keyboard's top, so screens, toolbars and sheets stay above it. */
   bottom: var(--keyboard-inset, 0px);
   overflow: hidden;
+  /* Clipped, never scrolled (see .ui-tabs): focus can't shift the whole app. */
+  overflow: clip;
   /* Seen only around the presenting view while a card sheet is up. */
   background: #000;
 }
@@ -22,6 +24,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  overflow: clip;
   background: var(--system-grouped-background);
   transform-origin: 50% 0;
 }

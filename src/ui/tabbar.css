@@ -8,6 +8,10 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* Not a scroll container at all: the tab bar hidden below the edge on a pushed screen made it 88pt taller
+     than the screen, and focusing a field in a sheet scrolled it, leaving every screen shifted up under the
+     status bar (nav bar gone) after the sheet closed. Clip can't be scrolled, even by focus. */
+  overflow: clip;
   /* The bar's z-index stays inside, so alerts and sheets above the app still cover it. */
   isolation: isolate;
 }

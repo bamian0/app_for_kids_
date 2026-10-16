@@ -57,7 +57,8 @@ export function MonthlyCard({ space, monthId, profiles }: MonthlyCardProps) {
         subtitle={view.subtitle}
         accessory={
           view.score ? (
-            <MiniScore value={view.score.value} threshold={space.threshold} iridescent={!view.score.provisional} caption={view.score.provisional ? 'Provisional' : undefined} />
+            // "So far" like the month's own score: "Provisional" is too wide beside "Your September list" at 375.
+            <MiniScore value={view.score.value} threshold={space.threshold} iridescent={!view.score.provisional} caption={view.score.provisional ? 'So far' : undefined} />
           ) : undefined
         }
         chevron

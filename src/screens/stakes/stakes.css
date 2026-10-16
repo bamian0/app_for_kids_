@@ -16,7 +16,9 @@
   -webkit-tap-highlight-color: transparent;
   transition: background-color 0.2s ease;
 }
-.sk-card__main .s-stakes__item {
+/* Only the first row shares its line with the chevron; the others use the full width, so "Coffee for everyone,
+   for a week" fits one line at 375 points. */
+.sk-card__main .s-stakes__item:first-child {
   padding-right: 40px;
 }
 /* Lined up with the first row (the reward), so it never sits on a separator. */
@@ -149,16 +151,37 @@ button.sk-line,
     color: var(--label);
   }
 }
-/* A capsule that reads as a small button inside a tappable line (the line itself is the button). */
+/* A small capsule that reads as a button inside a tappable line (the line itself is the button). Small, so the
+   words beside it keep two lines at 375 points ("Same stakes for everyone, for now."). */
 .sk-line__action {
   flex-shrink: 0;
-  padding: 6px 13px;
+  padding: 5px 12px;
   border-radius: 999px;
   background: var(--tertiary-system-fill);
-  font: 600 15px/20px var(--font);
-  letter-spacing: -0.006em;
+  font: 600 14px/18px var(--font);
+  letter-spacing: -0.003em;
   color: var(--label);
   white-space: nowrap;
+}
+/* Two friends you wait for, overlapping on the diagonal inside the 30-point glyph column. */
+.sk-cluster {
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+}
+.sk-cluster .ui-avatar {
+  position: absolute;
+}
+.sk-cluster__back {
+  top: 0;
+  left: 0;
+}
+.sk-cluster__front {
+  right: 0;
+  bottom: 0;
+  box-shadow: 0 0 0 2px var(--secondary-system-grouped-background);
 }
 .sk-line__action--filled {
   background: var(--label);

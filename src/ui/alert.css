@@ -51,6 +51,7 @@
   font: 600 17px/22px var(--font);
   letter-spacing: -0.012em;
   color: var(--label);
+  text-wrap: balance;
 }
 .ui-alert__message {
   margin-top: 6px;

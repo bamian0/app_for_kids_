@@ -24,11 +24,20 @@
   font: 600 17px/22px var(--font);
   letter-spacing: -0.022em;
   color: var(--label);
+  /* "Not happening: Sam said not now." breaks into two even lines, never a lone word. */
+  text-wrap: balance;
 }
 .sp-line__subtitle {
   font: 400 15px/20px var(--font);
   letter-spacing: -0.006em;
   color: var(--secondary-label);
+}
+/* "This space has its own times": one moment per line. */
+.sp-own-time {
+  display: block;
+}
+.sp-own-time__sep {
+  display: none;
 }
 
 /* One tappable line with a dismiss button (the notice, a declined or lapsed pause). */

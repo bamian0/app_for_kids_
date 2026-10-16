@@ -90,20 +90,37 @@ users/{uid}/moves/{moveId}                   { kind: 'add'|'spend', amount, note
 users/{uid}/goals/{goalId}                   { name, cost, order, createdAt }                                       # private
 invites/{code}                               { spaceId, spaceName, reward, penalty, inviterName, createdBy, createdAt }
 spaces/{spaceId}                             { name, reward, penalty, ownerId, memberIds[], joinedAt{uid: ts}, leftAt?{uid: ts},
-                                               timezone, utcOffsetMin, inviteCode, threshold: 90, latePenalty: 5, createdAt }
+                                               timezone, utcOffsetMin, inviteCode, threshold: 90, latePenalty: 5, createdAt,
+                                               schedule?: { lock, reviewOpen, deadline },                       # own times (§9.2)
+                                               scheduleNote?: { by, at: ts, fromWeek, before },                 # the last change of times
+                                               judges?: [uid…],                                                 # who only rates (§9.4)
+                                               pause?: { weekId, by, at: ts, oks: [uid…], declinedBy? },        # the request in play (§9.3)
+                                               paused?: { [monthId]: weekId },                                  # completed pauses
+                                               stakesNote?: { by, at: ts } }                                    # the last house-stakes change (§9.7)
 spaces/{spaceId}/joins/{uid}                 { code, createdAt }            # proof of invite, written in the join batch
-spaces/{spaceId}/weeks/{weekId}              { startAt, lockAt, reviewOpenAt, deadlineAt, members[], submittedBy[] }
+spaces/{spaceId}/weeks/{weekId}              { startAt, lockAt, reviewOpenAt, deadlineAt, members[], submittedBy[],
+                                               schedule?, judges?[] }         # the times its bounds follow (absent = usual); judges' snapshot until the lock
 spaces/{spaceId}/weeks/{weekId}/plans/{uid}     { tasks: [{ id, title, subs?: ["<subId>|<title>", …] }], added?: { [taskId]: ts }, updatedAt }
 spaces/{spaceId}/weeks/{weekId}/progress/{uid}  { done: { [taskId]: boolean }, updatedAt }
 spaces/{spaceId}/weeks/{weekId}/reviews/{reviewerId}_{revieweeId}
                                              { reviewerId, revieweeId, marks: { [taskId]: 0|0.5|1 }, submittedAt }
-spaces/{spaceId}/months/{monthId}            { reward, penalty, createdAt }  # the month's frozen (house) stakes; since batch 2 written once the month is complete (§9.7), overwriting the previous app's early freeze from 2026-10 on
-spaces/{spaceId}/settlements/{monthId}_{uid} { monthId, uid, settled, settledBy, settledAt }
+spaces/{spaceId}/monthly/{monthId}           { startAt, lockAt, reviewOpenAt, deadlineAt, members[], judges[], submittedBy[] }   # a month's list (§9.5)
+spaces/{spaceId}/monthly/{monthId}/plans/{uid}     { tasks, updatedAt }   # as a week's plan, never `added`
+spaces/{spaceId}/monthly/{monthId}/progress/{uid}  { done, updatedAt }
+spaces/{spaceId}/monthly/{monthId}/reviews/{reviewerId}_{revieweeId}  { reviewerId, revieweeId, marks, submittedAt }
+spaces/{spaceId}/stakes/{uid}                { rewardMode, penaltyMode, reward, penalty, per: { [friend]: { reward, penalty } },
+                                               tiers: [{ months, reward }], agreed: { [friend]: { at: ts, terms, past[] } }, updatedAt }   # own stakes (§9.7)
+spaces/{spaceId}/results/{monthId}           { monthId, completeAt, members: { [uid]: { score, passed, streak, tierRuns? } }, terms?, createdAt }
+                                                                            # written once by the reminders job (admin), read-only for clients (§9.8)
+spaces/{spaceId}/months/{monthId}            { reward, penalty, createdAt }  # the month's house stakes, frozen once the month is complete (§9.7); the previous app's early freeze from 2026-10 on is overwritten then, once
+spaces/{spaceId}/settlements/{monthId}_{uid} { monthId, uid, settled, settledBy, settledAt }          # per member (before batch 2; still counts)
+spaces/{spaceId}/settlements/{monthId}_{uid}_{other}              { monthId, uid, other, settled, settledBy, settledAt }   # per pair (§9.7)
+spaces/{spaceId}/settlements/{monthId}_{uid}_{other}_s{months}    { monthId, uid, other, tier, settled, settledBy, settledAt }   # a streak reward
 public/config                                { vapidPublicKey }              # written by the reminders job (admin)
 _private/*                                   admin only (VAPID private key, sent-notification log)
 ```
 
-Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space; profile color `#RRGGBB`; profile photo ≤ 60,000 characters.
+Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space (judges included); profile color `#RRGGBB`; profile photo ≤ 60,000 characters. Batch 2: schedule minutes `0 ≤ lock < reviewOpen`, `reviewOpen + 180 ≤ deadline ≤ 10080` (§9.2); a monthly list's caps are a week's; own stakes texts ≤ 120, ≤ 7 `per` entries, ≤ 5 streak rewards of 2–36 months, ≤ 6 agreements kept per friend (§9.7). Every new field is optional and reads as "as before" when missing.
 
 ### Security rules (`firestore.rules`), what must hold
 - `users/{uid}`: any signed-in user can `get` a profile; `list` is denied, so nobody can enumerate users. Only the owner can write, with field validation; `color` must be `#RRGGBB` (it lands in CSS). `photo` is optional: a string of at most 60,000 characters (checked before the pattern) matching `^data:image/jpeg;base64,[A-Za-z0-9+/]+=*$`, so it can never be a link that loads from every viewer's phone. A write without it (older clients, a name change) keeps working.
@@ -114,8 +131,8 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
   - `moves/*`: create and delete only. `kind` is `add` or `spend`, `amount` > 0 and ≤ 1e9, `note` 0–80 characters, `at == request.time`; `goal` is optional, and when present it is `true` on a `spend` (a goal marked as bought).
   - `goals/*`: `name` 1–60 characters and not blank, `cost` > 0 and ≤ 1e9, `order` within ±1e6, `createdAt == request.time` on create and unchanged after.
 - `invites/{code}`: anyone, signed in or not, can `get` (the code is the secret); `list` is denied. Only a member of `spaceId` can create, with `createdBy == auth.uid`, only under the space's own `inviteCode`, and with `spaceName`, `reward` and `penalty` equal to the space's (checked with `getAfter`, so the space and its invite can be written in one batch). A member can update `spaceName`/`reward`/`penalty` alone, and only to mirror the space. The creator or any space member can delete.
-- `spaces/{id}`: only members can read. Create requires `ownerId == auth.uid`, `memberIds == [auth.uid]`, `joinedAt == {auth.uid: request.time}`, `utcOffsetMin` an int in −720…840, threshold 90, latePenalty 5, and validated fields. Allowed updates, and nothing else (timezone, utcOffsetMin, threshold, latePenalty and createdAt never change):
-  - a member edits `name`/`reward`/`penalty`;
+- `spaces/{id}`: only members can read. Create requires `ownerId == auth.uid`, `memberIds == [auth.uid]`, `joinedAt == {auth.uid: request.time}`, `utcOffsetMin` an int in −720…840, threshold 90, latePenalty 5, and validated fields (since batch 2 an optional `judges`, `[]` or `[auth.uid]`). Allowed updates, and nothing else (timezone, utcOffsetMin, threshold, latePenalty and createdAt never change; batch 2's branches for judges, times and pauses are in §9.9):
+  - a member edits `name`; since batch 2 only the owner edits `reward`/`penalty` (with an optional `stakesNote`, and only once every recently completed month's house stakes are frozen, §9.7);
   - a member leaves: removes self from `memberIds` and `joinedAt` and sets `leftAt[self] = request.time` (required; nothing else in `leftAt` changes); if the leaver is the owner and others remain, `ownerId` must become a remaining member with the earliest `joinedAt`, otherwise `ownerId` stays;
   - the owner removes one other member the same way (`memberIds`, `joinedAt`, and the required `leftAt[them] = request.time`);
   - the owner sets a new, valid `inviteCode` (alone);
@@ -124,7 +141,7 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
 - `spaces/{id}/joins/{uid}`: create only by `uid == auth.uid`, and only if `invites/{code}.spaceId == id`. Read by self.
 - `weeks/{weekId}`: members can read. A member can create it when:
   - `weekId` is a Monday date;
-  - the timeline is anchored to the space: `startAt` within 1h of `weekId` 00:00 UTC − `utcOffsetMin` (within 14h of `weekId` 00:00 UTC for a space without `utcOffsetMin`); `lockAt`, `reviewOpenAt`, `deadlineAt` within 1h of `startAt` + 1, 4, 5 days and, with `utcOffsetMin`, also within 1h of that anchor + 1, 4, 5 days;
+  - the timeline is anchored to the space: `startAt` within 1h of `weekId` 00:00 UTC − `utcOffsetMin` (within 14h of `weekId` 00:00 UTC for a space without `utcOffsetMin`); `lockAt`, `reviewOpenAt`, `deadlineAt` within 1h of `startAt` + 1, 4, 5 days and, with `utcOffsetMin`, also within 1h of that anchor + 1, 4, 5 days (since batch 2: + the space's schedule minutes, with optional `schedule` and `judges` keys equal to the space's, §9.2, §9.4);
   - `submittedBy == []`;
   - `members` holds exactly the space's current members;
   - `request.time < lockAt`, and `startAt < request.time + 8 days` (no far-future weeks).
@@ -132,8 +149,9 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
   Allowed updates, and nothing else:
   - before `lockAt`, a space member appends current space members who are missing from `members` (no duplicates);
   - before `lockAt`, one uid leaves `members` if it is no longer a space member (`getAfter`, so it goes in the same batch as leaving the space); the writer is that uid or the space's owner. From `lockAt` on nobody leaves `members`, so leaving or removal can't take anyone out of a locked week;
-  - add self to `submittedBy` while `reviewOpenAt ≤ request.time < deadlineAt`, self ∈ `members` and self is still a space member.
-- `plans/{uid}`: members of the space can read. Only the owner writes, while owner ∈ `week.members` and still a space member:
+  - add self to `submittedBy` while `reviewOpenAt ≤ request.time < deadlineAt`, self ∈ `members` and self is still a space member;
+  - since batch 2: sync members and judges before `lockAt` (`syncsPeriod`), and move the bounds to the space's new times with a day's notice (`retimesWeek`, §9.2).
+- `plans/{uid}`: members of the space can read. Only the owner writes, while owner ∈ `week.members` and still a space member (and, since batch 2, not a judge of that week, §9.4):
   - before `lockAt`: exactly `{tasks, updatedAt}` (no `added`), `updatedAt == request.time`; `tasks` is a list of ≤ 25 tasks, each exactly `{id, title}` or `{id, title, subs}`: `id` like a task id, `title` 1–120 characters, `subs` 1–8 strings `"<id>|<title>"` (step id like a task id, step title 1–120 characters on one line). Deleting the plan is allowed only before `lockAt`;
   - while `lockAt ≤ request.time < reviewOpenAt`, append only (§6.2): exactly `{tasks, added, updatedAt}`; `tasks` is the stored list unchanged (same order, same content) plus one valid task, ≤ 25 in all (with no plan yet: just that task); `added` gains exactly that task's id, not already in it, with `request.time` and keeps every other entry; `updatedAt == request.time`.
 
@@ -150,18 +168,19 @@ Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 
   Read: the reviewer, or a space member when revealed (`request.time ≥ deadlineAt || week.submittedBy ⊇ week.members`).
 
   Clients must query in ways the rules can prove. Before reveal: `where('reviewerId','==',uid)`. After reveal: the whole collection.
-- `months/{monthId}`: members can read. A member can create it (never update or delete) with exactly `{reward, penalty, createdAt}`, `reward`/`penalty` equal to the space's current ones, `createdAt == request.time`, and `monthId` between the month of `request.time − 3 days` and the month of `request.time + 5 days` (the month of the current week's Friday in any zone). Batch 2 replaces the month window: only once the month is complete, and an early freeze of a month from 2026-10 on can be overwritten once, at completion (§9.7).
-- `settlements/*`: members can read and write, with field validation; `uid` is a current member or one in `leftAt`.
+- `months/{monthId}`: members can read. A member can create it (never delete) with exactly `{reward, penalty, createdAt}`, `reward`/`penalty` equal to the space's current ones, `createdAt == request.time`, for a recent month (≥ the month of `request.time − 62 days`) and only once the month is **complete** (its last week's stored deadline, or the computed one, and its monthly list's). The only update: from `2026-10` on, an early freeze (the previous app froze at a month's first lock) is overwritten once, at completion (§9.7). Before batch 2 the window was the month of `request.time − 3 days` to `+ 5 days`.
+- `settlements/*`: members can read and write, with field validation; `uid` is a current member or one in `leftAt`. Since batch 2 also per pair (`other`, a current or former member ≠ `uid`) and per streak reward (`tier`, 2–36), §9.7.
+- Batch 2 adds `monthly/{monthId}` with its plans, progress and reviews (§9.5), `stakes/{uid}` (§9.7) and `results/{monthId}` (read by members only, §9.8); §9.9 lists every change in file order.
 - `public/config`: signed-in users can read; nobody can write. `_private/**`: no client access.
 
 ### Data layer (`src/data/api.ts`), behaviour the screens rely on
 - `createSpace` writes the space and its invite in one batch. It first checks the server answers (8 s); offline it fails at once with the offline message instead of queueing, and a second identical call while the first is in flight returns the first.
 - `lookupInvite` works signed out; `Invite` carries `reward` and `penalty` (empty on invites from before). `updateSpace` keeps the invite's name and stakes in step.
 - `leaveSpace`, `deleteMyAccount` and `removeMember` take the user out of the weeks that haven't locked yet (this week while it is planning, next week) and never out of a locked week (see Participation). They record `leftAt`, and leaving hands ownership on. `removeMember(spaceId, uid)` and `resetInviteCode(spaceId) → new code` are owner-only.
-- `useMySpaces`, `useSpace` and `useWeek` run `ensureSpace`: this week (until it locks) and next week hold every current member, the current month's stakes are frozen once its first lists have locked (batch 2: once the month is complete, §9.7), and a space whose owner already left (older versions) passes to its earliest-joined member.
-- `useMonthStakes(space, monthId)` gives `{ reward, penalty, frozen }`, falling back to the space's text with `frozen: false`. Since batch 2 it also gives the freeze's `createdAt`, and whether a freeze binds is `monthHouse`'s call (§9.7).
+- `useMySpaces`, `useSpace` and `useWeek` run `ensureSpace`: this week (until it locks) and next week hold every current member, a month's house stakes are frozen once the month is complete (before batch 2: at its first lock; the full list of jobs is in §9.10), and a space whose owner already left (older versions) passes to its earliest-joined member.
+- `useMonthStakes(space, monthId)` gives `{ reward, penalty, frozen, createdAt? }`, falling back to the space's text with `frozen: false`; whether a freeze binds is `monthHouse`'s call (§9.7).
 - `useWeek(...).data.boundsMismatch` flags a skewed stored timeline. A revealed week is never published with only the user's own reviews.
-- After joining or leaving, the cached space, weeks, months and settlements of that space are dropped (`forget`), so nothing stale lingers.
+- After joining or leaving, the cached space, weeks, months and settlements of that space are dropped (`forget`), so nothing stale lingers (since batch 2 also its monthly lists, stakes and results, §9.7).
 - `sendPasswordReset` resolves for unknown emails too (no account enumeration).
 - `updateMyPhoto(photo | null)` sets or deletes (`null`) your `photo`. A value the rules would refuse is refused before writing, so it never shows from the local cache; failures come back as plain messages. `toProfile` passes `photo` through only when it is an inline JPEG of the allowed size, so a stored link never reaches an `<img>`.
 - `savePlan` takes tasks with `subtasks` (≤ 8; task and step ids unique across the list; blank steps dropped, titles made one line). After the save, in the background, that week's earnings follow the list: a renamed task renames its earning, a deleted task deletes it. A failure there never fails the save; the next save fixes it.

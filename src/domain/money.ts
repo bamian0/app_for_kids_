@@ -351,9 +351,10 @@ export function earnedInMonth(earnings: Earning[], monthId: MonthId): number {
   return sum(earnings.filter((e) => isEarned(e) && monthOf(e.weekId) === monthId))
 }
 
-/** Revenue tasks in those weeks that aren't done yet. */
-export function pendingIn(earnings: Earning[], weekIds: WeekId[]): number {
-  return sum(earnings.filter((e) => !isEarned(e) && weekIds.includes(e.weekId)))
+/** Revenue tasks in those weeks that aren't done yet. `skip`: earning ids to leave out (batch 2.5, SPEC §10.5: the
+ *  revenue tasks crossed out now; display only, the earning docs are untouched and an undo brings them back). */
+export function pendingIn(earnings: Earning[], weekIds: WeekId[], skip?: ReadonlySet<string>): number {
+  return sum(earnings.filter((e) => !isEarned(e) && weekIds.includes(e.weekId) && !(skip?.has(e.id) ?? false)))
 }
 
 export function totalEarned(earnings: Earning[]): number {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeMemberStakes, decodeMonthResults, decodeSchedule, decodeSpaceExtras, decodeWeekExtras, type ToMs } from './decode.ts'
+import { decodeCancels, decodeMemberStakes, decodeMonthResults, decodeSchedule, decodeSpaceExtras, decodeWeekExtras, isReviewMark, type ToMs } from './decode.ts'
 
 /** A stand-in for a Firestore Timestamp, as the data layer and the job get them. */
 const ts = (ms: number) => ({ toMillis: () => ms })
@@ -228,5 +228,97 @@ describe('decodeMonthResults', () => {
       expect(() => decodeMonthResults({ monthId: '2026-10', members: { a: v, b: { streak: v, tierRuns: v } }, terms: v, completeAt: v }, toMs)).not.toThrow()
       expect(() => decodeMonthResults({ monthId: '2026-10', members: {}, terms: { a: { b: { reward: v, penalty: v, tiers: v } } } }, toMs)).not.toThrow()
     }
+  })
+})
+
+// ---------- Batch 2.5 (SPEC §10.3, §10.4) ----------
+
+describe('decodeCancels', () => {
+  const WHY = 'The pool is closed all week'
+  const out = (n: number, why = WHY) => (n % 2 === 1 ? { at: ts(T + n), why } : { at: ts(T + n) })
+
+  it('a full log: cross out, undo, cross out, undo, cross out for good', () => {
+    const log = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`${n}:swim`, out(n, `Reason ${n}`)]))
+    expect(decodeCancels(log, toMs)).toEqual({ swim: { cancelled: true, changes: 5, at: T + 5, why: 'Reason 5' } })
+  })
+
+  it('each step of the log: the state, the latest change’s time, the latest cross-out’s reason', () => {
+    const entries = [1, 2, 3, 4].map((n) => [`${n}:swim`, out(n, `Reason ${n}`)] as const)
+    expect(decodeCancels(Object.fromEntries(entries.slice(0, 1)), toMs).swim).toEqual({ cancelled: true, changes: 1, at: T + 1, why: 'Reason 1' })
+    // Restored: the reason of the cross-out stays.
+    expect(decodeCancels(Object.fromEntries(entries.slice(0, 2)), toMs).swim).toEqual({ cancelled: false, changes: 2, at: T + 2, why: 'Reason 1' })
+    expect(decodeCancels(Object.fromEntries(entries.slice(0, 3)), toMs).swim).toEqual({ cancelled: true, changes: 3, at: T + 3, why: 'Reason 3' })
+    expect(decodeCancels(Object.fromEntries(entries), toMs).swim).toEqual({ cancelled: false, changes: 4, at: T + 4, why: 'Reason 3' })
+  })
+
+  it('several tasks, each on its own; entries in any order', () => {
+    const log = { '2:read': out(2), '1:swim': out(1), '1:read': out(1, 'Library shut') }
+    expect(decodeCancels(log, toMs)).toEqual({
+      swim: { cancelled: true, changes: 1, at: T + 1, why: WHY },
+      read: { cancelled: false, changes: 2, at: T + 2, why: 'Library shut' },
+    })
+  })
+
+  it('contiguity from 1: a gap ends the log, and without entry 1 there is none', () => {
+    expect(decodeCancels({ '1:swim': out(1), '3:swim': out(3) }, toMs).swim).toMatchObject({ changes: 1, cancelled: true })
+    expect(decodeCancels({ '1:swim': out(1), '2:swim': out(2), '4:swim': out(4), '5:swim': out(5) }, toMs).swim).toMatchObject({ changes: 2, cancelled: false })
+    expect(decodeCancels({ '2:swim': out(2), '3:swim': out(3) }, toMs)).toEqual({})
+  })
+
+  it('n = 6 and beyond, n = 0, two digits and other bad keys are dropped', () => {
+    const full = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`${n}:swim`, out(n)]))
+    expect(decodeCancels({ ...full, '6:swim': out(6) }, toMs).swim).toMatchObject({ changes: 5, cancelled: true, at: T + 5 })
+    for (const key of ['0:swim', '6:swim', '9:swim', '01:swim', '11:swim', '1:', '1', 'swim', ':swim', '1:sw:im', '1:sw im', '1:swim!', `1:${'x'.repeat(65)}`, ' 1:swim', '1:swim ', 'a:swim', '-1:swim']) {
+      expect(decodeCancels({ [key]: out(1) }, toMs)).toEqual({})
+    }
+    // A 64-character id is fine.
+    expect(Object.keys(decodeCancels({ [`1:${'x'.repeat(64)}`]: out(1) }, toMs))).toEqual(['x'.repeat(64)])
+  })
+
+  it('a missing, malformed or non-time `at` drops the entry (and so ends the log there)', () => {
+    for (const at of [undefined, null, 0, -5, 'yesterday', T, ts(Number.NaN), ts(0), ts(-1), { toMillis: () => { throw new Error('boom') } }]) {
+      expect(decodeCancels({ '1:swim': { at, why: WHY } }, toMs)).toEqual({})
+      expect(decodeCancels({ '1:swim': out(1), '2:swim': { at } }, toMs).swim).toMatchObject({ changes: 1, cancelled: true })
+    }
+    for (const value of [null, 'x', 7, true, [], [ts(T)]]) expect(decodeCancels({ '1:swim': value }, toMs)).toEqual({})
+  })
+
+  it('an odd entry needs a reason that isn’t blank; it is read on one line', () => {
+    for (const why of [undefined, null, '', '   ', '\n', 5, ['Sick'], { text: 'Sick' }]) {
+      expect(decodeCancels({ '1:swim': { at: ts(T), why } }, toMs)).toEqual({})
+      expect(decodeCancels({ '1:swim': out(1), '2:swim': out(2), '3:swim': { at: ts(T + 3), why } }, toMs).swim).toMatchObject({ changes: 2, cancelled: false, why: WHY })
+    }
+    expect(decodeCancels({ '1:swim': { at: ts(T), why: '  Sick\n all week ' } }, toMs).swim.why).toBe('Sick all week')
+    // Emoji and a long reason are kept as stored (the rules check the length).
+    expect(decodeCancels({ '1:swim': { at: ts(T), why: '🤒 Flu' } }, toMs).swim.why).toBe('🤒 Flu')
+  })
+
+  it('an even entry with a reason, or extra fields anywhere, is still fine', () => {
+    const log = { '1:swim': { ...out(1), extra: 1 }, '2:swim': { at: ts(T + 2), why: 'Changed my mind' } }
+    expect(decodeCancels(log, toMs).swim).toEqual({ cancelled: false, changes: 2, at: T + 2, why: WHY })
+  })
+
+  it('ids not on any list are kept here (decodeTasks ignores them), even odd ones', () => {
+    expect(Object.keys(decodeCancels({ '1:gone': out(1), '1:__proto__': out(1), '1:constructor': out(1) }, toMs)).sort()).toEqual(['__proto__', 'constructor', 'gone'])
+    const odd = decodeCancels({ '1:__proto__': out(1) }, toMs)
+    expect(Object.hasOwn(odd, '__proto__')).toBe(true)
+    expect(Object.getPrototypeOf(odd)).toBe(Object.prototype)
+  })
+
+  it('no log, or not a map: nothing; never throws', () => {
+    expect(decodeCancels(undefined, toMs)).toEqual({})
+    expect(decodeCancels({}, toMs)).toEqual({})
+    for (const v of JUNK) {
+      expect(() => decodeCancels(v, toMs)).not.toThrow()
+      expect(() => decodeCancels({ '1:a': v, '2:a': v, '1:b': { at: v, why: v } }, toMs)).not.toThrow()
+    }
+    expect(decodeCancels([out(1)], toMs)).toEqual({})
+  })
+})
+
+describe('isReviewMark', () => {
+  it('Done, Half, Not done or Fair, Skip It', () => {
+    for (const v of [0, 0.5, 1, 'fair', 1.0, 0.0]) expect(isReviewMark(v)).toBe(true)
+    for (const v of ['Fair', 'skip', 'FAIR', ' fair', -1, 2, 0.25, '1', '0', NaN, null, undefined, true, {}, []]) expect(isReviewMark(v)).toBe(false)
   })
 })

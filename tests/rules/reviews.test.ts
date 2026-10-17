@@ -32,11 +32,34 @@ describe('reviews: create', () => {
     const members = ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8']
     await setup('review', members)
     const u1 = db('u1')
+    // 25 marks each, one of them a fair vote on a crossed-out task.
     const docs = Object.fromEntries(
-      members.slice(1).map((r) => [`u1_${r}`, review('u1', r, { marks: marks(25) })]),
+      members.slice(1).map((r) => [`u1_${r}`, review('u1', r, { marks: { ...marks(25), t0abcdefg: 'fair' } })]),
     )
     await allowed(submit(u1, 'u1', docs))
     expect((await getDocs(query(collection(u1, reviewsPath()), where('reviewerId', '==', 'u1')))).size).toBe(7)
+  })
+
+  test('a crossed-out task gets \'fair\' (Fair, Skip It) or 0 (Not Done); old clients\' marks still pass', async () => {
+    await setup('review')
+    // SPEC §10.4: the rules can't tell which tasks are crossed out; the domain counts 'fair' as 0 elsewhere.
+    await allowed(submit(db('alice'), 'alice', {
+      alice_bob: review('alice', 'bob', { marks: { t0abcdefg: 'fair', t1abcdefg: 0, t2abcdefg: 1, t3abcdefg: 0.5 } }),
+      alice_carol: review('alice', 'carol', { marks: { t0abcdefg: 'fair' } }),
+    }))
+    // An old client's batch: only 0, 0.5 and 1 (also on a crossed-out task, where they count as Not Done).
+    await allowed(submit(db('bob'), 'bob', { bob_alice: review('bob', 'alice'), bob_carol: review('bob', 'carol', { marks: { t0abcdefg: 1.0, t1abcdefg: 0.0 } }) }))
+    const one = (mark: unknown) => () => submit(db('carol'), 'carol', { carol_alice: review('carol', 'alice', { marks: { t0abcdefg: mark } }) })
+    await allDenied({
+      '\'Fair\'': one('Fair'),
+      '\'skip\'': one('skip'),
+      '\'fair \'': one('fair '),
+      '\'not done\'': one('not done'),
+      '-1': one(-1),
+      '2': one(2),
+      'null': one(null),
+      'a map': one({ fair: true }),
+    })
   })
 
   test('someone who left after lock is still reviewed by those who remain, and can no longer submit', async () => {

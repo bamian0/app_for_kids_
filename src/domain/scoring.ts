@@ -1,7 +1,9 @@
-// Weekly and monthly scoring. See docs/SPEC.md §1 for the rules, §9.6 for judges, pauses and monthly lists.
+// Weekly and monthly scoring. See docs/SPEC.md §1 for the rules, §9.6 for judges, pauses and monthly lists, §10.4 for
+// crossed-out tasks and the fair vote.
+import { FAIR, isCancelled } from './cancel.ts'
 import { isWeekPaused } from './pause.ts'
 import { boundsFor } from './schedule.ts'
-import type { Mark, MonthId, MonthlyData, MonthlyList, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId } from './types.ts'
+import type { Mark, MonthId, MonthlyData, MonthlyList, Plan, Progress, Review, Space, Task, TaskCancel, UID, Week, WeekData, WeekId } from './types.ts'
 import type { WeekBounds, WeekPhase } from './time.ts'
 import { monthlyBounds, weekIdsInMonth, weekPhase } from './time.ts'
 
@@ -21,6 +23,14 @@ export interface TaskResult {
   selfFraction: number
   /** Copied from Task.addedAt: set on a task added after the lock. */
   addedAt?: number
+  // Batch 2.5 (§10.4): optional in the type; the domain sets them as described.
+  /** Copied from Task.cancel whenever present (also on a restored task); `cancel.cancelled` = crossed out now. */
+  cancel?: TaskCancel
+  /** Crossed-out tasks only: the reviewers (of those visible to the caller) who voted Fair, Skip It. */
+  fairBy?: UID[]
+  /** Crossed-out tasks only: more than half of the reviews of the member said fair, so the task doesn't count.
+   *  Always false before the reveal, and with nobody's review (the self check-off fallback can't excuse). */
+  excused?: boolean
 }
 
 export interface MemberWeekResult {
@@ -41,6 +51,14 @@ export interface MemberWeekResult {
    *  review target; `missedReviewsOf` still lists whom they didn't review ("Didn't review"), never a penalty.
    *  Optional in the type (absent = false); the domain always sets it. */
   judge?: boolean
+  // Batch 2.5 (§10.4): optional in the type (absent = 0 / false); the domain sets them on every entry but a judge's
+  // (a judge has no list).
+  /** Tasks crossed out now. They are left out of `provisionalScore`. */
+  cancelledCount?: number
+  /** Crossed-out tasks friends excused (more than half said fair); 0 until the reveal. */
+  excusedCount?: number
+  /** Revealed, not paused, and every task was excused: `score` is null, not 0% (the period doesn't count for them). */
+  skipped?: boolean
 }
 
 export interface WeekResult {
@@ -63,6 +81,9 @@ export interface MonthWeekEntry {
   closed: boolean
   /** The week was paused: listed, never averaged (§9.3). */
   paused?: true
+  /** Batch 2.5 (§10.4): every task of theirs was excused: listed with `score: null`, never averaged; its missed
+   *  reviews still count. */
+  skipped?: true
 }
 
 /** A member's monthly list in their month (§9.5): only when they had ≥ 1 task at its lock. */
@@ -70,6 +91,8 @@ export interface MonthlyEntry {
   score: number | null
   closed: boolean
   taskCount: number
+  /** Batch 2.5 (§10.4): every task was excused (`score: null`), so the list isn't averaged. Always set by the domain. */
+  skipped?: boolean
 }
 
 export interface MemberMonthResult {
@@ -266,6 +289,9 @@ function emptyResult(uid: UID): MemberWeekResult {
     missedReviewsOf: [],
     hasSubmitted: false,
     judge: false,
+    cancelledCount: 0,
+    excusedCount: 0,
+    skipped: false,
   }
 }
 
@@ -273,6 +299,14 @@ function emptyResult(uid: UID): MemberWeekResult {
  * Scores one period. `emptyList`: what a member with no tasks scores ('zero': a week, "you committed to
  * nothing"; 'none': a monthly list, which simply doesn't exist for them). In a paused week every score is null
  * and nobody misses a review; tasks, provisional scores, submissions and the reveal are as usual.
+ *
+ * Crossed-out tasks (§10.4; the state at review time is final, since changes stop when reviews open). With R the
+ * valid reviews of the member (k = |R|): a crossed-out task's every review mark is 0 and `fairBy` lists who said
+ * 'fair' (any other value, or none, is Not Done); it is excused when k > 0 and more than half said fair (a tie is Not
+ * Done). Score with k > 0: Σ marks of the tasks not crossed out / (m × k), m = n − excused; m = 0 → skipped (null).
+ * With k = 0 nothing can be excused: the self check-offs of all n tasks, crossed-out ones included, as before. The
+ * provisional score leaves crossed-out tasks out (null when every task is crossed out). A 'fair' on a task that
+ * isn't crossed out counts 0. With no cross-out every result is what it was before batch 2.5.
  */
 function scorePeriod(p: PeriodData, space: Space, nowMs: number, bounds: WeekBounds, paused: boolean, emptyList: 'zero' | 'none'): WeekResult {
   const period = p.period
@@ -313,23 +347,41 @@ function scorePeriod(p: PeriodData, space: Space, nowMs: number, bounds: WeekBou
     const reviewedBy = received.map((r) => r.reviewerId)
     const fromReviews = received.length > 0
 
+    // Self units of every task (the k = 0 fallback) and of the tasks not crossed out (the provisional score).
     let selfUnits = 0
+    let openSelfUnits = 0
     let reviewMarkSum = 0
+    let cancelledCount = 0
+    let excusedCount = 0
     const tasks: TaskResult[] = plan.map((task) => {
       const c = checkOffs(task, done)
       const selfMark = c.ticked / c.of
+      const crossed = isCancelled(task)
       const reviewerMarks: Record<UID, Mark> = {}
+      const fairBy: UID[] = []
       let reviewSum = 0
       for (const r of received) {
-        // A submitted review that skips a task gives it 0.
-        // batch2.5: TODO crossed-out tasks and the 'fair' vote (SPEC §10.4); until then 'fair' counts as 0, as on old clients.
         const value = r.marks[task.id]
+        if (crossed) {
+          // Fair, Skip It or Not Done: either way the task earns nothing. Anything but 'fair' (an old client's
+          // Done or Half, or no mark) is Not Done.
+          if (value === FAIR) fairBy.push(r.reviewerId)
+          reviewerMarks[r.reviewerId] = 0
+          continue
+        }
+        // A submitted review that skips a task gives it 0; so does a 'fair' on a task that isn't crossed out.
         const mark = isMark(value) ? value : 0
         reviewerMarks[r.reviewerId] = mark
         reviewSum += mark
       }
-      selfUnits += (SELF_UNITS * c.ticked) / c.of
+      const units = (SELF_UNITS * c.ticked) / c.of
+      selfUnits += units
+      if (crossed) cancelledCount += 1
+      else openSelfUnits += units
       reviewMarkSum += reviewSum
+      // More than half of the reviews of this member said fair; with nobody's review it can't be excused.
+      const excusedNow = crossed && fromReviews && 2 * fairBy.length > received.length
+      if (excusedNow) excusedCount += 1
       const result: TaskResult = {
         taskId: task.id,
         title: task.title,
@@ -341,14 +393,26 @@ function scorePeriod(p: PeriodData, space: Space, nowMs: number, bounds: WeekBou
         selfFraction: selfMark,
       }
       if (task.addedAt !== undefined) result.addedAt = task.addedAt
+      if (task.cancel !== undefined) result.cancel = task.cancel
+      if (crossed) {
+        result.fairBy = fairBy
+        // Before the reveal a caller sees only their own reviews: no excusal yet.
+        result.excused = revealed && excusedNow
+      }
       return result
     })
 
     const n = plan.length
     const noList = n === 0 && emptyList === 'none'
+    // m = n − excused: the tasks that still count (excusal needs reviews; before the reveal the score is null anyway).
+    const counting = n - excusedCount
+    const skipped = n > 0 && fromReviews && counting === 0
+    const open = n - cancelledCount
     // Divide once (sums of half-point marks and of self units are exact) to keep float error minimal.
-    const provisional = n === 0 ? 0 : (100 * selfUnits) / (n * SELF_UNITS)
-    const score = n === 0 ? 0 : fromReviews ? (100 * reviewMarkSum) / (n * received.length) : provisional
+    const provisional = n === 0 ? 0 : open === 0 ? null : (100 * openSelfUnits) / (open * SELF_UNITS)
+    const fallback = n === 0 ? 0 : (100 * selfUnits) / (n * SELF_UNITS)
+    const score = n === 0 ? 0 : fromReviews ? (skipped ? null : (100 * reviewMarkSum) / (counting * received.length)) : fallback
+    const scored = revealed && !paused && !noList
 
     results[uid] = {
       uid,
@@ -356,11 +420,14 @@ function scorePeriod(p: PeriodData, space: Space, nowMs: number, bounds: WeekBou
       taskCount: n,
       tasks,
       provisionalScore: noList ? null : provisional,
-      score: revealed && !paused && !noList ? score : null,
+      score: scored ? score : null,
       reviewedBy,
       missedReviewsOf: missedBy(uid),
       hasSubmitted,
       judge: false,
+      cancelledCount,
+      excusedCount: revealed ? excusedCount : 0,
+      skipped: scored && skipped,
     }
   }
 
@@ -390,6 +457,11 @@ export function computeWeek(data: WeekData, space: Space, nowMs: number): WeekRe
 export function computeMonthly(data: MonthlyData, space: Space, nowMs: number): WeekResult {
   const bounds = data.monthly ? boundsFor(space, data.monthId, data.monthly) : monthlyBounds(data.monthId, (w) => boundsFor(space, w))
   return scorePeriod(periodOf(data), space, nowMs, bounds, false, 'none')
+}
+
+/** A player of the month: a week that is neither paused nor skipped, or a monthly list that isn't skipped. */
+function isPlayer(weeks: MonthWeekEntry[], monthly: MonthlyEntry | null): boolean {
+  return weeks.some((e) => !e.paused && !e.skipped) || (monthly !== null && !monthly.skipped)
 }
 
 function lastWeekOf(monthId: MonthId): WeekId {
@@ -425,6 +497,10 @@ export function monthEndsAt(space: Pick<Space, 'timezone' | 'schedule'>, monthId
  * `judged` (their skips in `skippedAsJudge`) and, in a month the member also plays, each closed one averages as
  * 0; a closed monthly list with ≥ 1 task is one more averaged score, and missed monthly reviews cost points
  * unless the month's last week is paused; `others` = the players (a non-paused played week, or a list).
+ * Batch 2.5 (§10.4): a week where the member is `skipped` (every task excused) is listed `{ score: null, skipped }`,
+ * never averaged, and its missed reviews still count; a skipped monthly list is a `monthly` entry with `skipped`,
+ * never averaged. Neither makes them a player (`others`, and judged weeks at 0%): a player has a week that is
+ * neither paused nor skipped, or a monthly entry that isn't skipped.
  */
 export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], nowMs: number, monthly?: MonthlyData): Record<UID, MemberMonthResult> {
   const inMonth = new Set(weekIdsInMonth(monthId))
@@ -463,6 +539,12 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
         }
         continue
       }
+      if (member.skipped) {
+        // Friends excused every task: not averaged, but they still had to review the others.
+        entries.push({ weekId, score: null, closed, skipped: true })
+        if (closed) missedReviews += member.missedReviewsOf.length
+        continue
+      }
       entries.push({ weekId, score: member.score, closed })
       if (closed && member.score !== null) {
         closedScores.push(member.score)
@@ -478,16 +560,17 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
         if (listClosed) skippedAsJudge += inList.missedReviewsOf.length
       } else {
         if (inList.taskCount > 0) {
-          monthlyEntry = { score: inList.score, closed: listClosed, taskCount: inList.taskCount }
-          // The extra week counts once the list is closed, like a week.
-          if (listClosed && inList.score !== null) closedScores.push(inList.score)
+          const skipped = inList.skipped === true
+          monthlyEntry = { score: inList.score, closed: listClosed, taskCount: inList.taskCount, skipped }
+          // The extra week counts once the list is closed, like a week; a skipped list never does.
+          if (listClosed && inList.score !== null && !skipped) closedScores.push(inList.score)
         }
         // Missed monthly reviews cost points, list or not, unless the month's last week is paused.
         if (listClosed && !lastWeekPaused) missedReviews += inList.missedReviewsOf.length
       }
     }
     // Judged weeks in a month they also play count as 0%, so switching to judge can't hide bad weeks.
-    const plays = entries.some((e) => !e.paused) || monthlyEntry !== null
+    const plays = isPlayer(entries, monthlyEntry)
     if (plays) for (let i = 0; i < judgedClosed; i++) closedScores.push(0)
     const average = closedScores.length > 0 ? normalise(closedScores.reduce((a, b) => a + b, 0) / closedScores.length) : null
     const penaltyPoints = space.latePenalty * missedReviews
@@ -510,7 +593,7 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
       skippedAsJudge,
     }
   }
-  const players = roster.filter((uid) => out[uid].weeks.some((e) => !e.paused) || out[uid].monthly)
+  const players = roster.filter((uid) => isPlayer(out[uid].weeks, out[uid].monthly ?? null))
   for (const uid of roster) out[uid].others = players.filter((id) => id !== uid)
   return out
 }

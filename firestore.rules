@@ -1,7 +1,8 @@
 rules_version = '2';
 
-// Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2 and, for batch 2, §9
-// (§9.9 lists every change in file order, with its budget).
+// Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2; for batch 2, §9 (§9.9
+// lists every change in file order, with its budget); for batch 2.5 (monthly adds, crossed-out tasks),
+// §10 (§10.7 lists the changes and their budgets).
 //
 // How to publish: Firebase console > Firestore Database > Rules > paste this whole file > Publish.
 // Test locally first with `npm run test:rules` (Firestore emulator + tests/rules).
@@ -9,9 +10,9 @@ rules_version = '2';
 // month you publish in; if the publish slips past that month's last Friday, change it (and the domain's).
 //
 // Anything not matched below is denied. Every server timestamp (createdAt, updatedAt, joinedAt,
-// submittedAt, settledAt, a plan's added[id], earnedAt, baselineAt, a move's at, a note's at, an
-// agreement's at, a pause request's at) must be written with serverTimestamp(): the rules compare it
-// to request.time.
+// submittedAt, settledAt, a plan's added[id] and its cancels["<n>:<id>"].at, earnedAt, baselineAt, a
+// move's at, a note's at, an agreement's at, a pause request's at) must be written with
+// serverTimestamp(): the rules compare it to request.time.
 //
 // Costs to keep in mind: each request may evaluate at most 1000 expressions and read at most 10
 // documents (20 in a batch or transaction). get() of a missing document is null and costs one read;
@@ -800,8 +801,12 @@ service cloud.firestore {
       // counts (a literal, a field read, an operator), so these checks are written for cost first.
       // Measured in the emulator (tests/rules/budget.test.ts): ~895 with canPlan's judge check, for a
       // week or a monthly list, batched with filling the period. If a change leaves under 40 of
-      // headroom, drop the judge line from canPlan first (appendsTask keeps it; scoring ignores a
-      // judge's plan anyway).
+      // headroom, drop the judge line from canPlan first (appendsTask and togglesCancel keep it;
+      // scoring ignores a judge's plan anyway).
+      // The plan rules try three branches in this order (SPEC §10.7): the whole list before the lock,
+      // then an append, then a cross-out or undo. A later branch pays for the ones before it (an append
+      // ~325, a cross-out ~482 with the longest log), so the whole list costs exactly what it did before
+      // the other two existed. Don't reorder them to make a cross-out cheaper: every save would pay.
 
       // Exactly {id, title} or {id, title, subs}: size() and the keys read leave no room for others.
       // matches() also rejects non-strings. Titles are 1-120 characters; blank titles are left to the
@@ -842,29 +847,68 @@ service cloud.firestore {
           && !(uid in w.get('judges', []))
           && uid in get(spacePath(spaceId)).data.memberIds;
       }
-      // From lockAt until the review window opens, a participant appends one task per write (SPEC §6.2).
-      // Everything already on the list stays exactly as it was, and added[id] records when, so friends
-      // can see what came late. Without a plan yet, the first such write creates it with that one task.
-      // Weeks only: a monthly list never grows after its lock.
-      function appendsTask(spaceId, weekId, uid) {
-        let w = getAfter(periodPath(spaceId, 'weeks', weekId)).data;
+      // From lockAt until the review window opens, a participant appends one task per write to a week
+      // or a monthly list (SPEC §6.2, §10.2). Everything already on the list stays exactly as it was,
+      // the cross-out log (cancels) included, and added[id] records when, so friends can see what came
+      // late. A week without a plan yet gets one with that single task (minBefore 0); a monthly list
+      // only grows for someone who had a task on it at its lock (minBefore 1). The live app's append
+      // from before batch 2.5 rewrites the whole doc without cancels: it passes while the plan has no
+      // cancels and is refused once it has some, since it would erase them. `coll` is a literal.
+      // On a cross-out, d.tasks[n] is past the end of the list, so this branch is false or an error,
+      // and rules read `error || true` as true: togglesCancel decides (tests/rules/cancels.test.ts).
+      function appendsTask(spaceId, coll, id, uid, minBefore) {
+        let w = getAfter(periodPath(spaceId, coll, id)).data;
         let d = incoming();
         let before = resource == null ? [] : existing().tasks;
         let addedBefore = resource == null ? {} : existing().get('added', {});
+        let cancelsBefore = resource == null ? {} : existing().get('cancels', {});
         let n = before.size();
         let t = d.tasks[n];
         return isUser(uid)
           && w.lockAt <= request.time && request.time < w.reviewOpenAt
           && uid in w.members && !(uid in w.get('judges', [])) && isMember(spaceId)
-          && exactKeys(d, ['tasks', 'added', 'updatedAt'])
+          && d.keys().hasAll(['tasks', 'added', 'updatedAt'])
+          && d.keys().hasOnly(['tasks', 'added', 'updatedAt', 'cancels'])
+          && d.get('cancels', {}) == cancelsBefore
           && d.updatedAt == request.time
-          && d.tasks is list && d.tasks.size() == n + 1 && n < 25
+          && d.tasks is list && d.tasks.size() == n + 1 && n < 25 && n >= minBefore
           // An empty slice ([0:0]) is an error in rules, hence n == 0 on its own.
           && (n == 0 || d.tasks[0:n] == before)
           && validTask(t)
           && !(t.id in addedBefore)
           && d.added is map && d.added.diff(addedBefore).affectedKeys().hasOnly([t.id])
           && d.added[t.id] == request.time;
+      }
+      // Crossing a task out and undoing that (SPEC §10.3): from lockAt until the review window opens,
+      // the plan's owner, still a participant (not a judge) and a space member, adds one entry to the
+      // plan's cancels log and changes nothing else. Rules can't find which key of a map changed, but
+      // they can find the one key that was added, so every change adds a key "<n>:<taskId>": odd n
+      // {at, why} (crossed out, with a one-line reason of 1-120 characters, not blank), even n {at}
+      // (restored). Entry n needs entry n − 1 of the same task and n is 1-5, so a task changes at most
+      // 5 times (two undos), each with its server time; at most 125 entries (25 tasks × 5). The key
+      // isn't checked against the list (a slot check per task costs too much): clients ignore keys of
+      // tasks that aren't on it. The reason's regex counts code points, so it lets through a little more
+      // than the app's 120 UTF-16 units (a reason full of emoji). Ticks aren't checked against the log
+      // (that would read the plan on every tick); the app refuses them. Reads: the period, which
+      // canPlan already read, and the space, which appendsTask already read.
+      function togglesCancel(spaceId, coll, id, uid) {
+        let w = getAfter(periodPath(spaceId, coll, id)).data;
+        let d = incoming();
+        let before = existing().get('cancels', {});
+        let after = d.get('cancels', {});
+        let ks = after.keys().removeAll(before.keys());
+        let k = ks.size() == 1 ? ks[0] : '';
+        let n = k.matches('[1-5]:[A-Za-z0-9_-]{1,64}') ? int(k[0:1]) : 0;
+        let v = after.get(k, {});
+        return resource != null && isUser(uid) && n > 0
+          && w.lockAt <= request.time && request.time < w.reviewOpenAt
+          && uid in w.members && !(uid in w.get('judges', [])) && isMember(spaceId)
+          && d.diff(existing()).affectedKeys().hasOnly(['cancels', 'updatedAt']) && d.updatedAt == request.time
+          && after.size() <= 125 && after.diff(before).affectedKeys().hasOnly([k])
+          && (n == 1 || (string(n - 1) + k[1:k.size()]) in before)
+          && v.at == request.time
+          && (n % 2 == 0 ? exactKeys(v, ['at'])
+                         : exactKeys(v, ['at', 'why']) && v.why.matches('[^\\n\\r]{1,120}') && v.why.trim().size() > 0);
       }
       function canTick(spaceId, coll, id, uid) {
         let w = getAfter(periodPath(spaceId, coll, id)).data;
@@ -893,8 +937,10 @@ service cloud.firestore {
           && rid == uid + '_' + d.revieweeId
           && d.submittedAt == request.time
           && d.marks is map && validMarkKeys(d.marks.keys())
-          // `in` and hasOnly() tell ints from floats, so both spellings of 0 and 1 are listed.
-          && d.marks.values().hasOnly([0, 0.5, 1, 0.0, 1.0])
+          // `in` and hasOnly() tell ints from floats, so both spellings of 0 and 1 are listed. 'fair' is
+          // the vote on a crossed-out task (SPEC §10.4); which tasks are crossed out would cost a read
+          // of the plan, so the domain counts 'fair' as 0 on any other task.
+          && d.marks.values().hasOnly([0, 0.5, 1, 0.0, 1.0, 'fair'])
           && uid in w.members && d.revieweeId in w.members
           && w.reviewOpenAt <= request.time && request.time < w.deadlineAt
           && !(uid in w.submittedBy)
@@ -936,13 +982,15 @@ service cloud.firestore {
         match /plans/{uid} {
           allow read: if isMember(spaceId);
           // Before lockAt the whole list is written ({tasks, updatedAt}: both are read, so hasOnly
-          // is enough), and after it tasks are only appended.
+          // is enough); after it, tasks are only appended, crossed out and restored. Keep this order
+          // (SPEC §10.7): the whole list first, so it costs what it always did.
           allow create, update: if (canPlan(spaceId, 'weeks', weekId, uid)
               && incoming().keys().hasOnly(['tasks', 'updatedAt'])
               && validTasks(incoming().tasks)
               && incoming().updatedAt == request.time)
-            || appendsTask(spaceId, weekId, uid);
-          // Before lockAt only: added tasks can't be taken back.
+            || appendsTask(spaceId, 'weeks', weekId, uid, 0)
+            || togglesCancel(spaceId, 'weeks', weekId, uid);
+          // Before lockAt only: added and crossed-out tasks can't be taken back.
           allow delete: if canPlan(spaceId, 'weeks', weekId, uid);
         }
 
@@ -963,8 +1011,9 @@ service cloud.firestore {
         }
       }
 
-      // A month's list (SPEC §9.5): the same as a week, except that it is never appended to and old
-      // clients never touch it. The collection is `monthly` (`months` holds the frozen house stakes).
+      // A month's list (SPEC §9.5): the same as a week, except that only someone who had a task on it at
+      // its lock can append to it (SPEC §10.2), and old clients never touch it. The collection is
+      // `monthly` (`months` holds the frozen house stakes).
       match /monthly/{monthId} {
         allow read: if isMember(spaceId);
         allow create: if isMember(spaceId) && validNewMonthly(spaceId, monthId, incoming());
@@ -973,10 +1022,13 @@ service cloud.firestore {
 
         match /plans/{uid} {
           allow read: if isMember(spaceId);
-          allow create, update: if canPlan(spaceId, 'monthly', monthId, uid)
-            && incoming().keys().hasOnly(['tasks', 'updatedAt'])
-            && validTasks(incoming().tasks)
-            && incoming().updatedAt == request.time;
+          // As for a week, in the same order (SPEC §10.7).
+          allow create, update: if (canPlan(spaceId, 'monthly', monthId, uid)
+              && incoming().keys().hasOnly(['tasks', 'updatedAt'])
+              && validTasks(incoming().tasks)
+              && incoming().updatedAt == request.time)
+            || appendsTask(spaceId, 'monthly', monthId, uid, 1)
+            || togglesCancel(spaceId, 'monthly', monthId, uid);
           allow delete: if canPlan(spaceId, 'monthly', monthId, uid);
         }
 

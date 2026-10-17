@@ -1,18 +1,25 @@
-// The rules' worst cases against Firestore's limits (SPEC §9.9): at most 1000 expressions per
+// The rules' worst cases against Firestore's limits (SPEC §9.9, §10.7): at most 1000 expressions per
 // request, and at most 10 document reads per request (20 for a batch or transaction). Each case below
 // must pass against the published rules.
 //
 // Measured headroom: `MEASURE=<out.json> npx firebase emulators:exec --only firestore --project
 // demo-stakes "npx vitest run --config vitest.rules.config.ts tests/rules/budget.test.ts -t 'every case'"`
 // re-runs each case with k cheap terms appended to the condition that allows it, and the largest k
-// that still passes is its headroom (a term is 5.24 expressions: 191 of them alone fill the limit);
-// then likewise with k reads of missing docs (tried up to 10). Measured 2026-10-14 (emulator of
-// firebase-tools 15.33):
+// that still passes is its headroom (a term is 5.24 expressions: 191 of them alone fill the limit, so
+// a change of a few expressions may not show); then likewise with k reads of missing docs (tried up to
+// 10). MEASURE_ONLY=<regex> measures only the cases whose names match. Measured 2026-10-14 (emulator of
+// firebase-tools 15.33), the plan and review rows again on 2026-10-17 for batch 2.5:
 //
 //   case                                                       used   headroom   spare reads
-//   week plan, 25 × 8, batched with the week fill               895      105          10
-//   week append after the lock: the 25th full task              304      696           8
-//   monthly plan, 25 × 8, batched with syncsPeriod              895      105          10
+//   week plan, 25 × 8, batched with the week fill               895      105          10   (unchanged)
+//   week append, the 25th full task, old client's set, no log   325      675           8   (was 304)
+//   week append, the 25th full task, 120-entry log (update)     325      675           8
+//   week cross-out: 5th change of the 25th of 25 × 8 tasks,     482      518           8
+//     124 log entries, a 120-character reason
+//   monthly plan, 25 × 8, batched with syncsPeriod              895      105           9   (unchanged; the
+//     batch-2 rules leave 9 spare reads too: the 10 recorded before was a slip)
+//   monthly append, the 25th full task, 120-entry log           325      675           8
+//   monthly cross-out, as the week's                            482      518           8
 //   validNewWeek: own times, judges, a note, 8 members          450      550           9
 //   retimesWeek, 8 members (last in the week chain)             534      466           9
 //   syncsPeriod on a week, 8 members                            157      843           9
@@ -30,17 +37,22 @@
 //   months create, its last week and list stored                288      712           7
 //   months re-freeze of an early freeze                         319      681           7
 //   owner's house-stakes edit, the space op (2 freezes)         702      298          10
-//   monthly review with 25 marks, one of a 7-review submit      487      513           9
+//   weekly review, 25 marks (one 'fair'), of a 7-review submit  487      513           9
+//   monthly review, 25 marks (one 'fair'), of a 7-review submit 487      513           9   ('fair': < 1 term)
 //   setJudge, the space op of space + 4 periods                 283      717          10
 //   settlement, one of a group line of 7                        241      759           9
 //
 // The plan path keeps canPlan's judge check: its headroom (105) is above the 40 SPEC §9.4 asks for.
+// The plan rules try the whole list, then an append, then a cross-out (SPEC §10.7), so a cross-out
+// pays for both branches before it; that order keeps the whole-list save at 895 (guarded at the end
+// of this file). Don't reorder them to make cross-outs cheaper.
 // "moved clock": validNewMonthly can't run on real time on most days, so it is measured on the
 // calendar.test.ts variant, which costs a little more than the published rule.
 import { describe, expect, test } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import {
-  arrayRemove, arrayUnion, deleteField, doc, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch, type DocumentData, type Firestore,
+  arrayRemove, arrayUnion, deleteField, doc, FieldPath, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch,
+  type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
   addMonths, allowed, CUSTOM, DAY, fullTask, HOUR, mondayOf, monthlyDoc, monthlyOn, monthStr, monthWeeks, movedClock,
@@ -59,7 +71,34 @@ const M3 = addMonths(C, 3)
 const NEXT = mondayOf(ZONE, 1)
 const AFTER = mondayOf(ZONE, 2)
 const full = Array.from({ length: 25 }, (_, i) => fullTask(i))
-const marks25 = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`t${i}`.padEnd(64, 'x'), 0.5]))
+const ids = full.map((t) => t.id as string)
+/** 25 marks with 64-character keys, the first a fair vote on a crossed-out task (SPEC §10.4). */
+const marks25: Record<string, number | string> = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`t${i}`.padEnd(64, 'x'), i === 0 ? 'fair' : 0.5]))
+/** A cross-out log (SPEC §10.3): entries 1…upto for each task id, with 120-character reasons. */
+const cancelLog = (taskIds: string[], upto: number): DocumentData => {
+  const out: DocumentData = {}
+  const at = ts(Date.now() - HOUR)
+  for (const id of taskIds) for (let n = 1; n <= upto; n++) out[`${n}:${id}`] = n % 2 ? { at, why: 'W'.repeat(120) } : { at }
+  return out
+}
+/** What addTaskAfterLock and addMonthlyTaskAfterLock write once a plan exists: an update. */
+const appendUpdate = (fs: Firestore, path: string, task: DocumentData) =>
+  runTransaction(fs, async (tx) => {
+    const snap = await tx.get(doc(fs, path))
+    tx.update(doc(fs, path), { tasks: [...snap.get('tasks'), task], added: { ...snap.get('added'), [task.id]: serverTimestamp() }, updatedAt: serverTimestamp() })
+  })
+/** What crossOutTask writes: one log entry and updatedAt. */
+const crossOut = (fs: Firestore, path: string, key: string, why: string) =>
+  updateDoc(doc(fs, path), new FieldPath('cancels', key), { at: serverTimestamp(), why }, 'updatedAt', serverTimestamp())
+/** A full 25 × 8 plan whose last task was added after the lock and changed 4 times: 124 log entries. */
+const fullPlanWithLog = (): DocumentData => ({
+  tasks: full, added: { [ids[24]!]: ts(Date.now() - HOUR) }, cancels: { ...cancelLog(ids.slice(0, 24), 5), ...cancelLog([ids[24]!], 4) },
+  updatedAt: ts(Date.now() - HOUR),
+})
+/** 24 full tasks, the last added after the lock, each crossed out for good: 120 log entries. */
+const listOf24WithLog = (): DocumentData => ({
+  tasks: full.slice(0, 24), added: { [ids[23]!]: ts(Date.now() - HOUR) }, cancels: cancelLog(ids.slice(0, 24), 5), updatedAt: ts(Date.now() - HOUR),
+})
 
 type Db = (uid?: string) => Firestore
 type Case = {
@@ -77,14 +116,19 @@ const atEnd = (point: string) => ({ point, padded: point.replace(/;$/, ' && pad(
 const SPACE = atEnd('|| declinesPause() || finalizesPause());')
 const WEEK_UPDATE = atEnd('|| retimesWeek(spaceId, weekId));')
 const WEEK_CREATE = atEnd('validNewWeek(spaceId, weekId, incoming());')
-const WEEK_PLAN = {
-  point: '&& incoming().updatedAt == request.time)\n            || appendsTask(spaceId, weekId, uid);',
-  padded: '&& incoming().updatedAt == request.time && pad(1) && apad())\n            || appendsTask(spaceId, weekId, uid);',
-}
-const WEEK_APPEND = atEnd('&& d.added[t.id] == request.time;')
+/** Pads the whole-list branch of a plan rule (the first of three, SPEC §10.7). */
+const planBranch = (next: string) => ({
+  point: `&& incoming().updatedAt == request.time)\n            || ${next}`,
+  padded: `&& incoming().updatedAt == request.time && pad(1) && apad())\n            || ${next}`,
+})
+const WEEK_PLAN = planBranch("appendsTask(spaceId, 'weeks', weekId, uid, 0)")
+/** appendsTask is shared by weeks and monthly lists, and so is togglesCancel. */
+const APPEND = atEnd('&& d.added[t.id] == request.time;')
+const TOGGLE = { point: '&& v.why.trim().size() > 0);', padded: '&& v.why.trim().size() > 0) && pad(1) && apad();' }
+const WEEK_REVIEW = atEnd("validReview(spaceId, 'weeks', weekId, rid);")
 const MONTHLY_UPDATE = atEnd('|| retimesMonthly(spaceId, monthId));')
 const MONTHLY_CREATE = atEnd('validNewMonthly(spaceId, monthId, incoming());')
-const MONTHLY_PLAN = atEnd('validTasks(incoming().tasks)\n            && incoming().updatedAt == request.time;')
+const MONTHLY_PLAN = planBranch("appendsTask(spaceId, 'monthly', monthId, uid, 1)")
 const MONTHLY_REVIEW = atEnd("validReview(spaceId, 'monthly', monthId, rid);")
 const STAKES_CREATE = atEnd('&& incoming().agreed == {};')
 const STAKES_UPDATE = atEnd('(editsOwnStakes(spaceId, uid) || agreesToStakes(spaceId, uid));')
@@ -132,8 +176,8 @@ const CASES: Case[] = [
     },
   },
   {
-    name: 'week append after the lock: the 25th full task',
-    ...WEEK_APPEND,
+    name: 'week append after the lock: the 25th full task (old client: a set, no log)',
+    ...APPEND,
     seed: () => ({
       'spaces/s1': space({ judges: ['m1'] }),
       'spaces/s1/weeks/W': { ...weekDoc('active', M8), judges: ['m1'] },
@@ -150,6 +194,26 @@ const CASES: Case[] = [
     },
   },
   {
+    name: 'week append, the 25th full task, with a 120-entry log (an update)',
+    ...APPEND,
+    seed: () => ({
+      'spaces/s1': space({ judges: ['m1'] }),
+      'spaces/s1/weeks/W': { ...weekDoc('active', M8), judges: ['m1'] },
+      'spaces/s1/weeks/W/plans/m8': listOf24WithLog(),
+    }),
+    run: (db) => appendUpdate(db('m8'), 'spaces/s1/weeks/W/plans/m8', full[24]!),
+  },
+  {
+    name: 'week cross-out: the 5th change of the 25th task, 25 × 8, 124 entries, a 120-character reason',
+    ...TOGGLE,
+    seed: () => ({
+      'spaces/s1': space({ judges: ['m1'] }),
+      'spaces/s1/weeks/W': { ...weekDoc('active', M8), judges: ['m1'] },
+      'spaces/s1/weeks/W/plans/m8': fullPlanWithLog(),
+    }),
+    run: (db) => crossOut(db('m8'), 'spaces/s1/weeks/W/plans/m8', `5:${ids[24]}`, 'Ж'.repeat(120)),
+  },
+  {
     name: 'monthly plan, 25 × 8, batched with syncsPeriod',
     ...MONTHLY_PLAN,
     seed: () => ({ 'spaces/s1': space({ judges: ['m1'] }), [`spaces/s1/monthly/${M2}`]: monthlyDoc('planning', M8.slice(0, 7), ['m1']) }),
@@ -160,6 +224,26 @@ const CASES: Case[] = [
       b.set(doc(fs, `spaces/s1/monthly/${M2}/plans/m8`), { tasks: full, updatedAt: serverTimestamp() })
       return b.commit()
     },
+  },
+  {
+    name: 'monthly append, the 25th full task, with a 120-entry log',
+    ...APPEND,
+    seed: () => ({
+      'spaces/s1': space({ judges: ['m1'] }),
+      [`spaces/s1/monthly/${C}`]: monthlyDoc('active', M8, ['m1']),
+      [`spaces/s1/monthly/${C}/plans/m8`]: listOf24WithLog(),
+    }),
+    run: (db) => appendUpdate(db('m8'), `spaces/s1/monthly/${C}/plans/m8`, full[24]!),
+  },
+  {
+    name: 'monthly cross-out: the 5th change of the 25th task, 25 × 8, 124 entries, a 120-character reason',
+    ...TOGGLE,
+    seed: () => ({
+      'spaces/s1': space({ judges: ['m1'] }),
+      [`spaces/s1/monthly/${C}`]: monthlyDoc('active', M8, ['m1']),
+      [`spaces/s1/monthly/${C}/plans/m8`]: fullPlanWithLog(),
+    }),
+    run: (db) => crossOut(db('m8'), `spaces/s1/monthly/${C}/plans/m8`, `5:${ids[24]}`, 'Ж'.repeat(120)),
   },
   {
     name: 'validNewWeek, own times, judges, a note, 8 members',
@@ -347,7 +431,19 @@ const CASES: Case[] = [
     },
   },
   {
-    name: 'monthly review, 25 marks, in a 7-review submit',
+    name: 'weekly review, 25 marks (one fair), in a 7-review submit',
+    ...WEEK_REVIEW,
+    seed: () => ({ 'spaces/s1': space(), 'spaces/s1/weeks/W': weekDoc('review', M8) }),
+    run: (db) => {
+      const fs = db('m1')
+      const b = writeBatch(fs)
+      for (const r of M8.slice(1)) b.set(doc(fs, `spaces/s1/weeks/W/reviews/m1_${r}`), { reviewerId: 'm1', revieweeId: r, marks: marks25, submittedAt: serverTimestamp() })
+      b.update(doc(fs, 'spaces/s1/weeks/W'), { submittedBy: arrayUnion('m1') })
+      return b.commit()
+    },
+  },
+  {
+    name: 'monthly review, 25 marks (one fair), in a 7-review submit',
     ...MONTHLY_REVIEW,
     seed: () => ({ 'spaces/s1': space(), [`spaces/s1/monthly/${C}`]: monthlyDoc('review', M8) }),
     run: (db) => {
@@ -486,8 +582,9 @@ describe.runIf(process.env.MEASURE)('measure headroom', () => {
     }, 260)
     const perTerm = 1000 / calTerms
     const rows: Array<Record<string, unknown>> = [{ calibration: `${calTerms} terms fill the limit: ${perTerm.toFixed(2)} expressions per term` }]
-    const only = process.env.MEASURE_ONLY
-    for (const c of CASES.filter((x) => !only || x.name.includes(only))) {
+    // MEASURE_ONLY: a regular expression over the case names (e.g. 'plan|cross-out').
+    const only = process.env.MEASURE_ONLY ? new RegExp(process.env.MEASURE_ONLY) : null
+    for (const c of CASES.filter((x) => !only || only.test(x.name))) {
       expect(await passes(c, 0, 0), `${c.name} fails unpadded`).toBe(true)
       const terms = await largest((k) => passes(c, k, 0), 200)
       const reads = await largest((k) => passes(c, 0, k), 11)
@@ -496,4 +593,22 @@ describe.runIf(process.env.MEASURE)('measure headroom', () => {
     await loadRules(PUBLISHED_RULES)
     writeFileSync(process.env.MEASURE!, JSON.stringify(rows, null, 2))
   })
+})
+
+// SPEC §10.7: the whole-list saves must cost exactly what they did before appends kept the cross-out
+// log and cross-outs existed (895, so the 20 pad terms of their measured 105 of headroom still fit).
+// If one of these fails, a change made every plan save more expensive: put new checks in the later
+// branches (append, cross-out), never in front of the whole-list branch.
+describe('the whole-list saves keep their measured headroom', () => {
+  const MEASURED_TERMS = 20
+  for (const name of ['week plan, 25 × 8, batched with the week fill', 'monthly plan, 25 × 8, batched with syncsPeriod']) {
+    test(name, async () => {
+      const c = CASES.find((x) => x.name === name)!
+      try {
+        expect(await passes(c, MEASURED_TERMS, 0), `${name} with ${MEASURED_TERMS} pad terms`).toBe(true)
+      } finally {
+        await loadRules(PUBLISHED_RULES)
+      }
+    })
+  }
 })

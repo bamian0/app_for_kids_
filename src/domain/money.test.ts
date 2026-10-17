@@ -501,6 +501,17 @@ describe('earnings by week and month', () => {
     expect(pendingIn(earnings, ['2026-10-26'])).toBe(0)
   })
 
+  it('pendingIn leaves out the earnings in `skip` (revenue tasks crossed out now, §10.5); without it, as before', () => {
+    const f = earningId('s1', '2026-10-19', 'f')
+    const c = earningId('s1', '2026-10-12', 'c')
+    expect(pendingIn(earnings, ['2026-10-12', '2026-10-19'], new Set([f]))).toBe(300)
+    expect(pendingIn(earnings, ['2026-10-12', '2026-10-19'], new Set([f, c]))).toBe(0)
+    // Ids of earned tasks, of other weeks or unknown ones change nothing.
+    expect(pendingIn(earnings, ['2026-10-12', '2026-10-19'], new Set([earningId('s1', '2026-10-12', 'a'), earningId('s1', '2026-10-26', 'e'), 'nope']))).toBe(399)
+    expect(pendingIn(earnings, ['2026-10-12', '2026-10-19'], new Set())).toBe(399)
+    expect(pendingIn(earnings, ['2026-10-12', '2026-10-19'], undefined)).toBe(399)
+  })
+
   it('totalEarned', () => {
     expect(totalEarned(earnings)).toBe(800 + 200.5 + 150 + 1000 + 400 + 70)
     expect(totalEarned([])).toBe(0)

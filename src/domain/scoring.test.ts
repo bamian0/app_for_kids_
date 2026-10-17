@@ -14,8 +14,9 @@ import {
   spaceJudges,
   taskSelfFraction,
 } from './scoring.ts'
-import { monthCompleteAt, monthlyBounds, weekBounds } from './time.ts'
-import type { Mark, MonthlyData, Review, Space, Task, UID, WeekData, WeekId, WeekSchedule } from './types.ts'
+import { computeMonth as oracleMonth, computeMonthly as oracleMonthly, computeWeek as oracleWeek } from './scoring-legacy-oracle.ts'
+import { monthCompleteAt, monthlyBounds, weekBounds, weekIdsInMonth } from './time.ts'
+import type { Mark, MonthlyData, Review, ReviewMark, Space, Task, TaskCancel, UID, WeekData, WeekId, WeekSchedule } from './types.ts'
 
 const TZ = 'Europe/Paris'
 const H = 3_600_000
@@ -1117,5 +1118,455 @@ describe('monthEndsAt and completion by stored deadlines (§9.6)', () => {
     const empty: WeekData = { spaceId: 's1', weekId: W, week: null, plans: {}, progress: {}, reviews: [] }
     expect(computeWeek(empty, space(['a']), b.lockAt + H).phase).toBe('active')
     expect(computeWeek(empty, { ...space(['a']), schedule: tuesdayNoon }, b.lockAt + H).phase).toBe('planning')
+  })
+})
+
+// ---------- Batch 2.5 (SPEC §10.4): crossed-out tasks and the fair vote ----------
+
+const WHY = 'The pool is closed all week'
+
+function cancelOf(changes: number): TaskCancel {
+  return { cancelled: changes % 2 === 1, changes, at: b.lockAt + changes * H, why: WHY }
+}
+
+/** Crosses out the listed tasks of `uid` (an even `changes`: crossed out, then restored). */
+function crossOut<T extends WeekData | MonthlyData>(data: T, uid: UID, ids: string[], changes = 1): T {
+  const plan = data.plans[uid]
+  const tasks = plan.tasks.map((t) => (ids.includes(t.id) ? { ...t, cancel: cancelOf(changes) } : t))
+  return { ...data, plans: { ...data.plans, [uid]: { ...plan, tasks } } }
+}
+
+/** A submitted review with exactly these marks (a task left out: no mark). */
+function withReview<T extends WeekData | MonthlyData>(data: T, reviewerId: UID, revieweeId: UID, marks: Record<string, ReviewMark>): T {
+  return { ...data, reviews: [...data.reviews, { id: `${reviewerId}_${revieweeId}`, reviewerId, revieweeId, marks, submittedAt: 0 }] }
+}
+
+function withDone<T extends WeekData | MonthlyData>(data: T, uid: UID, ids: string[]): T {
+  return { ...data, progress: { ...data.progress, [uid]: { uid, done: Object.fromEntries(ids.map((id) => [id, true])), updatedAt: 0 } } }
+}
+
+describe('crossed-out tasks: the vote (§10.4)', () => {
+  /** a has 4 tasks and crossed out a2; everyone else only reviews. */
+  const four = (members: UID[] = ['a', 'b', 'c', 'd']) => crossOut(weekData(W, { members, tasks: { a: 4 }, submittedBy: members }), 'a', ['a2'])
+
+  it('3 reviewers, 2 say fair: excused, left out of the marks and the task count', () => {
+    let data = four()
+    data = withReview(data, 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 0.5 })
+    data = withReview(data, 'c', 'a', { a1: 1, a2: 'fair', a3: 0.5, a4: 0 })
+    data = withReview(data, 'd', 'a', { a1: 0.5, a2: 0, a3: 1, a4: 1 })
+    const a = computeWeek(data, space(['a', 'b', 'c', 'd']), afterDeadline).members.a
+    // 2.5 + 2.5 + 1.5 of 3 tasks × 3 reviewers.
+    expect(a).toMatchObject({ taskCount: 4, score: 650 / 9, cancelledCount: 1, excusedCount: 1, skipped: false, reviewedBy: ['b', 'c', 'd'] })
+    expect(a.tasks[1]).toMatchObject({ taskId: 'a2', mark: 0, source: 'reviews', reviewerMarks: { b: 0, c: 0, d: 0 }, fairBy: ['b', 'c'], excused: true, cancel: cancelOf(1) })
+    // The other tasks are as always, without vote fields.
+    expect(a.tasks[0]).toMatchObject({ mark: 2.5 / 3, reviewerMarks: { b: 1, c: 1, d: 0.5 } })
+    for (const t of [a.tasks[0], a.tasks[2], a.tasks[3]]) expect(['cancel' in t, 'fairBy' in t, 'excused' in t]).toEqual([false, false, false])
+  })
+
+  it('3 reviewers: 1 says fair → counts 0 in all 4 tasks; all 3 say fair → excused', () => {
+    let one = four()
+    one = withReview(one, 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 0.5 })
+    one = withReview(one, 'c', 'a', { a1: 1, a2: 0, a3: 0.5, a4: 0 })
+    one = withReview(one, 'd', 'a', { a1: 0.5, a2: 0, a3: 1, a4: 1 })
+    const a = computeWeek(one, space(['a', 'b', 'c', 'd']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 650 / 12, excusedCount: 0, cancelledCount: 1, skipped: false })
+    expect(a.tasks[1]).toMatchObject({ mark: 0, fairBy: ['b'], excused: false })
+
+    let all = four()
+    for (const r of ['b', 'c', 'd']) all = withReview(all, r, 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 })
+    expect(computeWeek(all, space(['a', 'b', 'c', 'd']), afterDeadline).members.a).toMatchObject({ score: 100, excusedCount: 1 })
+  })
+
+  it('a tie is Not Done: 2 reviewers with 1 fair, 4 reviewers with 2 fair', () => {
+    let two = four(['a', 'b', 'c'])
+    two = withReview(two, 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 0.5 })
+    two = withReview(two, 'c', 'a', { a1: 1, a2: 0, a3: 0.5, a4: 0 })
+    const a = computeWeek(two, space(['a', 'b', 'c']), afterDeadline).members.a
+    // 4 of 4 tasks × 2 reviewers: a2 counts 0.
+    expect(a).toMatchObject({ score: 50, excusedCount: 0, skipped: false })
+    expect(a.tasks[1]).toMatchObject({ mark: 0, fairBy: ['b'], excused: false, reviewerMarks: { b: 0, c: 0 } })
+
+    let fourR = four(['a', 'b', 'c', 'd', 'e'])
+    for (const [r, vote] of [['b', 'fair'], ['c', 'fair'], ['d', 0], ['e', 0]] as const) fourR = withReview(fourR, r, 'a', { a1: 1, a2: vote, a3: 1, a4: 1 })
+    const tie = computeWeek(fourR, space(['a', 'b', 'c', 'd', 'e']), afterDeadline).members.a
+    expect(tie).toMatchObject({ score: 75, excusedCount: 0 })
+    expect(tie.tasks[1]).toMatchObject({ fairBy: ['b', 'c'], excused: false })
+  })
+
+  it('1 reviewer: fair excuses it, Not Done counts 0', () => {
+    const fair = withReview(four(['a', 'b']), 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 0.5 })
+    expect(computeWeek(fair, space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 250 / 3, excusedCount: 1 })
+    const notDone = withReview(four(['a', 'b']), 'b', 'a', { a1: 1, a2: 0, a3: 1, a4: 0.5 })
+    expect(computeWeek(notDone, space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 62.5, excusedCount: 0 })
+  })
+
+  it('a judge’s vote counts like anyone’s', () => {
+    const base = judged(four(['a', 'b', 'j']), ['j'])
+    const both = withReview(withReview(base, 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 }), 'j', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 })
+    const a = computeWeek(both, space(['a', 'b', 'j']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 100, excusedCount: 1, reviewedBy: ['b', 'j'] })
+    expect(a.tasks[1].fairBy).toEqual(['b', 'j'])
+    // The judge says Not Done: a tie.
+    const split = withReview(withReview(base, 'b', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 }), 'j', 'a', { a1: 1, a2: 0, a3: 1, a4: 1 })
+    expect(computeWeek(split, space(['a', 'b', 'j']), afterDeadline).members.a).toMatchObject({ score: 75, excusedCount: 0 })
+    // A judge has no list, so nothing of theirs is crossed out.
+    expect(computeWeek(split, space(['a', 'b', 'j']), afterDeadline).members.j).toMatchObject({ judge: true, taskCount: 0, score: null })
+  })
+
+  it('a reviewer who left after submitting counts; a member who didn’t submit doesn’t', () => {
+    // c left the space on Wednesday after reviewing; e never submitted.
+    const sp: Space = { ...space(['a', 'b', 'd', 'e']), leftAt: { c: b.lockAt + 2 * H } }
+    let data = four(['a', 'b', 'c', 'd', 'e'])
+    data = withReview(data, 'b', 'a', { a1: 1, a2: 0, a3: 1, a4: 1 })
+    data = withReview(data, 'd', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 })
+    const withC = withReview(data, 'c', 'a', { a1: 1, a2: 'fair', a3: 1, a4: 1 })
+    // 2 of the 3 reviews say fair (e's missing review isn't a vote).
+    expect(computeWeek(withC, sp, afterDeadline).members.a).toMatchObject({ score: 100, excusedCount: 1, reviewedBy: ['b', 'd', 'c'] })
+    // Without c's review: 1 of 2, a tie.
+    expect(computeWeek(data, sp, afterDeadline).members.a).toMatchObject({ score: 75, excusedCount: 0, reviewedBy: ['b', 'd'] })
+  })
+
+  it('an old client’s Done or Half on a crossed-out task is Not Done', () => {
+    let data = crossOut(weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 2 }, submittedBy: ['a', 'b', 'c'] }), 'a', ['a2'])
+    data = withReview(data, 'b', 'a', { a1: 1, a2: 1 })
+    data = withReview(data, 'c', 'a', { a1: 1, a2: 0.5 })
+    const a = computeWeek(data, space(['a', 'b', 'c']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 50, excusedCount: 0 })
+    expect(a.tasks[1]).toMatchObject({ mark: 0, reviewerMarks: { b: 0, c: 0 }, fairBy: [], excused: false })
+  })
+
+  it('a missing mark is not fair, and an empty review still counts as a review', () => {
+    const base = crossOut(weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 2 }, submittedBy: ['a', 'b', 'c'] }), 'a', ['a2'])
+    const skipped = withReview(withReview(base, 'b', 'a', { a1: 1, a2: 'fair' }), 'c', 'a', { a1: 1 })
+    expect(computeWeek(skipped, space(['a', 'b', 'c']), afterDeadline).members.a).toMatchObject({ score: 50, excusedCount: 0 })
+    const empty = withReview(withReview(base, 'b', 'a', { a1: 1, a2: 'fair' }), 'c', 'a', {})
+    expect(computeWeek(empty, space(['a', 'b', 'c']), afterDeadline).members.a).toMatchObject({ score: 25, excusedCount: 0, reviewedBy: ['b', 'c'] })
+  })
+
+  it('a fair vote on a task that isn’t crossed out counts 0', () => {
+    const plain = withReview(weekData(W, { members: ['a', 'b'], tasks: { a: 2 }, submittedBy: ['a', 'b'] }), 'b', 'a', { a1: 'fair', a2: 1 })
+    const a = computeWeek(plain, space(['a', 'b']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 50, cancelledCount: 0, excusedCount: 0 })
+    expect(a.tasks[0]).toMatchObject({ mark: 0, reviewerMarks: { b: 0 } })
+    expect('fairBy' in a.tasks[0]).toBe(false)
+    // a2 crossed out after b's Done (a lost race, §10.12): Not Done; a1's fair is still 0.
+    expect(computeWeek(crossOut(plain, 'a', ['a2']), space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 0, excusedCount: 0 })
+    // Fair on both: a2 is excused, a1 still counts 0.
+    const crossedA2 = withReview(weekData(W, { members: ['a', 'b'], tasks: { a: 2 }, submittedBy: ['a', 'b'] }), 'b', 'a', { a1: 'fair', a2: 'fair' })
+    expect(computeWeek(crossOut(crossedA2, 'a', ['a2']), space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 0, excusedCount: 1, skipped: false })
+  })
+
+  it('nobody reviewed: the self check-offs of every task count, crossed-out ones included; nothing is excused', () => {
+    // a ticked a1 before crossing it out; b never reviewed a.
+    const data = withDone(crossOut(weekData(W, { members: ['a', 'b'], tasks: { a: 2, b: 1 }, submittedBy: ['a'] }), 'a', ['a1']), 'a', ['a1'])
+    const a = computeWeek(withReview(data, 'a', 'b', { b1: 1 }), space(['a', 'b']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 50, provisionalScore: 0, reviewedBy: [], cancelledCount: 1, excusedCount: 0, skipped: false })
+    expect(a.tasks[0]).toMatchObject({ mark: 1, source: 'self', fairBy: [], excused: false, selfDone: true })
+    // Every task crossed out, nobody reviewed: still the self check-offs (not skipped), no provisional score.
+    const all = withDone(crossOut(weekData(W, { members: ['a', 'b'], tasks: { a: 2 } }), 'a', ['a1', 'a2']), 'a', ['a1'])
+    expect(computeWeek(all, space(['a', 'b']), afterDeadline).members.a).toMatchObject({ score: 50, provisionalScore: null, skipped: false, excusedCount: 0 })
+  })
+
+  it('every task excused: the period is skipped (score null, not 0%)', () => {
+    let data = crossOut(weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 2, b: 1 }, submittedBy: ['a', 'b', 'c'] }), 'a', ['a1', 'a2'])
+    data = withReview(data, 'b', 'a', { a1: 'fair', a2: 'fair' })
+    data = withReview(data, 'c', 'a', { a1: 'fair', a2: 'fair' })
+    const r = computeWeek(data, space(['a', 'b', 'c']), afterDeadline)
+    expect(r.members.a).toMatchObject({ participating: true, taskCount: 2, score: null, provisionalScore: null, skipped: true, cancelledCount: 2, excusedCount: 2 })
+    expect(r.members.a.tasks.map((t) => t.excused)).toEqual([true, true])
+    // Others are unaffected; a still had to review b (a didn't: a misses it).
+    expect(r.members.a.missedReviewsOf).toEqual(['b'])
+    expect(r.members.b).toMatchObject({ skipped: false, cancelledCount: 0, excusedCount: 0 })
+    // One excused, one not: 0%, not skipped.
+    const half = withReview(withReview(crossOut(weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 2 }, submittedBy: ['a', 'b', 'c'] }), 'a', ['a1', 'a2']), 'b', 'a', { a1: 'fair', a2: 'fair' }), 'c', 'a', { a1: 'fair', a2: 0 })
+    expect(computeWeek(half, space(['a', 'b', 'c']), afterDeadline).members.a).toMatchObject({ score: 0, skipped: false, excusedCount: 1 })
+  })
+
+  it('someone whose every task is crossed out is still a review target: skipping their vote costs as before', () => {
+    const data = withReview(crossOut(weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1 }, submittedBy: ['b', 'c'] }), 'a', ['a1']), 'c', 'a', { a1: 'fair' })
+    expect(reviewTargets(data, 'b')).toEqual(['a'])
+    const r = computeWeek(data, space(['a', 'b', 'c']), afterDeadline)
+    expect(r.members.b.missedReviewsOf).toEqual(['a'])
+    // c's vote is the only one: excused.
+    expect(r.members.a).toMatchObject({ skipped: true, score: null, reviewedBy: ['c'] })
+  })
+
+  it('a restored task (2 or 4 changes) scores and ticks as normal; its log is still reported', () => {
+    let data = weekData(W, { members: ['a', 'b'], tasks: { a: 2 }, done: { a: 1 }, submittedBy: ['a', 'b'] })
+    data = crossOut(crossOut(data, 'a', ['a1'], 2), 'a', ['a2'], 4)
+    const before = computeWeek(data, space(['a', 'b']), duringWeek).members.a
+    expect(before).toMatchObject({ provisionalScore: 50, cancelledCount: 0 })
+    data = withReview(data, 'b', 'a', { a1: 1, a2: 'fair' })
+    const a = computeWeek(data, space(['a', 'b']), afterDeadline).members.a
+    expect(a).toMatchObject({ score: 50, cancelledCount: 0, excusedCount: 0, skipped: false })
+    expect(a.tasks[0]).toMatchObject({ mark: 1, cancel: cancelOf(2) })
+    expect(a.tasks[1]).toMatchObject({ mark: 0, cancel: cancelOf(4) })
+    for (const t of a.tasks) expect(['fairBy' in t, 'excused' in t]).toEqual([false, false])
+  })
+
+  it('the provisional score leaves crossed-out tasks out; null when every task is', () => {
+    const data = weekData(W, { members: ['a', 'b'], tasks: { a: 3 }, done: { a: 2 } })
+    expect(computeWeek(data, space(['a', 'b']), duringWeek).members.a.provisionalScore).toBeCloseTo(200 / 3, 12)
+    // a1 (ticked) crossed out: a2 ticked, a3 not.
+    expect(computeWeek(crossOut(data, 'a', ['a1']), space(['a', 'b']), duringWeek).members.a).toMatchObject({ provisionalScore: 50, cancelledCount: 1, taskCount: 3 })
+    // a3 (not ticked) crossed out: both left are ticked.
+    expect(computeWeek(crossOut(data, 'a', ['a3']), space(['a', 'b']), duringWeek).members.a.provisionalScore).toBe(100)
+    expect(computeWeek(crossOut(data, 'a', ['a1', 'a2', 'a3']), space(['a', 'b']), duringWeek).members.a).toMatchObject({ provisionalScore: null, cancelledCount: 3 })
+    // Steps: the share of steps ticked, as always, for the tasks left.
+    const stepped = withDone(weekData(W, { members: ['a'], tasks: {} }), 'a', ['s1', 's3'])
+    stepped.plans.a = { uid: 'a', tasks: [{ id: 'x', title: 'x', subtasks: [{ id: 's1', title: '1' }, { id: 's2', title: '2' }] }, { id: 'y', title: 'y', subtasks: [{ id: 's3', title: '3' }] }], updatedAt: 0 }
+    expect(computeWeek(crossOut(stepped, 'a', ['y']), space(['a']), duringWeek).members.a.provisionalScore).toBe(50)
+    // No tasks: 0 for a week, as before.
+    expect(computeWeek(data, space(['a', 'b']), duringWeek).members.b.provisionalScore).toBe(0)
+  })
+
+  it('nothing is excused before the reveal: the caller sees the votes they can, the excusal comes with the results', () => {
+    const data = withReview(crossOut(weekData(W, { members: ['a', 'b'], tasks: { a: 1, b: 1 }, submittedBy: ['b'] }), 'a', ['a1']), 'b', 'a', { a1: 'fair' })
+    const before = computeWeek(data, space(['a', 'b']), duringReview)
+    expect(before.revealed).toBe(false)
+    expect(before.members.a).toMatchObject({ score: null, provisionalScore: null, cancelledCount: 1, excusedCount: 0, skipped: false })
+    expect(before.members.a.tasks[0]).toMatchObject({ fairBy: ['b'], excused: false })
+    // a submits: revealed, excused, the week is skipped for a.
+    const after = computeWeek({ ...data, week: data.week && { ...data.week, submittedBy: ['b', 'a'] } }, space(['a', 'b']), duringReview)
+    expect(after.revealed).toBe(true)
+    expect(after.members.a).toMatchObject({ score: null, skipped: true, excusedCount: 1 })
+    expect(after.members.a.tasks[0].excused).toBe(true)
+  })
+
+  it('a paused week stays all-null: never skipped, nobody misses a review', () => {
+    const paused: Space = { ...space(['a', 'b']), paused: { '2026-10': W } }
+    const data = withReview(crossOut(weekData(W, { members: ['a', 'b'], tasks: { a: 1, b: 1 }, submittedBy: ['b'] }), 'a', ['a1']), 'b', 'a', { a1: 'fair' })
+    const r = computeWeek(data, paused, afterDeadline)
+    expect(r.paused).toBe(true)
+    expect(r.members.a).toMatchObject({ score: null, skipped: false, missedReviewsOf: [], cancelledCount: 1 })
+    expect(r.members.b).toMatchObject({ score: null, skipped: false, missedReviewsOf: [] })
+    // The vote itself is still reported once revealed.
+    expect(r.members.a.tasks[0].excused).toBe(true)
+  })
+
+  it('every non-judge entry carries the new fields; a judge’s stays as in batch 2', () => {
+    const r = computeWeek(judged(weekData(W, { members: ['a', 'j'], tasks: { a: 1 } }), ['j']), space(['a', 'j', 'late']), afterDeadline)
+    expect(r.members.a).toMatchObject({ cancelledCount: 0, excusedCount: 0, skipped: false })
+    expect(r.members.late).toMatchObject({ participating: false, cancelledCount: 0, excusedCount: 0, skipped: false })
+    expect(['cancelledCount' in r.members.j, 'excusedCount' in r.members.j, 'skipped' in r.members.j]).toEqual([false, false, false])
+  })
+})
+
+describe('crossed-out tasks on a monthly list (§10.4)', () => {
+  const M = '2026-10'
+  const listEnd = monthlyBounds(M, (w) => weekBounds(w, TZ)).deadlineAt
+  const list = () => crossOut(monthlyData(M, { members: ['a', 'b', 'c'], tasks: { a: 3 }, submittedBy: ['a', 'b', 'c'] }), 'a', ['a1'])
+
+  it('computeMonthly: the same vote, excusal and skipped list', () => {
+    const excused = withReview(withReview(list(), 'b', 'a', { a1: 'fair', a2: 1, a3: 0.5 }), 'c', 'a', { a1: 'fair', a2: 1, a3: 1 })
+    expect(computeMonthly(excused, space(['a', 'b', 'c']), listEnd).members.a).toMatchObject({ score: 87.5, excusedCount: 1, cancelledCount: 1, skipped: false })
+    const tie = withReview(withReview(list(), 'b', 'a', { a1: 'fair', a2: 1, a3: 0.5 }), 'c', 'a', { a1: 0, a2: 1, a3: 1 })
+    expect(computeMonthly(tie, space(['a', 'b', 'c']), listEnd).members.a).toMatchObject({ score: 3.5 / 6 * 100, excusedCount: 0 })
+    const all = withReview(crossOut(list(), 'a', ['a1', 'a2', 'a3']), 'b', 'a', { a1: 'fair', a2: 'fair', a3: 'fair' })
+    expect(computeMonthly(all, space(['a', 'b', 'c']), listEnd).members.a).toMatchObject({ taskCount: 3, score: null, skipped: true, excusedCount: 3, provisionalScore: null })
+    // No tasks: still no list (null), never skipped.
+    expect(computeMonthly(all, space(['a', 'b', 'c']), listEnd).members.b).toMatchObject({ taskCount: 0, score: null, provisionalScore: null, skipped: false })
+    // Provisional before the reveal leaves a1 out.
+    const ticked = withDone(crossOut(monthlyData(M, { members: ['a', 'b', 'c'], tasks: { a: 3 } }), 'a', ['a1']), 'a', ['a1', 'a2'])
+    expect(computeMonthly(ticked, space(['a', 'b', 'c']), listEnd - 30 * H).members.a).toMatchObject({ score: null, provisionalScore: 50, cancelledCount: 1 })
+  })
+})
+
+describe('computeMonth with crossed-out tasks (§10.4)', () => {
+  const M = '2026-10'
+  const complete = monthCompleteAt(M, TZ)
+  const listEnd = monthlyBounds(M, (w) => weekBounds(w, TZ)).deadlineAt
+
+  it('a skipped week is listed, never averaged, and its missed reviews still cost points', () => {
+    const w1 = weekData('2026-10-05', { members: ['a', 'b'], tasks: { a: 1, b: 1 }, reviews: allDone(['a', 'b'], { a: 1, b: 1 }), submittedBy: ['a', 'b'] })
+    // a crossed out their only task and b said fair; a never reviewed b.
+    const w2 = withReview(crossOut(weekData(W, { members: ['a', 'b'], tasks: { a: 1, b: 1 }, done: { b: 1 }, submittedBy: ['b'] }), 'a', ['a1']), 'b', 'a', { a1: 'fair' })
+    const res = computeMonth(space(['a', 'b']), M, [w1, w2], complete)
+    expect(res.a.weeks).toEqual([
+      { weekId: '2026-10-05', score: 100, closed: true },
+      { weekId: W, score: null, closed: true, skipped: true },
+    ])
+    expect(res.a).toMatchObject({ average: 100, missedReviews: 1, penaltyPoints: 5, finalScore: 95, passed: true, others: ['b'] })
+    // b: 100 and the self check-off fallback (nobody reviewed b), 100.
+    expect(res.b).toMatchObject({ average: 100, missedReviews: 0, others: ['a'] })
+    // Had a reviewed b, no points lost.
+    const reviewed = withReview(w2, 'a', 'b', { b1: 1 })
+    expect(computeMonth(space(['a', 'b']), M, [w1, reviewed], complete).a).toMatchObject({ average: 100, missedReviews: 0, finalScore: 100 })
+  })
+
+  it('every week skipped: no score, nothing owed; not a player, and judged weeks don’t count as 0%', () => {
+    // c judged the first week and crossed out their only task in the second; a and b said fair.
+    const w1 = judged(weekData('2026-10-05', { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1 }, reviews: allDone(['a', 'b', 'c'], { a: 1, b: 1 }), submittedBy: ['a', 'b', 'c'] }), ['c'])
+    const base = weekData(W, { members: ['a', 'b', 'c'], tasks: { a: 1, b: 1, c: 1 }, reviews: allDone(['a', 'b', 'c'], { a: 1, b: 1 }), submittedBy: ['a', 'b', 'c'] })
+    const w2 = withReview(withReview(crossOut(base, 'c', ['c1']), 'a', 'c', { c1: 'fair' }), 'b', 'c', { c1: 'fair' })
+    const res = computeMonth(space(['a', 'b', 'c']), M, [w1, w2], complete)
+    expect(res.c).toMatchObject({
+      weeks: [{ weekId: W, score: null, closed: true, skipped: true }],
+      judged: ['2026-10-05'],
+      average: null,
+      finalScore: null,
+      passed: null,
+      complete: true,
+      others: ['a', 'b'],
+    })
+    expect(res.a.others).toEqual(['b'])
+    expect(res.b.others).toEqual(['a'])
+    // Not excused (a tie): c plays, so the judged week counts as 0% next to the 0% week.
+    const tie = withReview(withReview(crossOut(base, 'c', ['c1']), 'a', 'c', { c1: 'fair' }), 'b', 'c', { c1: 0 })
+    const played = computeMonth(space(['a', 'b', 'c']), M, [w1, tie], complete)
+    expect(played.c).toMatchObject({ average: 0, finalScore: 0, passed: false })
+    expect(played.a.others).toEqual(['b', 'c'])
+  })
+
+  it('a skipped monthly list isn’t the extra week, but missed monthly reviews still count', () => {
+    // a: weeks of 100% and 80% (self check-offs); a’s list was all excused; b has a list a didn't review.
+    const weeks = [
+      weekData('2026-10-05', { members: ['a', 'b'], tasks: { a: 1, b: 0 }, done: { a: 1 } }),
+      weekData('2026-10-12', { members: ['a', 'b'], tasks: { a: 5, b: 0 }, done: { a: 4 } }),
+    ]
+    const base = monthlyData(M, { members: ['a', 'b'], tasks: { a: 2, b: 1 }, submittedBy: ['a', 'b'] })
+    const skipped = withReview(crossOut(base, 'a', ['a1', 'a2']), 'b', 'a', { a1: 'fair', a2: 'fair' })
+    const res = computeMonth(space(['a', 'b']), M, weeks, listEnd, skipped)
+    expect(res.a).toMatchObject({ average: 90, missedReviews: 1, penaltyPoints: 5, finalScore: 85, monthly: { score: null, closed: true, taskCount: 2, skipped: true } })
+    expect(res.b.monthly).toEqual({ score: 0, closed: true, taskCount: 1, skipped: false })
+    // Not skipped: the extra week counts (a's list at 50%).
+    const counted = withReview(crossOut(base, 'a', ['a1']), 'b', 'a', { a1: 0, a2: 1 })
+    const res2 = computeMonth(space(['a', 'b']), M, weeks, listEnd, counted)
+    expect(res2.a).toMatchObject({ monthly: { score: 50, skipped: false } })
+    expect(res2.a.average).toBeCloseTo(230 / 3, 9)
+  })
+
+  it('a skipped list alone doesn’t make a player; the month has no score', () => {
+    const base = monthlyData(M, { members: ['a', 'b'], tasks: { a: 1, b: 1 }, submittedBy: ['a', 'b'] })
+    const list = withReview(withReview(crossOut(base, 'a', ['a1']), 'b', 'a', { a1: 'fair' }), 'a', 'b', { b1: 1 })
+    const res = computeMonth(space(['a', 'b']), M, [], listEnd, list)
+    expect(res.a).toMatchObject({ average: null, finalScore: null, passed: null, monthly: { skipped: true }, others: ['b'] })
+    expect(res.b).toMatchObject({ average: 100, others: [] })
+  })
+})
+
+// ---------- With no cross-out, every result is batch 2's (SPEC §10.4, §10.11) ----------
+
+describe('no cross-out: every result equals the frozen batch-2 scoring', () => {
+  /** mulberry32: a small seeded generator, so a failure always replays. */
+  function rng(seed: number): () => number {
+    let a = seed
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  const UIDS = ['a', 'b', 'c', 'd', 'e']
+  /** Every value a stored mark can hold, including ones no client writes. */
+  const VALUES: unknown[] = [1, 1, 1, 0.5, 0.5, 0, 'fair', 'fair', undefined, 2, 'Fair', null]
+  const NEW_KEYS = new Set(['cancelledCount', 'excusedCount', 'skipped', 'cancel', 'fairBy', 'excused'])
+
+  function strip(v: unknown): unknown {
+    if (Array.isArray(v)) return v.map(strip)
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([k]) => !NEW_KEYS.has(k)).map(([k, x]) => [k, strip(x)]))
+    return v
+  }
+
+  function fixture(rand: () => number) {
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]
+    const some = (xs: readonly string[], p: number) => xs.filter(() => rand() < p)
+    const memberIds = some(UIDS, 0.75)
+    if (memberIds.length === 0) memberIds.push('a')
+    const leftAt: Record<UID, number> = {}
+    for (const uid of UIDS) if (!memberIds.includes(uid) && rand() < 0.6) leftAt[uid] = b.lockAt + (rand() < 0.5 ? -H : 2 * H)
+    const sp: Space = { ...space(memberIds), leftAt }
+    if (rand() < 0.3) sp.judges = some(UIDS, 0.3)
+    return { sp, pick, some }
+  }
+
+  function period(rand: () => number, pick: <T>(xs: readonly T[]) => T, some: (xs: readonly string[], p: number) => string[], id: string, bounds: ReturnType<typeof weekBounds>) {
+    const members = some(UIDS, 0.7)
+    const plans: WeekData['plans'] = {}
+    const progress: WeekData['progress'] = {}
+    for (const uid of UIDS) {
+      if (rand() < 0.15) continue
+      const tasks: Task[] = Array.from({ length: Math.floor(rand() * 5) }, (_, i) => {
+        const task: Task = { id: `${uid}${i + 1}`, title: `Task ${i + 1}` }
+        if (rand() < 0.3) task.subtasks = Array.from({ length: 1 + Math.floor(rand() * 4) }, (_, j) => ({ id: `${uid}${i + 1}s${j + 1}`, title: `Step ${j + 1}` }))
+        if (rand() < 0.2) task.addedAt = bounds.lockAt + H
+        // Crossed out, then restored (once or twice): no cross-out now.
+        if (rand() < 0.2) task.cancel = { cancelled: false, changes: pick([2, 4]), at: bounds.lockAt + H, why: WHY }
+        return task
+      })
+      plans[uid] = { uid, tasks, updatedAt: 0 }
+      const ids = tasks.flatMap((t) => [t.id, ...(t.subtasks ?? []).map((s) => s.id)])
+      progress[uid] = { uid, done: Object.fromEntries(some(ids, 0.6).map((x) => [x, rand() < 0.9])), updatedAt: 0 }
+    }
+    const reviews: Review[] = []
+    for (let i = Math.floor(rand() * 14); i > 0; i--) {
+      const reviewerId = pick(UIDS)
+      const revieweeId = pick(UIDS)
+      const marks: Record<string, ReviewMark> = {}
+      for (const t of plans[revieweeId]?.tasks ?? []) {
+        const v = pick(VALUES)
+        if (v !== undefined) marks[t.id] = v as ReviewMark
+      }
+      if (rand() < 0.1) marks.unknown = 1
+      reviews.push({ id: `${reviewerId}_${revieweeId}`, reviewerId, revieweeId, marks, submittedAt: 0 })
+    }
+    const doc = { id, spaceId: 's1', ...bounds, members, submittedBy: some(members, 0.6), judges: rand() < 0.3 ? some(members, 0.3) : undefined }
+    if (doc.judges === undefined) delete doc.judges
+    return { doc, plans, progress, reviews }
+  }
+
+  function expectNeutral(members: Record<UID, { judge?: boolean; cancelledCount?: number; excusedCount?: number; skipped?: boolean; tasks: { cancel?: TaskCancel }[] }>) {
+    for (const m of Object.values(members)) {
+      if (!m.judge) expect([m.cancelledCount, m.excusedCount, m.skipped]).toEqual([0, 0, false])
+      for (const t of m.tasks) expect(['fairBy' in t, 'excused' in t, t.cancel?.cancelled ?? false]).toEqual([false, false, false])
+    }
+  }
+
+  it('weeks and monthly lists: 600 random periods at every phase', () => {
+    const rand = rng(20261017)
+    for (let i = 0; i < 600; i++) {
+      const { sp, pick, some } = fixture(rand)
+      const nowMs = pick([b.lockAt - H, duringWeek, duringReview, b.deadlineAt - 1, afterDeadline])
+      if (rand() < 0.25) sp.paused = { '2026-10': W }
+      const w = period(rand, pick, some, W, b)
+      const week: WeekData = { spaceId: 's1', weekId: W, week: rand() < 0.1 ? null : w.doc, plans: w.plans, progress: w.progress, reviews: w.reviews }
+      const fresh = computeWeek(week, sp, nowMs)
+      expect(strip(fresh), `week fixture ${i}`).toEqual(oracleWeek(week, sp, nowMs))
+      expectNeutral(fresh.members)
+
+      const lb = monthlyBounds('2026-10', (x) => weekBounds(x, TZ))
+      const l = period(rand, pick, some, '2026-10', lb)
+      const list: MonthlyData = { spaceId: 's1', monthId: '2026-10', monthly: { ...l.doc, judges: l.doc.judges ?? [] }, plans: l.plans, progress: l.progress, reviews: l.reviews }
+      const listNow = pick([lb.lockAt + H, lb.reviewOpenAt + H, lb.deadlineAt - 1, lb.deadlineAt + H])
+      const freshList = computeMonthly(list, sp, listNow)
+      expect(strip(freshList), `list fixture ${i}`).toEqual(oracleMonthly(list, sp, listNow))
+      expectNeutral(freshList.members)
+    }
+  })
+
+  it('months: 200 random months of weeks and lists, with penalties, judges and pauses', () => {
+    const rand = rng(42)
+    const M = '2026-10'
+    const ids = weekIdsInMonth(M)
+    const lb = monthlyBounds(M, (x) => weekBounds(x, TZ))
+    for (let i = 0; i < 200; i++) {
+      const { sp, pick, some } = fixture(rand)
+      if (rand() < 0.3) sp.paused = { [M]: pick(ids) }
+      const weeks: WeekData[] = ids.map((weekId) => {
+        const p = period(rand, pick, some, weekId, weekBounds(weekId, TZ))
+        return { spaceId: 's1', weekId, week: rand() < 0.15 ? null : p.doc, plans: p.plans, progress: p.progress, reviews: p.reviews }
+      })
+      const l = period(rand, pick, some, M, lb)
+      const list: MonthlyData | undefined =
+        rand() < 0.2 ? undefined : { spaceId: 's1', monthId: M, monthly: { ...l.doc, judges: l.doc.judges ?? [] }, plans: l.plans, progress: l.progress, reviews: l.reviews }
+      const nowMs = pick([weekBounds(ids[2], TZ).deadlineAt + H, lb.reviewOpenAt + H, lb.deadlineAt, lb.deadlineAt + 24 * H])
+      const fresh = computeMonth(sp, M, weeks, nowMs, list)
+      expect(strip(fresh), `month fixture ${i}`).toEqual(oracleMonth(sp, M, weeks, nowMs, list))
+      for (const m of Object.values(fresh)) {
+        expect(m.weeks.some((e) => 'skipped' in e)).toBe(false)
+        if (m.monthly) expect(m.monthly.skipped).toBe(false)
+      }
+    }
   })
 })

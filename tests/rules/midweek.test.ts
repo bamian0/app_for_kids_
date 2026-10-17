@@ -1,9 +1,9 @@
 // weeks/{weekId}/plans/{uid} after the lock: one task at a time until the review window opens, with
-// its add time in `added` (SPEC §6.2).
+// its add time in `added` (SPEC §6.2), keeping the plan's cross-out log as it is (SPEC §10.7).
 import { describe, test } from 'vitest'
 import {
-  arrayUnion, deleteDoc, doc, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, type DocumentData,
-  type Firestore,
+  arrayUnion, deleteDoc, deleteField, doc, FieldPath, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc,
+  type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import { allDenied, allowed, DAY, denied, fullTask, HOUR, spaceDoc, ts, useRulesEnv, weekDoc, type Phase } from './helpers.ts'
 
@@ -13,12 +13,24 @@ const tasks = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`,
 const planRef = (fs: Firestore, uid: string) => doc(fs, `spaces/s1/weeks/W/plans/${uid}`)
 const late = (id = 'late1', extra: DocumentData = {}): DocumentData => ({ id, title: 'Color grade the reel', ...extra })
 
-/** What addTaskAfterLock writes: the stored list and add times back as they are, plus one task. */
+/** What addTaskAfterLock wrote before batch 2.5 (old clients still do): the stored list and add times
+ *  back as they are, plus one task, as a whole-doc set. */
 const append = (fs: Firestore, uid: string, task: DocumentData) =>
   runTransaction(fs, async (tx) => {
     const snap = await tx.get(planRef(fs, uid))
     tx.set(planRef(fs, uid), {
       tasks: [...(snap.get('tasks') ?? []), task],
+      added: { ...(snap.get('added') ?? {}), [task.id]: serverTimestamp() },
+      updatedAt: serverTimestamp(),
+    })
+  })
+/** What addTaskAfterLock writes from batch 2.5 on, once the plan exists: an update of the same three
+ *  fields, so the cross-out log stays. */
+const appendUpdate = (fs: Firestore, uid: string, task: DocumentData) =>
+  runTransaction(fs, async (tx) => {
+    const snap = await tx.get(planRef(fs, uid))
+    tx.update(planRef(fs, uid), {
+      tasks: [...snap.get('tasks'), task],
       added: { ...(snap.get('added') ?? {}), [task.id]: serverTimestamp() },
       updatedAt: serverTimestamp(),
     })
@@ -160,5 +172,45 @@ describe('plans after the lock', () => {
         'new plan': () => setDoc(planRef(db('bob'), 'bob'), { tasks: [late()], added: { late1: now() }, updatedAt: now() }),
       })
     }
+  })
+})
+
+describe('appends and the cross-out log (SPEC §10.7)', () => {
+  const LOG = { '1:t0': { at: ts(Date.now() - HOUR), why: 'The pool is closed' }, '2:t0': { at: ts(Date.now() - HOUR) } }
+  const withLog = () => seed({ 'spaces/s1/weeks/W/plans/alice': { tasks: STORED, added: STORED_ADDED, cancels: LOG, updatedAt: ts(Date.now() - HOUR) } })
+
+  test('the new append (an update) keeps the log and passes, with or without one', async () => {
+    await setup('active')
+    await allowed(appendUpdate(db('alice'), 'alice', late('late1', { subs: ['s1|Draft'] })))
+    await withLog()
+    await allowed(appendUpdate(db('alice'), 'alice', late('late2')))
+    await allowed(appendUpdate(db('alice'), 'alice', late('late3')))
+  })
+
+  test('the old whole-doc append passes without a log and is refused once there is one', async () => {
+    await setup('active')
+    await allowed(append(db('alice'), 'alice', late('late1')))
+    await withLog()
+    await denied(append(db('alice'), 'alice', late('late2')))
+    // The same write that copies the log back passes: it is the log's loss that is refused.
+    await allowed(write([...STORED, late('late2')], { ...STORED_ADDED, late2: now() }, { cancels: LOG }))
+  })
+
+  test('an append can\'t touch the log', async () => {
+    await setup('active')
+    const appendWith = (cancels: DocumentData) => write([...STORED, late()], { ...STORED_ADDED, late1: now() }, { cancels })
+    // (An empty map would pass: it reads as no log.)
+    await denied(appendWith({ '1:t0': { at: now(), why: 'Closed' } }))
+    await withLog()
+    const ref = planRef(db('alice'), 'alice')
+    await allDenied({
+      'adding an entry': () => appendWith({ ...LOG, '3:t0': { at: now(), why: 'Closed again' } }),
+      'removing an entry': () => appendWith({ '1:t0': LOG['1:t0'] }),
+      'rewriting a reason': () => appendWith({ ...LOG, '1:t0': { ...LOG['1:t0'], why: 'Another reason' } }),
+      'crossing out the new task with it': () =>
+        updateDoc(ref, 'tasks', [...STORED, late()], 'added', { ...STORED_ADDED, late1: now() }, 'updatedAt', now(), new FieldPath('cancels', '1:late1'), { at: now(), why: 'Closed' }),
+      'dropping the log in an update': () =>
+        updateDoc(ref, { tasks: [...STORED, late()], added: { ...STORED_ADDED, late1: now() }, updatedAt: now(), cancels: deleteField() }),
+    })
   })
 })

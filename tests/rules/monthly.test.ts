@@ -3,12 +3,12 @@
 // only be created in the 8 days before its month's first week, so real time can't reach most months).
 import { describe, expect, test } from 'vitest'
 import {
-  arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, query, serverTimestamp, setDoc,
-  Timestamp, updateDoc, where, writeBatch, type DocumentData, type Firestore,
+  arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, query, runTransaction,
+  serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
-  addMonths, allDenied, allowed, CUSTOM, denied, HOUR, monthlyDoc, monthlyOn, monthStr, monthWeeks, spaceDoc, ts,
-  useRulesEnv, USUAL, weekOn, type Phase,
+  addMonths, allDenied, allowed, CUSTOM, DAY, denied, fullTask, HOUR, monthlyDoc, monthlyOn, monthStr, monthWeeks,
+  spaceDoc, ts, useRulesEnv, USUAL, weekDoc, weekOn, type Phase,
 } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
@@ -36,15 +36,12 @@ describe('monthly plans', () => {
     await allowed(deleteDoc(planRef(alice, 'alice')))
   })
 
-  test('after the lock it can\'t change, grow or go', async () => {
+  test('after the lock it can\'t be rewritten or go; it only grows (below)', async () => {
     await setup('active')
     await seed({ [`spaces/s1/monthly/${M}/plans/alice`]: { tasks: tasks(2), updatedAt: Timestamp.now() } })
     const alice = db('alice')
     await allDenied({
       'rewrite': () => setDoc(planRef(alice, 'alice'), plan()),
-      'append like a week': () => updateDoc(planRef(alice, 'alice'), {
-        tasks: arrayUnion({ id: 'late', title: 'Late' }), 'added.late': serverTimestamp(), updatedAt: serverTimestamp(),
-      }),
       'a first task like a week': () => setDoc(planRef(db('bob'), 'bob'), {
         tasks: [{ id: 'late', title: 'Late' }], added: { late: serverTimestamp() }, updatedAt: serverTimestamp(),
       }),
@@ -73,6 +70,142 @@ describe('monthly plans', () => {
     await allowed(getDoc(listRef(db('erin'))))
     await denied(getDoc(planRef(db('zoe'), 'alice')))
     await denied(getDoc(listRef(db('zoe'))))
+  })
+})
+
+describe('monthly adds after the lock (SPEC §10.2)', () => {
+  const late = (id = 'late1', extra: DocumentData = {}): DocumentData => ({ id, title: 'Learn the bridge', ...extra })
+  const STORED = [...tasks(2), { id: 'late0', title: 'Book the studio', subs: ['s1|Call them'] }]
+  const STORED_ADDED = { late0: ts(Date.now() - DAY) }
+  const LOG = { '1:t0': { at: ts(Date.now() - HOUR), why: 'The teacher is away' } }
+  /** What addMonthlyTaskAfterLock writes: an update of tasks, added and updatedAt (never a set). */
+  const append = (uid: string, task: DocumentData) => {
+    const fs = db(uid)
+    return runTransaction(fs, async (tx) => {
+      const snap = await tx.get(planRef(fs, uid))
+      tx.update(planRef(fs, uid), {
+        tasks: [...snap.get('tasks'), task], added: { ...(snap.get('added') ?? {}), [task.id]: serverTimestamp() }, updatedAt: serverTimestamp(),
+      })
+    })
+  }
+  /** A write of alice's list built from the stored one: `tasks` and `added` as given. */
+  const write = (tasksAfter: DocumentData[], addedAfter: DocumentData, extra: DocumentData = {}) =>
+    setDoc(planRef(db('alice'), 'alice'), { tasks: tasksAfter, added: addedAfter, updatedAt: serverTimestamp(), ...extra })
+  const now = () => serverTimestamp()
+  /** Space s1 = alice, bob, carol, erin; the list in `phase` (or as given) with alice, bob, carol (its
+   *  judge) and dave (who left); alice's list as stored. */
+  const setupAdds = async (list: Phase | DocumentData, stored: DocumentData = { tasks: STORED, added: STORED_ADDED }) => {
+    await seed({
+      'spaces/s1': spaceDoc([...ABC, 'erin']),
+      [`spaces/s1/monthly/${M}`]: typeof list === 'string' ? monthlyDoc(list, ['alice', 'bob', 'carol', 'dave'], ['carol']) : list,
+      [`spaces/s1/monthly/${M}/plans/alice`]: { ...stored, updatedAt: ts(Date.now() - DAY) },
+    })
+  }
+
+  test('a player with a list at its lock appends one task at a time, with or without steps', async () => {
+    await setupAdds('active', { tasks: tasks(2) })
+    await allowed(append('alice', late('late1', { subs: ['s1|Slow', 's2|Up to tempo'] })))
+    await allowed(append('alice', late('late2')))
+    await allowed(updateDoc(planRef(db('alice'), 'alice'), { tasks: arrayUnion(late('late3')), 'added.late3': now(), updatedAt: now() }))
+    // A list with a single task at its lock grows too.
+    await setupAdds('active', { tasks: tasks(1) })
+    await allowed(append('alice', late()))
+  })
+
+  test('appends keep the cross-out log; a write that drops or changes it is refused', async () => {
+    await setupAdds('active', { tasks: STORED, added: STORED_ADDED, cancels: LOG })
+    await allDenied({
+      'a whole-doc set without the log': () => write([...STORED, late()], { ...STORED_ADDED, late1: now() }),
+      'a log entry added': () => write([...STORED, late()], { ...STORED_ADDED, late1: now() }, { cancels: { ...LOG, '2:t0': { at: now() } } }),
+    })
+    await allowed(append('alice', late()))
+  })
+
+  test('no list at the lock, or an empty one: nothing to add to', async () => {
+    await setupAdds('active', { tasks: [] })
+    await allDenied({
+      'an empty list': () => append('alice', late()),
+      'an empty list, as a set': () => write([late()], { late1: now() }),
+      'no list (bob)': () => setDoc(planRef(db('bob'), 'bob'), { tasks: [late()], added: { late1: now() }, updatedAt: now() }),
+      'no list, as a merge': () => setDoc(planRef(db('bob'), 'bob'), { tasks: arrayUnion(late()), added: { late1: now() }, updatedAt: now() }, { merge: true }),
+    })
+  })
+
+  test('25 tasks is the most, added ones included', async () => {
+    await setupAdds('active', { tasks: tasks(24) })
+    await allowed(append('alice', late('the25th')))
+    await denied(append('alice', late('the26th')))
+    // The 25th as the largest task onto 24 of them.
+    const full = Array.from({ length: 24 }, (_, i) => fullTask(i))
+    await setupAdds('active', { tasks: full, added: { [full[23]!.id]: ts(Date.now() - HOUR) }, cancels: LOG })
+    await allowed(append('alice', fullTask(24)))
+  })
+
+  test('only from the lock until reviews open', async () => {
+    const reviewOpened = Date.now() - 4 * DAY - 1000
+    const locked = Date.now() - DAY - 1000
+    const at = (start: number) => ({
+      ...monthlyDoc('active', ['alice', 'bob', 'carol', 'dave'], ['carol']),
+      startAt: ts(start), lockAt: ts(start + DAY), reviewOpenAt: ts(start + 4 * DAY), deadlineAt: ts(start + 5 * DAY),
+    })
+    await setupAdds(at(locked))
+    await allowed(append('alice', late()))
+    for (const list of ['planning', 'review', 'closed', at(reviewOpened)] as const) {
+      await setupAdds(list)
+      await denied(append('alice', late()))
+    }
+    // Before the lock the list is planned whole, without added times.
+    await setupAdds('planning')
+    await denied(write([...STORED, late()], { ...STORED_ADDED, late1: now() }))
+  })
+
+  test('only the player, still in the list and the space, and not its judge', async () => {
+    await setupAdds('active')
+    // Lists nobody could have written (judges, leavers and outsiders have none), seeded to test the rule.
+    for (const uid of ['carol', 'dave', 'erin']) await seed({ [`spaces/s1/monthly/${M}/plans/${uid}`]: { tasks: tasks(1), updatedAt: ts(Date.now() - DAY) } })
+    await allDenied({
+      'someone else\'s list': () => updateDoc(planRef(db('bob'), 'alice'), { tasks: [...STORED, late()], [`added.late1`]: now(), updatedAt: now() }),
+      'the list\'s judge': () => append('carol', late()),
+      'left the space': () => append('dave', late()),
+      'not in the list': () => append('erin', late()),
+    })
+  })
+
+  test('a judge of this week who plays the monthly list adds to it', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(ABC, { judges: ['alice'] }),
+      'spaces/s1/weeks/W': { ...weekDoc('active', ABC), judges: ['alice'] },
+      [`spaces/s1/monthly/${M}`]: monthlyDoc('active', ABC, []),
+      [`spaces/s1/monthly/${M}/plans/alice`]: { tasks: tasks(2), updatedAt: ts(Date.now() - DAY) },
+    })
+    await allowed(append('alice', late()))
+  })
+
+  test('nothing else about the list can change in an append', async () => {
+    await setupAdds('active')
+    const [t0, t1, late0] = STORED
+    await allDenied({
+      'two tasks at once': () => write([...STORED, late('a'), late('b')], { ...STORED_ADDED, a: now(), b: now() }),
+      'a task renamed': () => write([{ ...t0, title: 'Easier task' }, t1, late0, late()], { ...STORED_ADDED, late1: now() }),
+      'tasks reordered': () => write([t1, t0, late0, late()], { ...STORED_ADDED, late1: now() }),
+      'a task removed': () => write([t0, late0, late()], { ...STORED_ADDED, late1: now() }),
+      'no new task': () => write(STORED, STORED_ADDED),
+      'added time from the client': () => write([...STORED, late()], { ...STORED_ADDED, late1: Timestamp.now() }),
+      'added time missing': () => write([...STORED, late()], STORED_ADDED),
+      'an extra added time': () => write([...STORED, late()], { ...STORED_ADDED, late1: now(), other: now() }),
+      'an earlier added time rewritten': () => write([...STORED, late()], { late0: now(), late1: now() }),
+      'a task added before re-added': () => write([...STORED, late('late0')], { ...STORED_ADDED, late0: now() }),
+      'without added': () => setDoc(planRef(db('alice'), 'alice'), { tasks: [...STORED, late()], updatedAt: now() }),
+      'extra key': () => write([...STORED, late()], { ...STORED_ADDED, late1: now() }, { note: 'hi' }),
+      'client updatedAt': () => write([...STORED, late()], { ...STORED_ADDED, late1: now() }, { updatedAt: Timestamp.now() }),
+      'new task with 9 steps': () =>
+        write([...STORED, late('late1', { subs: Array.from({ length: 9 }, (_, i) => `s${i}|Step`) })], { ...STORED_ADDED, late1: now() }),
+      'new task with a bad id': () => write([...STORED, late('late.1')], { ...STORED_ADDED, 'late.1': now() }),
+      'new task with an extra key': () => write([...STORED, late('late1', { revenue: true })], { ...STORED_ADDED, late1: now() }),
+      'deleting the list': () => deleteDoc(planRef(db('alice'), 'alice')),
+    })
+    // Each case above is this write with one thing wrong.
+    await allowed(write([...STORED, late()], { ...STORED_ADDED, late1: now() }))
   })
 })
 
@@ -150,7 +283,10 @@ describe('monthly reviews', () => {
       'reviewee not in the list': () => submit('alice', { alice_erin: review('alice', 'erin') }),
       'self': () => submit('alice', { alice_alice: review('alice', 'alice') }),
       'a mark of 2': () => submit('alice', { alice_bob: review('alice', 'bob', { marks: { t1: 2 } }) }),
+      'a mark of \'Fair\'': () => submit('alice', { alice_bob: review('alice', 'bob', { marks: { t1: 'Fair' } }) }),
     })
+    // The vote on a crossed-out task (SPEC §10.4), next to the usual marks.
+    await allowed(submit('bob', { bob_alice: review('bob', 'alice', { marks: { t1: 'fair', t2: 0.5, t3: 0 } }) }))
     // dave left after the lock: still reviewed.
     await allowed(submit('alice', { alice_bob: review('alice', 'bob'), alice_dave: review('alice', 'dave') }))
     for (const phase of ['active', 'closed'] as const) {

@@ -1,6 +1,8 @@
-// Batch-2 fields of stored docs → domain types (SPEC §9.10). Pure and defensive: a malformed value decodes as
-// absent (or a safe default), never throws. Shared by the data layer and the reminders job (like decodeTasks).
-// `toMs` turns a stored time (a Firestore Timestamp, as the caller's SDK gives it) into epoch ms, or null.
+// Batch-2 fields of stored docs → domain types (SPEC §9.10), and batch 2.5's cross-outs and fair votes (§10.3,
+// §10.4). Pure and defensive: a malformed value decodes as absent (or a safe default), never throws. Shared by the
+// data layer and the reminders job (like decodeTasks). `toMs` turns a stored time (a Firestore Timestamp, as the
+// caller's SDK gives it) into epoch ms, or null.
+import { CANCEL_MAX_CHANGES, cleanWhy } from './cancel.ts'
 import { scheduleProblem } from './schedule.ts'
 import type {
   Agreement,
@@ -12,10 +14,12 @@ import type {
   MonthResultsEntry,
   PairTerms,
   PauseRequest,
+  ReviewMark,
   ScheduleNote,
   StakesMode,
   StakesNote,
   StreakTier,
+  TaskCancel,
   TermsInForce,
   UID,
   WeekId,
@@ -305,4 +309,59 @@ export function decodeMonthResults(d: unknown, toMs: ToMs, id?: string): MonthRe
     if (Object.keys(terms).length > 0) out.terms = terms
   }
   return out
+}
+
+// ---------- Batch 2.5 (SPEC §10.3, §10.4): cross-outs and the fair vote ----------
+
+/** A `cancels` key: the change number (1–5, one digit), then the task id as the rules check it. */
+const CANCEL_KEY = /^([1-9]):([A-Za-z0-9_-]{1,64})$/
+
+/** A review's mark the app understands: Done (1), Half (0.5), Not done (0), or Fair, Skip It ('fair'). */
+export function isReviewMark(v: unknown): v is ReviewMark {
+  return v === 0 || v === 0.5 || v === 1 || v === 'fair'
+}
+
+/**
+ * A plan's `cancels` log (§10.3) → each task's state, by task id: `changes` = the largest n with entries 1…n all
+ * present and well formed (a valid time `at`; odd n also a reason that isn't blank), crossed out when it is odd,
+ * `at` = entry n's, `why` = the latest odd entry's. Malformed keys (n outside 1–5, a bad id), values, times and
+ * reasons are dropped, and so is everything after the first gap; an even entry may carry extra fields. Tasks with
+ * no valid entry 1 are absent. Ids not on the list are kept here (decodeTasks ignores them). Never throws.
+ */
+export function decodeCancels(v: unknown, toMs: ToMs): Record<string, TaskCancel> {
+  const o = obj(v)
+  if (!o) return {}
+  const byTask = new Map<string, Map<number, { at: number; why?: string }>>()
+  for (const [key, value] of Object.entries(o)) {
+    const match = CANCEL_KEY.exec(key)
+    if (!match) continue
+    const n = Number(match[1])
+    if (n > CANCEL_MAX_CHANGES) continue
+    const e = obj(value)
+    const at = e ? time(e.at, toMs) : null
+    if (!e || at === null) continue
+    const entry: { at: number; why?: string } = { at }
+    if (n % 2 === 1) {
+      const why = typeof e.why === 'string' ? cleanWhy(e.why) : ''
+      if (why === '') continue
+      entry.why = why
+    }
+    const id = match[2]
+    let entries = byTask.get(id)
+    if (!entries) byTask.set(id, (entries = new Map()))
+    entries.set(n, entry)
+  }
+  const out: [string, TaskCancel][] = []
+  for (const [id, entries] of byTask) {
+    let changes = 0
+    let why = ''
+    while (entries.has(changes + 1)) {
+      changes += 1
+      why = entries.get(changes)?.why ?? why
+    }
+    if (changes === 0) continue
+    out.push([id, { cancelled: changes % 2 === 1, changes, at: entries.get(changes)?.at ?? 0, why }])
+  }
+  // fromEntries makes every id an own property (even one like "__proto__").
+  return Object.fromEntries(out)
 }

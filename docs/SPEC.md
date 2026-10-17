@@ -49,10 +49,11 @@ The UI shows **this week** and **next week**. Planning next week is allowed at a
 ### During the week
 - Each participant can tick their own tasks as done ("self check-offs") until `deadlineAt`. Everyone in the space can see them. A task with steps (§6.1) is ticked step by step.
 - After the lock and before the review window opens (`lockAt ≤ now < reviewOpenAt`), a participant can **add** tasks to their list, one at a time (§6.2). Added tasks count like the rest and are reviewed on Friday. They can't be edited or removed, and everyone sees when they were added. Nothing already on the list can change after the lock.
+- Batch 2.5 (§10.3): in the same window a participant can **cross out** one of their tasks with a reason (outside reasons), and undo that at most twice; friends vote on it on review day (§10.4).
 
 ### Friday review
 - Every participant reviews every other participant who has ≥1 task.
-- Each task gets a mark: **Done = 1**, **Half = 0.5**, **Not done = 0**.
+- Each task gets a mark: **Done = 1**, **Half = 0.5**, **Not done = 0**. Batch 2.5: a crossed-out task gets **Fair, Skip It** or **Not Done** instead (§10.4).
 - Reviews are written once, on **Submit**, with all reviewees in a single batch. They are **final**: no edits after submitting.
 - Reviews can only be created inside the review window.
 - Only current space members can submit.
@@ -277,6 +278,7 @@ This section is the contract for the second feature round. Where it and the sect
 - Before the lock, plans are written as before (`{ tasks, updatedAt }`, no `added`).
 - **Shown to everyone**: an added task carries a small "Added Wed" badge (weekday of `addedAt` in the space timezone) on every list and in the review sheet, so friends can judge padding (e.g. an easy task added Thursday night). The add sheet says plainly that the task becomes part of the week, is reviewed Friday, shows the day it was added and can't be edited or removed; its one action is a full-width **Add to This Week** button (no second alert).
 - Reviews, reveal and missed reviews are unchanged: someone with no tasks at the lock who adds one becomes a review target like anyone with a task.
+- Batch 2.5 (§10): the same append exists for monthly lists (badge "Added Oct 24"), and every append keeps the plan's `cancels` log as stored.
 
 ### 6.3 Money (private)
 Everything here lives under `users/{uid}` and is readable and writable **only by that user**. Friends never see amounts, revenue switches, balances or goals.
@@ -507,7 +509,7 @@ As built: `canPlan` keeps its judge line: a full 25 × 8 plan batched with the p
 ### 9.5 Monthly lists
 
 **Rules of the game**
-- Each month can have an optional **monthly list** per player: bigger things that take the month. It is planned from 8 days before the month's first week until it **locks with the month's second week's list**. After that it can't change or grow (no adds), and it is ticked until its deadline. Steps work as in §6.1; no revenue switch.
+- Each month can have an optional **monthly list** per player: bigger things that take the month. It is planned from 8 days before the month's first week until it **locks with the month's second week's list**. After that it can't change or grow (no adds), and it is ticked until its deadline. *Batch 2.5 (§10.2): it grows by adds until its reviews open, for a player who had ≥ 1 task on it at its lock; tasks can be crossed out (§10.3).* Steps work as in §6.1; no revenue switch.
 - It is reviewed in the **month's last week's review window**, by everyone in the list (judges too), blind like weeks, in its own submit. It is scored exactly like a week; a player with no tasks at the lock simply has no monthly list (no extra week, not 0%) but still reviews the others.
 - A closed monthly list with ≥ 1 task counts as **one extra week** in that month's average. Missed monthly reviews cost 5 points each, except for monthly judges and when the month's last week is paused (§9.3: then the monthly list is still reviewed by whoever does; with no review it falls back to self check-offs, and it still counts).
 - Who is in it follows the lock rule: everyone in the space before its lock, minus those who left before it; leaving after it keeps you in. Judges: the space's judges, snapshot until its lock.
@@ -868,3 +870,259 @@ Asked after the critique round; the owner's answers are built into §9.
 5. (New, a bug the owner reported) **Stakes changes must show on the Space screen**: editing the stakes in Settings didn't change the Space screen (the month had frozen; only a small footer said "New stakes from November"). Batch 2's stakes card always shows what counts now, updates the moment a change counts, shows anything pending, and every stakes save says when it counts (§9.7 Screens). That holds in October too: the previous app's early freeze of the month batch 2 ships in doesn't bind (§9.7 House stakes).
 
 Not in batch 2, for later if the group asks: lists that lock before Monday (e.g. Sunday at 8 PM; the earliest now is Sunday at midnight), and the `month-plan` nudge before a monthly list locks.
+
+## 10. Monthly adds and cancelled tasks (batch 2.5)
+
+The owner decided two features after batch 2 went live, then an undo for the second one. This section is the contract for them. Where it and §1–§9 disagree, this one wins; §10.1 lists every such change. Batches 1 and 2 are live with real users, so nothing here may break data written before: every new field is optional and reads as "as before" when missing, and the rules keep accepting what the live app writes (§10.11).
+
+Owner's decisions (verbatim in substance):
+1. **Monthly adds.** After a monthly list locks, its owner can add tasks to it exactly like the weekly add (§6.2): one task per write (with steps), until that list's reviews open, at most 25 tasks, never edited or removed afterwards, shown to everyone with an "Added Oct 24" badge (a date, since a month spans weeks). No revenue on monthly tasks (unchanged).
+2. **Cancel a task ("cross it out")**, because some tasks can't be done for outside reasons. The owner of a task can cross it out after the list locks and before its reviews open (weekly and monthly lists), with a short required reason. Everyone sees it crossed out with the reason and when. On review day, for a crossed-out task each reviewer (judges included) picks **Fair, Skip It** or **Not Done** instead of Done/Half/Not done. The task is dropped from the person's score (from the marks and the task count) only if **more than half** of the reviewers who submitted a review of that person chose Fair; otherwise it counts as 0. If nobody reviewed the person (self check-off fallback), a crossed-out task can't be excused and counts by its self check-off as today. If every task of the person is excused, that period is skipped for them (like a paused week: not 0%, not in the average). The provisional score leaves crossed-out tasks out, clearly labelled. Old clients may still review with Done/Half/Not done: for a crossed-out task any mark other than the new fair value counts as Not Done.
+3. **Undo.** A cross-out can be undone until that list's reviews open, at most **2 times per task** (cross out → undo → cross out → undo → cross out; after the 2nd undo a new cross-out is final). Undoing restores the task as normal (tickable, reviewed with Done/Half/Not done). Everyone sees the current state; the owner's UI shows how many undos are left and the confirm says it. The rules enforce the cap, that only the owner toggles, and the window.
+
+Refinements made in this contract, with the reason (§10.13 has the full list): a monthly list grows only for a player who had **at least one task on it at its lock** (an optional list started late would let someone add an extra week only when it helps their average; the owner's words were "add tasks to it"); the cross-out lives in **the task sheet only**, no swipe (before the lock the same swipe deletes; a reason has to be typed anyway); a crossed-out task **can't be ticked or unticked** until it is restored; and nothing is offered in a **paused** week (nothing counts there).
+
+Words: **cross out** (verb), **cross-out** (noun), **crossed out** (state); "cancel" is only used in code. **Fair, Skip It** / **Not Done** (the two review choices; "fair" in prose); **Skipped** (an excused task, or a period whose every task was excused); **undo** / **Undo Cross Out**.
+
+### 10.1 What changes in §1–§9
+
+- §1 During the week: after the lock and until reviews open, a participant can also **cross out** one of their tasks with a reason, and undo that at most twice (§10.3). A crossed-out task can't be ticked; its earlier ticks stay.
+- §1 Friday review: a crossed-out task is voted on with **Fair, Skip It** or **Not Done** (§10.4).
+- §1 Weekly score: a crossed-out task with reviews counts 0 unless excused; an excused task leaves both the sum and n; a person whose every task is excused is **skipped** that period (`score: null`, not 0%). The self check-off fallback is unchanged (crossed-out tasks count by their ticks there). The provisional score leaves crossed-out tasks out (§10.4).
+- §1 Monthly score: a skipped period is listed and never averaged, like a paused week for that member, and doesn't make them a player of the month; its missed reviews still count (§10.4).
+- §2 data model: `plans/{uid}` (weeks and monthly lists) gain `cancels?`; monthly plans may now hold `added`; review `marks` values may be `'fair'`. §2 security rules: §10.7.
+- §6.2: the append writes keep the plan's `cancels` as stored (an update, not a whole-doc set); the same append now exists for monthly lists (§10.2).
+- §6.5 Overview and the Spaces cards: crossed-out tasks are left out of the ring and its counts, as from the provisional score.
+- §6.7: the locked task sheet gains **Cross Out Task** / **Undo Cross Out** (§10.5); a monthly list's sheet gains the add mode.
+- §7.1 / §9.12 Help: new paragraphs and some trims (§10.9); 697 words on the usual times, 700 on the test's custom ones (cap 700 unchanged).
+- §9.5: "After that it can't change or grow (no adds)" no longer holds: it grows by adds until its reviews open, for a player who had ≥ 1 task at its lock; "plans … no append branch" becomes an append branch (§10.2). The planning footer changes (§10.5).
+- §9.6: result types gain the fields of §10.4; `computeMonth` treats skipped periods as above.
+- §9.9: the rules change list and budgets of §10.7 are added.
+- §9.10: the data-layer additions of §10.6.
+- §9.11: `no-progress` and `open-tasks` ignore crossed-out tasks; `results` says when a period was skipped (§10.8).
+- §3 module map: §10.10.
+
+### 10.2 Monthly adds
+
+**Rules of the game**
+- While `monthly.lockAt ≤ now < monthly.reviewOpenAt` (the list's stored bounds: from its second week's lock to its last week's review opening), a player of the list who is still a space member, isn't its judge and had **≥ 1 task on it at its lock** can append **one task per write** (with its steps, ≤ 8), up to **25** in all. Added tasks can never be edited or removed; they are reviewed with the rest in the month's last week and count like the rest.
+- A player with no tasks at the lock still has no monthly list (§9.5) and can't start one.
+- No revenue on monthly tasks (unchanged).
+
+**Data**: exactly the weekly shape (§6.2): `monthly/{monthId}/plans/{uid}` `{ tasks, added?: { [taskId]: ts }, cancels?, updatedAt }`; the append adds one task at the end, `added[id] = request.time`, `updatedAt = request.time`, and changes nothing else.
+
+**Rules**: the week's `appendsTask` becomes shared, with a literal collection and a minimum list size: `appendsTask(spaceId, coll, id, uid, minBefore)` (`'weeks'`, 0; `'monthly'`, 1); the monthly plan rule gains `|| appendsTask(spaceId, 'monthly', monthId, uid, 1)` after its `canPlan` branch (§10.7).
+
+**Domain**: nothing new; `addedAfterLock(task, monthly.lockAt)` already works on a list.
+
+**Data layer**: `addMonthlyTaskAfterLock(space, monthId, { id?, title, subtasks })` in `src/data/monthly.ts` (stubbed in `api.ts`), as `addTaskAfterLock`: validates the title and steps with the same messages; checks the window on the stored list, membership, the list (in it, not its judge) and the cap with its own messages (§10.6); then one transaction that re-reads the plan and `update`s `{ tasks: [...stored, task], added: {...stored, [id]: serverTimestamp()}, updatedAt }` (never a set, so `cancels` stays); an id already on the list resolves without writing; resolves with the task (`addedAt` the device's estimate). Fails at once offline.
+
+**Screens and copy**: §10.5 (the Add Task row on your locked list, the sheet, the "Added Oct 24" badge).
+
+### 10.3 Crossing out a task, and undo
+
+**Rules of the game**
+- Who: the task's owner, a participant of the period who is still a space member and not its judge. When: `period.lockAt ≤ now < period.reviewOpenAt` (stored bounds; a week or a monthly list). Before the lock you edit or delete instead; from reviews opening on, the state is final.
+- What: any task on your locked list (added ones too), with a **reason**: required, one line, 1–120 characters after trimming (newlines become spaces).
+- Undo: a crossed-out task can be restored while undos are left: **at most 2 per task**. So a task changes at most 5 times: 1 crossed out, 2 restored, 3 crossed out, 4 restored, 5 crossed out **for good**.
+- A crossed-out task can't be ticked or unticked; ticks made before stay visible and are kept. Undoing makes it tickable again and it counts as usual.
+- A crossed-out revenue task keeps its earning untouched (the owner can switch revenue off in the sheet).
+- Not offered in a paused week (§9.3: nothing counts). Leaving the space after the lock freezes your tasks' state as it is.
+- Everyone sees the **current** state only: a crossed-out task with its reason and when it was crossed out; a restored task looks like any other.
+- No push when someone crosses out or undoes.
+
+**Data** (on the plan doc, so no new reads anywhere):
+```
+spaces/{id}/weeks/{w}/plans/{uid}        + cancels?: { "<n>:<taskId>": { at: ts, why: string } | { at: ts } }
+spaces/{id}/monthly/{m}/plans/{uid}      + cancels?: (the same)
+```
+- An **append-only log**, one entry per change: key `${n}:${taskId}` (n = 1…5, one digit; task ids never contain `:`), odd n `{ at, why }` (crossed out), even n `{ at }` (restored); `at` = `serverTimestamp()` (a map can hold server timestamps, an array can't). The rules can't find which key of a map changed, but they can find the one key that was **added** (`keys().removeAll(…)`), so every change adds a key; the log also caps the undos by itself (n ≤ 5) and keeps when each change happened.
+- A task's state: `changes` = the largest n with entries 1…n all present and well formed for that id; crossed out ⇔ `changes` odd; `at` = entry `changes`'s; `why` = the latest odd entry's. Entries for ids not on the list are ignored, and so is a repeated task id's copy (as for `added`). Decoded into `Task.cancel` (`TaskCancel`, `src/domain/types.ts`).
+- Size: at most 125 entries (25 tasks × 5), ≤ ~25 KB.
+
+**Rules** (new `togglesCancel(spaceId, coll, id, uid)`, last on both plan rules, §10.7): an update by the owner (`isUser(uid)`, `resource != null`), in the window (`lockAt ≤ request.time < reviewOpenAt` of `getAfter(period)`, the access `canPlan` already made), a period member who isn't its judge and is still a space member; the write changes only `cancels` and `updatedAt` (`updatedAt == request.time`); exactly one key added to `cancels` and nothing else in it changed or removed; the key matches `[1-5]:[A-Za-z0-9_-]{1,64}`; for n > 1 the key `${n−1}:${id}` is already there; its value is exactly `{at}` (even n) or `{at, why}` (odd n) with `at == request.time` and `why` matching `[^\n\r]{1,120}` and not blank; `cancels` has ≤ 125 keys. The key isn't checked against the list (that costs a slot check per task); clients ignore other keys.
+
+**Domain** (new `src/domain/cancel.ts`, and `decode.ts`):
+- `CANCEL_MAX_CHANGES = 5`, `CANCEL_MAX_UNDOS = 2`, `CANCEL_WHY_MAX = 120`, `FAIR: FairMark = 'fair'`.
+- `isCancelled(task: Pick<Task, 'cancel'>): boolean` (crossed out now).
+- `cancelKey(taskId, change): string` → `${change}:${taskId}`.
+- `cleanWhy(text): string` (newlines and runs of spaces around them become one space, trimmed); `whyProblem(text): 'empty' | 'long' | null` (after `cleanWhy`; long = more than 120 UTF-16 units, as the UI counts); `whyProblemText(p)`: empty "Say why in a few words." · long "Keep the reason to 120 characters." (the data layer throws it, the sheet shows it).
+- `cancelOptions(task, bounds: { lockAt, reviewOpenAt }, nowMs): { action: 'cross-out' | 'undo' | null; undosLeft: number; next: number }`: `next = changes + 1`; crossed out: `undosLeft = (5 − changes) / 2` (2, 1, 0), `action = 'undo'` when `undosLeft > 0`; not crossed out (changes 0, 2, 4): `undosLeft = (4 − changes) / 2` (what is left **after** crossing it out now: 2, 1, 0), `action = 'cross-out'`; `action = null` outside the window. (Paused weeks and judges are the caller's to check.)
+- `decodeCancels(v: unknown, toMs: ToMs): Record<string, TaskCancel>` in `decode.ts` (pure, shared with the job): malformed keys, values, times and reasons are dropped, never throw; contiguity as above.
+- `isReviewMark(v): v is ReviewMark` in `decode.ts` (0, 0.5, 1 or `'fair'`).
+
+**Data layer** (new `src/data/cancel.ts`; stubs in `api.ts`):
+- `crossOutTask(space, period: Period, taskId, why)`: `cleanWhy`, then `whyProblem` → its text; pre-checks the window on the stored period (messages §10.6), membership, the judge snapshot and that the task is yours; one transaction re-reads the period doc and your plan, decodes the task's state: already crossed out → resolves without writing (a lost answer, a retry); no change left → "You’ve used both undos for this task."; else `update(planRef, new FieldPath('cancels', cancelKey(id, next)), { at: serverTimestamp(), why }, 'updatedAt', serverTimestamp())`. A refusal is re-checked once against the window (its message), else "Couldn’t cross it out. Try again.". Fails at once offline (`MSG.offline`, never queued).
+- `undoCrossOut(space, period, taskId)`: likewise; not crossed out → resolves; no undo left → "You’ve used both undos for this task."; writes `{ at: serverTimestamp() }` at the next (even) key; else "Couldn’t undo it. Try again.".
+- `decodeTasks(tasks, added, toMs, cancels?)` (`src/data/tasks.ts`) sets `task.cancel` from `decodeCancels` (first task with an id only); `toPlan` (`convert.ts`) and the job's `toPlan` pass the plan's `cancels`.
+- `setTaskDone` / `setMonthlyTaskDone`: a crossed-out task, or a step of one, on the device's copy of your plan → throws "You crossed this task out, so it can’t be ticked." (without a local plan the tick is written as before; the rules don't check it, §10.12).
+- `addTaskAfterLock` (weeks) writes an existing plan with `update` (the same `{ tasks, added, updatedAt }`), so `cancels` stays; without a plan, `set` as before.
+
+### 10.4 Review and scoring
+
+**The vote**: in the review window each reviewer, judges included, gives a crossed-out task **Fair, Skip It** (stored as the mark value `'fair'`) or **Not Done** (stored 0). Anything else on a crossed-out task, or no mark, counts as Not Done; a `'fair'` on a task that isn't crossed out counts as 0. Old clients only write 0 / 0.5 / 1, and their decoders already drop unknown values (so they read `'fair'` as a missing mark, 0).
+
+**Scoring** (`scorePeriod`, so `computeWeek` and `computeMonthly` alike; the state at review time is final since changes stop when reviews open). For a non-judge member M with n tasks, R = the valid reviews of M visible to the caller (k = |R|), c = tasks crossed out now:
+- A task not crossed out: as today (`'fair'` counts 0).
+- A crossed-out task: `fairBy` = reviewers in R whose mark is `'fair'`; every reviewer's effective mark is 0 (`reviewerMarks[r] = 0`). It is **excused** when `k > 0` and `2 × |fairBy| > k` (more than half; a tie counts as Not Done). With `k = 0` it can't be excused: its `mark` is its self fraction, as today.
+- **Score** (when revealed and not paused, as today): `k = 0` → `100 × Σ self fractions of all n tasks / n` (crossed-out ones included, as today); `k > 0` → with `m` = n − excused: `m = 0` → **skipped** (`score: null`, `skipped: true`), else `100 × Σ_{tasks not crossed out} Σ_r mark / (m × k)` (crossed-out, not excused tasks add 0 and count in m). n = 0 is unchanged (0 for a week, no list for a monthly list). Exact: sums of half points divided once, as today.
+- **Provisional score**: over the n − c tasks not crossed out (self fractions, as today); `null` when n > 0 and every task is crossed out; unchanged when c = 0.
+- Excusal is reported only once the period is revealed (before that a caller sees only their own reviews): `TaskResult.excused`, `excusedCount` and `skipped` are false/0 until then.
+- Judges: their reviews count in R and their votes count; they have no list, so nothing of theirs is crossed out. Leavers: a review submitted before leaving counts; someone who left without submitting isn't in R. Missed reviews: unchanged (a member whose every task is crossed out is still a review target, so friends must vote).
+- With no cross-out anywhere, every result equals today's (the existing scoring tests stay as they are).
+
+**Result fields** (`src/domain/scoring.ts`; optional in the type, always set by the domain):
+- `TaskResult`: `cancel?: TaskCancel` (copied from the task whenever present; `cancel.cancelled` says whether it is crossed out now); `fairBy?: UID[]` (crossed-out tasks only); `excused?: boolean` (crossed-out tasks, once revealed).
+- `MemberWeekResult`: `cancelledCount?: number` (crossed out now); `excusedCount?: number`; `skipped?: boolean` (every task excused: score null, not 0%).
+- `MonthWeekEntry.skipped?: true`; `MonthlyEntry.skipped?: boolean`.
+
+**`computeMonth`**: a closed week where M is `skipped` is listed `{ score: null, closed, skipped: true }`, never averaged, and its missed reviews still count (M still had to review others); a skipped monthly list is a `monthly` entry with `skipped: true`, never averaged. Neither makes M a **player** (`others`, and the judged-weeks-at-0% rule): a player has a week that is neither paused nor skipped, or a monthly entry that isn't skipped. A month with nothing averaged has no score: nothing owed, the streak carries (§9.8, unchanged).
+
+### 10.5 Screens and copy
+
+Copy is plain, warm, short, second person, curly apostrophes, sentence case for text, Title Case for buttons and rows. `{when}` is `deadlineText` (§9.2); `{Mon d}` is "Oct 24" and `{Month d}` "October 24" in the space's zone; `{Wkd}` is "Wed", `{Weekday}` "Wednesday".
+
+**Badges and labels** (pure helpers in `src/screens/components/marks.ts` and new `src/screens/components/cancel.ts`, unit-tested):
+- Added: weeks "Added {Wkd}" (unchanged), monthly lists "Added {Mon d}" (`addedLabel(addedAt, tz, kind = 'week')`).
+- Crossed out: "Crossed out {Wkd}" / "Crossed out {Mon d}" as a badge; "Crossed out {Weekday}" / "Crossed out {Month d}" in the sheet and the review sheet.
+
+**Your locked task's sheet** (`TaskSheet` mode `locked`, weeks and monthly lists; only for your own task, not in a paused week, not as a judge, while you're a member; `cancelOptions` decides):
+- Not crossed out, `action = 'cross-out'`: a last section with a row **Cross Out Task** (icon `xmark`), footer "For when something outside your control gets in the way. Friends see your reason and decide on review day if it’s fair to skip it." plus, when `undosLeft = 0` (restored twice), " If you cross it out again, it’s final."
+- Tapping it opens the reason in place: section header "Why can’t you do it?", a one-line field (placeholder "The pool is closed all week", 120 characters; from 100 a counter "112/120"), footer "Everyone in Film Club sees this." or the `whyProblemText` in red; the toolbar becomes a full-width **Cross Out Task** (disabled while the reason is empty). It asks first: title "Cross out “Swim 3 times”?", message "Friends see it crossed out with your reason, and on review day they decide if it’s fair to skip it." + by `undosLeft`: 2 " You can undo this twice until reviews open." · 1 " You can undo this once more until reviews open." · 0 " This one is final: you’ve used both undos." · [Cancel] [Cross Out] (destructive). Then a success haptic, the sheet closes, toast "Crossed out" · "Friends decide on review day."; a failure shows the message under the field and keeps the reason.
+- Crossed out: the title struck through; a section with a row (leading the crossed-out glyph) "Crossed out Wednesday" (monthly "Crossed out October 24"), subtitle the reason; with `action = 'undo'` a row **Undo Cross Out**, footer by `undosLeft`: 2 "You can undo this twice, until reviews open {when}." · 1 "You can undo this once more, until reviews open {when}."; with no undo left: footer "This is final. Friends decide on review day if it’s fair to skip it."; once reviews have opened: "Reviews have opened, so this can’t change anymore." Undo asks: title "Undo the cross-out?", message "“Swim 3 times” counts again and you can tick it." + (undos left after it) 1 " You’ll have 1 undo left." · 0 " That’s your last undo: if you cross it out again, it’s final." · [Cancel] [Undo]. Toast "Back on your list" · "It counts again."; failure toast "Couldn’t undo it" with the message.
+- The revenue section stays as it is (weeks).
+
+**Lists and cards** (`MemberCard`, yours and friends'; gains an optional `kind?: 'week' | 'month'` for the labels):
+- A crossed-out task: lead a gray crossed-out glyph (not a control, VoiceOver "Crossed out"), title struck through in the secondary color, subtitle "“{why}”", badges "Crossed out {Wkd}" (and "Added …" when added); its steps dimmed with their ticks, not tappable. Your own row still opens the sheet.
+- Before the reveal, the card's subtitle counts tasks that aren't crossed out: "2 of 3 done · 1 crossed out, not counted yet" ("2 crossed out, …"); every task crossed out: "Crossed out, not counted yet" (one task) / "All 3 crossed out, not counted yet", and no provisional ring (it is null). That fact is the provisional score's label.
+- After the reveal: a crossed-out task's subtitle "“{why}” · 2 of 3 said fair", detail **Skipped** (excused; lead a gray `minusCircle`) or **Not done** (lead the 0 glyph); in the self check-off fallback "“{why}” · Checked off" / "Not checked off" / "2 of 4 steps ticked", as today. The card's subtitle adds " · 1 skipped" when some were excused; a skipped period reads "Skipped: friends said fair" with a gray **Skipped** pill instead of the score ring.
+- Ticking: no check circle or step circles on a crossed-out task; the data layer refuses it anyway.
+
+**Review sheet** (a crossed-out task): the title struck through; a line with the crossed-out glyph "Crossed out Wednesday: “{why}”" (monthly "Crossed out October 24: …"), then the check-off evidence as today; a two-way picker **Fair, Skip It** | **Not Done** (`MarkPicker` gains `choices?: 'marks' | 'vote'`, value `ReviewMark | null`); under it, small: "If most reviewers say it’s fair, it doesn’t count for Lena. If not, it counts as not done." The person's meta line adds the count: "4 tasks this week · 1 crossed out · 2 checked off". A draft value that doesn't fit the task's current state (`'fair'` on a task that isn't crossed out, Done/Half on one that is) counts as unmarked, so it has to be picked again. "N to mark" and Submit as today.
+
+**Monthly list** (`MonthlyScreen`, `MonthlyCard`, `copy.ts`):
+- Planning footer with tasks: "Saves as you type. Locks {when}. After that you can still add tasks, but not change them."
+- Locked, with tasks, in the add window: your card ends with **Add Task**; footer "Locked. You can still add tasks until {when(reviewOpenAt)}. Friends see the date you added them." (after the window, the batch-2 footers).
+- The add sheet (monthly): title "Add Task", footer "The task joins your October list and gets reviewed in October’s last week. Friends see it was added on {Month d}. Once added, it can’t be edited or removed.", button **Add to October List**. (The batch-2 "Your October list is locked · Nothing can be added to it now." empty state remains only for someone who can't add: no list at its lock.)
+- `MonthlyCard`'s "2 of 3 done" leaves crossed-out tasks out.
+
+**Elsewhere**: the Spaces card and Overview count only tasks that aren't crossed out ("2 of 3 done"; every task crossed out: "Tasks crossed out", icon `xmark`, default tone); their ring shows the provisional score (caption "Provisional", or "Crossed out" when it is null for that reason) and, for a skipped week, no ring with the caption "Skipped". Month view: a skipped week's row reads **Skipped**, the monthly row likewise, and the summary adds "1 skipped" ("3 weeks scored · 1 skipped").
+
+### 10.6 Data layer API (`src/data/api.ts`) and messages
+
+- New: `addMonthlyTaskAfterLock(space, monthId, input) → Task`, `crossOutTask(space, period, taskId, why)`, `undoCrossOut(space, period, taskId)` (stubs marked `// batch2.5: TODO` until built).
+- Changed (additive): `submitReviews` / `submitMonthlyReviews` take `marks: Record<string, ReviewMark>` and accept `'fair'` (`isReviewMark`); `toReview` keeps `'fair'`; `decodeTasks(…, cancels?)`; `addTaskAfterLock` keeps `cancels`; `setTaskDone` / `setMonthlyTaskDone` refuse crossed-out tasks.
+- Offline: the three new writes are transactions and fail at once with `MSG.offline`; reviews and ticks queue as today.
+- Messages (thrown as given; tests assert them; `October` is the list's month):
+  - reason: "Say why in a few words." · "Keep the reason to 120 characters."
+  - before the lock: "Your list hasn’t locked yet, so you can still delete the task." (monthly: "Your October list hasn’t locked yet, so you can still delete the task.")
+  - from reviews opening: "Reviews have opened, so this can’t change anymore."
+  - no change left: "You’ve used both undos for this task."
+  - ticking: "You crossed this task out, so it can’t be ticked."
+  - refused writes: "Couldn’t cross it out. Try again." · "Couldn’t undo it. Try again."
+  - monthly add: before the lock "Your October list hasn’t locked yet. Add the task to it instead." · from reviews opening "Adding tasks closed when reviews opened." · no list at its lock "You had no October list when it locked, so there’s nothing to add to." · cap "Your October list can have up to 25 tasks." · not in it "This month’s list started without you. You’re in from next month." · judge "You’re judging this month’s lists, so there’s no list to plan."
+  - not a member (all): "You’re no longer in this space."; a weekly judge: "You’re judging this week, so there’s no list to plan."; a task that isn't on your list: `MSG.generic`.
+
+### 10.7 Security rules: changes and budgets
+
+In file order (the plan rules of both match blocks, and `validReview`; nothing else changes):
+1. `appendsTask(spaceId, coll, id, uid, minBefore)`: `coll` a literal (`'weeks'` / `'monthly'`); `exactKeys(d, ['tasks', 'added', 'updatedAt'])` becomes `d.keys().hasAll(['tasks', 'added', 'updatedAt']) && d.keys().hasOnly(['tasks', 'added', 'updatedAt', 'cancels']) && d.get('cancels', {}) == e.get('cancels', {})` (e = `{}` without a plan); plus `n >= minBefore`. Everything else as today.
+2. New `togglesCancel(spaceId, coll, id, uid)` (§10.3). Sketch (lets first, cheapest refusals early):
+   ```
+   let w = getAfter(periodPath(spaceId, coll, id)).data;
+   let d = incoming();
+   let before = existing().get('cancels', {});
+   let after = d.get('cancels', {});
+   let ks = after.keys().removeAll(before.keys());
+   let k = ks.size() == 1 ? ks[0] : '';
+   let n = k.matches('[1-5]:[A-Za-z0-9_-]{1,64}') ? int(k[0:1]) : 0;
+   let v = after.get(k, {});
+   return resource != null && isUser(uid) && n > 0
+     && w.lockAt <= request.time && request.time < w.reviewOpenAt
+     && uid in w.members && !(uid in w.get('judges', [])) && isMember(spaceId)
+     && d.diff(existing()).affectedKeys().hasOnly(['cancels', 'updatedAt']) && d.updatedAt == request.time
+     && after.size() <= 125 && after.diff(before).affectedKeys().hasOnly([k])
+     && (n == 1 || (string(n - 1) + k[1:k.size()]) in before)
+     && v.at == request.time
+     && (n % 2 == 0 ? exactKeys(v, ['at'])
+                    : exactKeys(v, ['at', 'why']) && v.why.matches('[^\\n\\r]{1,120}') && v.why.trim().size() > 0);
+   ```
+3. Plan rules, **order matters**: weeks `(canPlan … && hasOnly(['tasks', 'updatedAt']) && validTasks … ) || appendsTask(spaceId, 'weeks', weekId, uid, 0) || togglesCancel(spaceId, 'weeks', weekId, uid)`; monthly the same with `'monthly'`, `monthId` and `minBefore` 1. The full-plan branch stays first and unchanged, so a plan save costs exactly what it did; appends pay a few expressions for keeping `cancels`; only a cross-out pays for the branches before it. A cross-out write makes `appendsTask`'s `d.tasks[n]` index past the end: rules treat `error || true` as true, so the request still passes on `togglesCancel`; the rules builder proves it in the emulator, and if not, guards that `let` (`d.tasks.size() > n ? d.tasks[n] : {}`, a few expressions on the append path only).
+4. `validReview`: `d.marks.values().hasOnly([0, 0.5, 1, 0.0, 1.0, 'fair'])` (one literal).
+5. Delete stays `canPlan` (before the lock only), so a plan with appends or cross-outs can't be deleted.
+
+Budgets (each the whole request, measured in the emulator and recorded in `tests/rules/budget.test.ts`; the first two **must not rise**):
+
+| Request (worst case) | Before | Expected |
+|---|---|---|
+| Week plan, 25 × 8 steps, batched with the week fill | 895 | 895 (unchanged: first branch) |
+| Monthly plan, 25 × 8, batched with `syncsPeriod` | 895 | 895 (unchanged) |
+| Week append, the 25th full task, with a 120-entry `cancels` log | 304 | ≈ 315 |
+| Monthly append, the 25th full task, 120-entry log | — | ≈ 320 |
+| Cross-out, the 5th change of the 25th task of a full 25 × 8 plan (124 entries, a 120-character reason), week / monthly | — | ≈ 250 / ≈ 260, 2 reads |
+| Weekly / monthly review with 25 marks including `'fair'` | — / 487 | + 1 |
+
+Every case also keeps ≥ 7 spare reads, as today.
+
+### 10.8 Reminders
+
+- `toPlan` in `scripts/reminders.ts` passes the plan's `cancels` to `decodeTasks`; `toReview` already passes marks raw (so `'fair'` reaches the domain). The results writer, the verdict and every score come from the domain, so they follow §10.4 with no other change.
+- `no-progress` and `open-tasks` count only tasks that aren't crossed out ("K of N tasks still open", "N tasks to go"); a participant whose every task is crossed out gets neither (not final: an undo is possible until reviews open). Nothing else in the windows changes, so the legacy oracle still holds.
+- `results`: a part whose period was skipped is due (not `not-yet`) with `skipped`. Bodies: weekly skipped "Your friends said fair, so this week doesn’t count for you. See how Film Club did this week."; weekly skipped, list scored "Your friends said fair, so this week doesn’t count for you. You scored 92% on your October list. See how Film Club did this week."; week scored, list skipped "You scored 85%. Your October list doesn’t count: your friends said fair. See how Film Club did this week."; both "Your friends said fair, so this week and your October list don’t count for you. See how Film Club did this week."; list only (a paused last week) "Your October list doesn’t count: your friends said fair. See how Film Club did this month."
+- No new kinds, keys or reads.
+
+### 10.9 Help
+
+Within the 700-word cap (`content.test.ts` counts 697 words on the usual times, 700 on its custom times; every paragraph ≤ 190 characters). New:
+- week, after the monthly paragraph's end: "… and counts as one extra week. You can add to it until it’s reviewed." and a new paragraph "Can’t do a task for reasons outside your control? Cross it out with a reason before reviews open. You can undo that twice."
+- review, after the monthly-lists paragraph: "For a crossed-out task, vote fair to skip it or not done. If most say fair, it doesn’t count."
+
+Trimmed to make room (facts kept):
+- spaces: "Your stakes count as soon as friends tap Agree; a line that’s the same for everyone needs all of them." · "Deadlines follow the space’s time zone. If you join after Monday’s lock, you start with the next week." · "The owner can change when lists lock and reviews open and close, with at least a day’s notice to everyone."
+- week: the steps and ticking paragraphs become one, in the steps paragraph's place: "Tick tasks off as you finish them; everyone in the space sees your ticks. A task can have up to 8 steps, and it’s done when every step is." · the adds paragraph says "They can’t be changed, …" instead of "Added tasks can’t be changed, …".
+- scores: "… Sitting a month out doesn’t break a streak; a month under 90% starts it over."
+- money: "… It’s earned when you tick it off." · "Set your balance once, then add or remove money as it comes and goes. Earnings add to it."
+- reminders: "… They nudge you before lists lock and reviews are due, and tell you when results are in." · "The installed app signs in separately from Safari: same email, same password."
+The tests change accordingly (the word count, the owner-times sentence; new checks for "Cross it out", "undo that twice", "fair to skip it", "add to it until it’s reviewed"). The intro is unchanged.
+
+### 10.10 Module map additions
+
+| Path | Owner | Notes |
+|---|---|---|
+| `src/domain/cancel.ts` (+ `cancel.test.ts`) | domain | Constants, `isCancelled`, `cancelKey`, `cleanWhy`, `whyProblem(Text)`, `cancelOptions`. |
+| `src/domain/decode.ts`, `scoring.ts` | domain | `decodeCancels`, `isReviewMark`; the vote and skipped periods (§10.4). |
+| `src/data/cancel.ts`, `monthly.ts`, `weeks.ts`, `tasks.ts`, `convert.ts` | data | §10.2, §10.3, §10.6. This batch the data builder also owns `scripts/reminders.ts`, `scripts/reminders-plan.ts` and their tests (§10.8). |
+| `src/screens/components/cancel.ts` (+ test) | screens | Labels and confirm copy, pure. |
+| `tests/rules/cancels.test.ts` | rules | Plus `midweek`, `monthly`, `reviews` and `budget` updates. |
+| `tests/data/cancel.test.ts` | data | Plus monthly adds, ticks, reviews and the reminders job. |
+| `tests/e2e/batch25.spec.ts` | screens | The flows of §10.5. |
+
+### 10.11 Deploy order and old clients
+
+1. **The owner publishes the rules first** (Firebase console → Firestore → Rules → paste the whole `firestore.rules` from the app branch → Publish). They accept everything the live app writes.
+2. **Then deploy the app** by hand (Actions → Deploy → the app branch), as in §9.14. The push itself carries `[skip ci]`. The reminders job runs the branch's code from its next run; with no cross-outs yet it behaves as before.
+
+Old clients (about 30 minutes, until they update): they don't show cross-outs or the monthly Add Task; a crossed-out task looks normal and can still be ticked there (the rules allow it); their reviews of a crossed-out task count as Not Done; they read a `'fair'` vote as a missing mark (their scores are display only and wrong for that task until they update). Their append to a plan that has cross-outs is refused ("You can’t change this anymore."), since their whole-doc write would erase the log; without cross-outs it passes as before. Everything else they write (plans before the lock, appends, ticks, reviews, monthly plans) passes unchanged. A new app against the old rules (rules not published yet) gets its cross-outs, undos and monthly adds refused with their messages; with no cross-out stored, no fair vote is ever offered, so reviews keep working.
+
+### 10.12 Known limits
+
+- The rules don't check that a `cancels` key names a task on the list (cost); clients ignore other keys, and a crafted client can only clutter its own plan (≤ 125 entries).
+- The rules don't stop ticks on a crossed-out task (that would read the plan on every tick); the app refuses them. A crafted tick only changes that task's self check-off, which counts only when nobody reviews.
+- The rules can't tell whether a `'fair'` vote is on a crossed-out task; the domain counts it 0 elsewhere.
+- A cross-out or undo in the last seconds before reviews open can reach a reviewer whose sheet is already open; the sheet drops a draft that no longer fits, but a review already submitted counts as cast (Done on a newly crossed-out task is Not Done; a fair vote on a restored task is 0).
+- Excusal needs reviews: someone nobody reviewed can't be excused (owner's decision), so their provisional score (crossed-out tasks left out) can be higher than the final one.
+- A reviewer who submitted but skipped a crossed-out task counts in the denominator as not fair.
+- Monthly lists grow only for players who had one at the lock (§10.13).
+- Old clients for about 30 minutes: §10.11.
+
+### 10.13 Decisions made in this contract
+
+1. **Monthly adds need a list at its lock** (≥ 1 task): the monthly list is optional and adds one week to the average, so letting anyone start one after the lock would let them add that week only when it helps. The owner's wording was "add tasks to it". One literal in the rules (`minBefore`) if the owner wants it otherwise.
+2. **The cross-out lives in the task sheet only**, no swipe: before the lock the same swipe deletes, a typed reason is required anyway, and it's a deliberate act.
+3. **Storage**: an append-only log in the plan doc (`cancels`, `${n}:${taskId}`): no new reads, the rules can prove "one change, by the owner, in the window, ≤ 2 undos" cheaply, and the times of every change are kept. The vote is the mark value `'fair'` in `marks`: one literal in the rules, and old clients already read it as Not Done.
+4. **Ticks freeze** on a crossed-out task (both ways) until it is restored; earlier ticks stay and count in the self check-off fallback.
+5. **A skipped period is like a paused week for that member only**: not averaged, doesn't make them a player, but their missed reviews in it still count.
+6. **Excusal shows only after the reveal**, from everyone's reviews; before it the card says what's crossed out and "not counted yet".
+7. **Reason**: required, one line, 1–120 characters, shown in curly quotes; the latest cross-out's reason is shown.
+8. **Not in paused weeks** and not for judges or members who left.
+9. **No push** for cross-outs: friends see them in the app, and on review day in the sheet.

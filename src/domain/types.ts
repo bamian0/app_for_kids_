@@ -7,6 +7,11 @@ export type WeekId = string
 /** 'YYYY-MM' — the month a week belongs to is the month of its Friday. */
 export type MonthId = string
 export type Mark = 0 | 0.5 | 1
+/** Batch 2.5 (SPEC §10.4): a reviewer's vote on a crossed-out task, "Fair, Skip It", stored in a review's `marks`
+ *  like a mark. On a crossed-out task any other value (or none) is Not Done; on any other task it counts as 0. */
+export type FairMark = 'fair'
+/** What a review stores for one task: Done / Half / Not done, or the fair vote on a crossed-out task (§10.4). */
+export type ReviewMark = Mark | FairMark
 
 export interface UserProfile {
   uid: UID
@@ -113,8 +118,30 @@ export interface Task {
    *  every step is ticked; the task's own `done` key is ignored. Reviewers still mark the task itself. */
   subtasks?: Subtask[]
   /** Set only on a task added after the lock (lockAt ≤ addedAt < reviewOpenAt): server time of the
-   *  append. Such a task can't be edited or removed; everyone sees when it was added. */
+   *  append. Such a task can't be edited or removed; everyone sees when it was added. Since batch 2.5 a
+   *  monthly list's tasks can be added too (SPEC §10.2). */
   addedAt?: number
+  /** Batch 2.5 (SPEC §10.3): set once its owner has crossed it out at least once (decoded from the plan's
+   *  `cancels` log); absent on every task that never was. `cancel.cancelled` says whether it is crossed out now. */
+  cancel?: TaskCancel
+}
+
+/**
+ * Batch 2.5 (SPEC §10.3): a task its owner crossed out ("Cross Out Task") because something outside their control
+ * got in the way, and any undos. Decoded from the plan's `cancels` log (decodeCancels in domain/decode.ts): one
+ * entry per change, `${n}:${taskId}` → { at, why? }, n = 1…CANCEL_MAX_CHANGES (5). Odd n crosses it out (with a
+ * reason), even n restores it, so it can be undone at most twice; after the second undo a new cross-out is final.
+ * Changes are only possible from the lock until reviews open, so at review time the state is final.
+ */
+export interface TaskCancel {
+  /** Crossed out now (an odd number of changes). false after an undo: the task counts and ticks as usual. */
+  cancelled: boolean
+  /** How many changes so far, 1–5: 1 crossed out, 2 restored, 3 crossed out, 4 restored, 5 crossed out for good. */
+  changes: number
+  /** Server time of the latest change (a pending write reads as the SDK's estimate). */
+  at: number
+  /** The reason given with the latest cross-out: 1–120 characters, one line. Kept after an undo. */
+  why: string
 }
 
 export interface Plan {
@@ -134,7 +161,8 @@ export interface Review {
   id: string
   reviewerId: UID
   revieweeId: UID
-  marks: Record<string, Mark>
+  /** Task id → mark. Since batch 2.5 a crossed-out task's value is 'fair' ("Fair, Skip It") or 0 (§10.4). */
+  marks: Record<string, ReviewMark>
   submittedAt: number
 }
 

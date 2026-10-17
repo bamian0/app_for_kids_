@@ -9,8 +9,10 @@ import type {
   MonthlyData,
   MonthResults,
   MonthStakes,
+  Period,
   Settlement,
   Space,
+  Task,
   UID,
   UserProfile,
   WeekData,
@@ -26,6 +28,7 @@ import { startMySpaces, startSpace } from './spaces.ts'
 import { startStakes } from './stakes.ts'
 import { combine, useLive } from './store.ts'
 import { startWeek, weekKey } from './weeks.ts'
+import type { NewTaskInput } from './weeks.ts'
 
 export interface Live<T> {
   data: T | undefined
@@ -277,6 +280,48 @@ export function useLatestResults(space: Space): Live<MonthResults | null> {
  */
 export { saveMyStakes, agreeToStakes } from './stakes.ts'
 export type { StakesInput } from './stakes.ts'
+
+// ---------- Batch 2.5: monthly adds and crossed-out tasks (SPEC §10) ----------
+
+/**
+ * addMonthlyTaskAfterLock(space, monthId, { id?, title, subtasks }): appends one task (with its steps) to your
+ * monthly list while its lockAt ≤ now < reviewOpenAt, exactly like addTaskAfterLock for a week (SPEC §10.2): final
+ * (never edited or removed), at most 25 in all, `added[id]` = server time, `cancels` left as stored. Only a list
+ * that had ≥ 1 task at its lock grows. Pass the sheet's `id` so a retry can't add it twice (an existing id
+ * resolves without writing). Resolves with the task (`addedAt` the device's estimate until the snapshot).
+ * Fails at once offline (a transaction). Messages in SPEC §10.6.
+ */
+export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, input: NewTaskInput): Promise<Task> {
+  void [space, monthId, input]
+  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/monthly.ts and re-export here
+}
+
+/**
+ * crossOutTask(space, period, taskId, why): crosses out one of your own tasks of a locked week or monthly list,
+ * until its reviews open (SPEC §10.3): one transaction re-reads the period and your plan and appends the next
+ * entry of the task's `cancels` log (`${n}:${taskId}` → { at: serverTimestamp(), why }), with `updatedAt`.
+ * `why` is trimmed and made one line (1–120 characters). Already crossed out: resolves without writing (a lost
+ * answer or a retry). After the 2nd undo the cross-out is final. Fails at once offline. Messages in SPEC §10.6.
+ */
+export async function crossOutTask(space: Space, period: Period, taskId: string, why: string): Promise<void> {
+  void [space, period, taskId, why]
+  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/cancel.ts and re-export here
+}
+
+/**
+ * undoCrossOut(space, period, taskId): restores a crossed-out task (the next, even entry `${n}:${taskId}` → { at })
+ * while undos are left (at most 2 per task) and reviews haven't opened. Not crossed out: resolves without
+ * writing. Fails at once offline. Messages in SPEC §10.6.
+ */
+export async function undoCrossOut(space: Space, period: Period, taskId: string): Promise<void> {
+  void [space, period, taskId]
+  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/cancel.ts and re-export here
+}
+
+// Also batch 2.5 (SPEC §10.6), in the existing writes: submitReviews / submitMonthlyReviews take
+// `marks: Record<string, ReviewMark>` ('fair' on a crossed-out task); setTaskDone / setMonthlyTaskDone refuse a
+// crossed-out task or one of its steps; addTaskAfterLock keeps the plan's `cancels` (an update, not a set).
+// batch2.5: TODO
 
 // ---------- Money (private, SPEC §6.3) ----------
 // Hooks, all live and scoped to the signed-in user (data undefined while signed out):

@@ -322,7 +322,9 @@ function scorePeriod(p: PeriodData, space: Space, nowMs: number, bounds: WeekBou
       let reviewSum = 0
       for (const r of received) {
         // A submitted review that skips a task gives it 0.
-        const mark = isMark(r.marks[task.id]) ? r.marks[task.id] : 0
+        // batch2.5: TODO crossed-out tasks and the 'fair' vote (SPEC §10.4); until then 'fair' counts as 0, as on old clients.
+        const value = r.marks[task.id]
+        const mark = isMark(value) ? value : 0
         reviewerMarks[r.reviewerId] = mark
         reviewSum += mark
       }

@@ -38,7 +38,8 @@ export interface MemberWeekResult {
   participating: boolean
   taskCount: number
   tasks: TaskResult[]
-  /** 0..100 from self check-offs; shown before reveal, labelled provisional. null if not participating. */
+  /** 0..100 from self check-offs; shown before reveal, labelled provisional. null if not participating. Batch 2.5
+   *  (§10.4): over the tasks not crossed out only, so also null when every task is crossed out. */
   provisionalScore: number | null
   /** 0..100 once revealed; null before reveal or if not participating. */
   score: number | null
@@ -459,9 +460,13 @@ export function computeMonthly(data: MonthlyData, space: Space, nowMs: number): 
   return scorePeriod(periodOf(data), space, nowMs, bounds, false, 'none')
 }
 
-/** A player of the month: a week that is neither paused nor skipped, or a monthly list that isn't skipped. */
-function isPlayer(weeks: MonthWeekEntry[], monthly: MonthlyEntry | null): boolean {
-  return weeks.some((e) => !e.paused && !e.skipped) || (monthly !== null && !monthly.skipped)
+/**
+ * Plays the month (§9.6, §10.4): a week that is neither paused nor skipped (judged weeks aren't in `weeks`), or a
+ * monthly list that isn't skipped. The players are everyone's `others`, and a player's closed judged weeks average
+ * as 0%. Exported so the screens and the job read "played" the same way.
+ */
+export function isMonthPlayer(result: Pick<MemberMonthResult, 'weeks' | 'monthly'>): boolean {
+  return result.weeks.some((e) => !e.paused && !e.skipped) || (!!result.monthly && !result.monthly.skipped)
 }
 
 function lastWeekOf(monthId: MonthId): WeekId {
@@ -570,7 +575,7 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
       }
     }
     // Judged weeks in a month they also play count as 0%, so switching to judge can't hide bad weeks.
-    const plays = isPlayer(entries, monthlyEntry)
+    const plays = isMonthPlayer({ weeks: entries, monthly: monthlyEntry })
     if (plays) for (let i = 0; i < judgedClosed; i++) closedScores.push(0)
     const average = closedScores.length > 0 ? normalise(closedScores.reduce((a, b) => a + b, 0) / closedScores.length) : null
     const penaltyPoints = space.latePenalty * missedReviews
@@ -593,7 +598,7 @@ export function computeMonth(space: Space, monthId: MonthId, weeks: WeekData[], 
       skippedAsJudge,
     }
   }
-  const players = roster.filter((uid) => isPlayer(out[uid].weeks, out[uid].monthly ?? null))
+  const players = roster.filter((uid) => isMonthPlayer(out[uid]))
   for (const uid of roster) out[uid].others = players.filter((id) => id !== uid)
   return out
 }

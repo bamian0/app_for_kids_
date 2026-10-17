@@ -1,6 +1,7 @@
 // Review day: one page per friend, a mark for every task, then one final submit. In a month's last week
 // the month's lists are reviewed in the same sheet, as a second section per friend and a second submit
-// (SPEC §9.5). Drafts live on this device until you submit, so closing the sheet loses nothing.
+// (SPEC §9.5). Drafts live on this device until you submit, so closing the sheet loses nothing. A crossed-out task is
+// voted on instead (SPEC §10.4, §10.5): Fair, Skip It or Not Done, with its reason above the picker.
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
@@ -9,9 +10,10 @@ import { isWeekPaused } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
 import { addedAfterLock, isRevealed, isTaskDone, membersAt, reviewTargets } from '../domain/scoring.ts'
 import { formatCountdown, isMonthlyReviewWeek, monthIdForWeek } from '../domain/time.ts'
-import type { Mark, MonthlyData, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
+import type { MonthlyData, ReviewMark, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, Button, EmptyState, Facts, GlassButton, Icon, MarkPicker, ProgressBar, Screen, Section, Shimmer, cx, haptic, useAlert } from '../ui/index.ts'
-import { CheckDot, ErrorText, Loading, StepList, StepRing, TaskBadge } from './components/Bits.tsx'
+import { CheckDot, CrossedOutGlyph, ErrorText, Loading, StepList, StepRing, TaskBadge } from './components/Bits.tsx'
+import { crossedOut, crossedOutLine, draftFits, quoted, voteNote } from './components/cancel.ts'
 import { useNow } from './components/clock.ts'
 import { monthName } from './components/format.ts'
 import { addedLabel, weekdayIn } from './components/marks.ts'
@@ -20,7 +22,7 @@ import { readJSON, writeJSON } from './components/storage.ts'
 import { deadlineText } from './components/zone.ts'
 import { reviewParts } from './monthly/review.ts'
 
-type Marks = Record<UID, Record<string, Mark>>
+type Marks = Record<UID, Record<string, ReviewMark>>
 
 interface Props {
   /** The space as it was when the sheet opened; the sheet follows it live from then on. */
@@ -43,12 +45,14 @@ function tasksIn(part: Part | null, uid: UID): Task[] {
   return part?.plans[uid]?.tasks ?? []
 }
 
-/** "4 tasks this week · 3 on October’s list · 2 checked off" (each part only when it's reviewed). */
+/** "4 tasks this week · 3 on October’s list · 1 crossed out · 2 checked off" (each part only when it's reviewed). */
 function metaLine(weekly: Task[] | null, monthly: Task[] | null, month: string, checked: number): string {
   const parts: string[] = []
   const tasks = (n: number) => `${n} task${n === 1 ? '' : 's'}`
   if (weekly) parts.push(monthly ? `${tasks(weekly.length)} this week` : tasks(weekly.length))
   if (monthly) parts.push(weekly ? `${monthly.length} on ${month}’s list` : `${tasks(monthly.length)} on ${month}’s list`)
+  const crossed = [...(weekly ?? []), ...(monthly ?? [])].filter(crossedOut).length
+  if (crossed > 0) parts.push(`${crossed} crossed out`)
   const total = (weekly?.length ?? 0) + (monthly?.length ?? 0)
   parts.push(`${checked === 0 ? 'none' : checked === total ? 'all' : checked} checked off`)
   return parts.join(' · ')
@@ -154,8 +158,9 @@ export function ReviewSheet({ space: opened, weekId, close }: Props) {
   const monthlyTargets = monthlyPending ? parts.monthly.targets : []
   const people = parts.people.filter((id) => weeklyTargets.includes(id) || monthlyTargets.includes(id))
   const twoParts = monthlyPending
+  // A draft that no longer fits the task (crossed out or restored since) counts as unmarked.
   const missingIn = (targets: UID[], part: Part | null, marks: Marks, id: UID) =>
-    targets.includes(id) ? tasksIn(part, id).filter((t) => marks[id]?.[t.id] === undefined).length : 0
+    targets.includes(id) ? tasksIn(part, id).filter((t) => !draftFits(crossedOut(t), marks[id]?.[t.id])).length : 0
   const missingFor = (id: UID) => missingIn(weeklyTargets, weeklyPart, weeklyMarks, id) + missingIn(monthlyTargets, monthlyPart, monthlyMarks, id)
   const tasksFor = (id: UID) => (weeklyTargets.includes(id) ? tasksIn(weeklyPart, id).length : 0) + (monthlyTargets.includes(id) ? tasksIn(monthlyPart, id).length : 0)
   const totalMissing = people.reduce((n, id) => n + missingFor(id), 0)
@@ -164,7 +169,7 @@ export function ReviewSheet({ space: opened, weekId, close }: Props) {
   // Retrying only the monthly part after the weekly one went through.
   const monthlyRetry = sent.weekly && monthlyPending
 
-  const setMark = (kind: Part['kind'], reviewee: UID, taskId: string, mark: Mark) => {
+  const setMark = (kind: Part['kind'], reviewee: UID, taskId: string, mark: ReviewMark) => {
     const [set, key] = kind === 'weekly' ? [setWeeklyMarks, weeklyKey] : [setMonthlyMarks, monthlyKey]
     set((cur) => {
       const next = { ...cur, [reviewee]: { ...cur[reviewee], [taskId]: mark } }
@@ -176,7 +181,7 @@ export function ReviewSheet({ space: opened, weekId, close }: Props) {
   const payload = (targets: UID[], part: Part | null, marks: Marks) =>
     targets.map((id) => ({
       revieweeId: id,
-      marks: Object.fromEntries(tasksIn(part, id).map((t) => [t.id, marks[id][t.id]])) as Record<string, Mark>,
+      marks: Object.fromEntries(tasksIn(part, id).map((t) => [t.id, marks[id][t.id]])) as Record<string, ReviewMark>,
     }))
 
   const submit = async () => {
@@ -334,23 +339,38 @@ export function ReviewSheet({ space: opened, weekId, close }: Props) {
                   // Steps are evidence: the mark is still for the whole task.
                   const steps = (task.subtasks ?? []).map((step) => ({ id: step.id, title: step.title, done: ticks[step.id] === true }))
                   const ticked = steps.filter((step) => step.done).length
-                  const added = section.part.kind === 'weekly' && task.addedAt !== undefined && addedAfterLock(task, section.part.period.lockAt)
+                  const kind = section.part.kind === 'weekly' ? 'week' : 'month'
+                  const added = task.addedAt !== undefined && addedAfterLock(task, section.part.period.lockAt)
+                  const crossed = crossedOut(task)
+                  const draft = section.marks[reviewee]?.[task.id]
                   let hint = selfDone ? `Marked done by ${name(reviewee)}` : `Not checked off by ${name(reviewee)}`
                   if (steps.length > 0 && !selfDone) hint = `${ticked} of ${steps.length} steps ticked by ${name(reviewee)}`
                   return (
                     <div key={task.id} className="s-review-task">
-                      <div className="s-review-task__title">{task.title}</div>
+                      <div className={cx('s-review-task__title', crossed && 'tk-struck')}>{task.title}</div>
+                      {crossed && task.cancel && (
+                        <div className="s-review-task__crossed">
+                          <CrossedOutGlyph small />
+                          <span className="s-review-task__crossed-text">
+                            {crossedOutLine(task.cancel.at, space.timezone, kind)}: {quoted(task.cancel.why)}
+                          </span>
+                        </div>
+                      )}
                       <div className="s-review-task__hint">
                         {steps.length > 0 ? <StepRing done={ticked} total={steps.length} size={16} muted /> : <CheckDot done={selfDone} />}
                         <span className="tk-hint-text">{hint}</span>
-                        {added && <TaskBadge>{addedLabel(task.addedAt as number, space.timezone)}</TaskBadge>}
+                        {added && <TaskBadge>{addedLabel(task.addedAt as number, space.timezone, kind)}</TaskBadge>}
                       </div>
                       {steps.length > 0 && <StepList steps={steps} mode="dots" owner={name(reviewee)} />}
                       <MarkPicker
-                        value={section.marks[reviewee]?.[task.id] ?? null}
+                        // Keyed by the task's state, so a draft that no longer fits starts unpicked (no thumb sliding over).
+                        key={crossed ? 'vote' : 'marks'}
+                        choices={crossed ? 'vote' : 'marks'}
+                        value={draftFits(crossed, draft) ? draft : null}
                         onChange={(m) => setMark(section.part.kind, reviewee, task.id, m)}
-                        aria-label={`Mark for ${task.title}`}
+                        aria-label={crossed ? `Vote for ${task.title}` : `Mark for ${task.title}`}
                       />
+                      {crossed && <div className="s-review-task__note">{voteNote(name(reviewee))}</div>}
                     </div>
                   )
                 })}

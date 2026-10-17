@@ -1,6 +1,8 @@
-// How tasks are stored in a plan (SPEC §6.1, §6.2). Pure, so the reminders job reads plans the same way.
+// How tasks are stored in a plan (SPEC §6.1, §6.2, §10.3). Pure, so the reminders job reads plans the same way.
 // A task is { id, title } or { id, title, subs: ["<subId>|<title>", …] }; a task added after the lock
-// has its server time in the plan's `added` map (arrays can't hold server timestamps).
+// has its server time in the plan's `added` map (arrays can't hold server timestamps), and a task crossed
+// out (or restored) has its entries in the plan's `cancels` log.
+import { decodeCancels } from '../domain/decode.ts'
 import { MAX_SUBTASKS } from '../domain/ids.ts'
 import type { Subtask, Task } from '../domain/types.ts'
 
@@ -40,13 +42,15 @@ function decodeSubs(v: unknown, taken: Set<string>): Subtask[] {
 }
 
 /**
- * A plan's `tasks` and `added` as domain tasks. `toMs` reads a stored time (null if it isn't one).
- * Tasks without steps or an add time come out as plain { id, title }, exactly as before steps existed.
- * The rules can't keep task ids unique, and marks and check-offs go by id, so a repeated id would
+ * A plan's `tasks`, `added` and `cancels` as domain tasks. `toMs` reads a stored time (null if it isn't one).
+ * Tasks without steps, an add time or a cross-out come out as plain { id, title }, exactly as before steps
+ * existed. The rules can't keep task ids unique, and marks and check-offs go by id, so a repeated id would
  * share one mark and count twice: only the first task with an id is kept. It was on the list before
- * any append (appends go at the end), so an `added` entry for a repeated id belongs to the copy.
+ * any append (appends go at the end), so an `added` entry for a repeated id belongs to the copy. A
+ * cross-out names a task by id too and the list shows only the first, so that one carries it (`cancel`,
+ * from decodeCancels: SPEC §10.3); entries for ids that aren't on the list are ignored.
  */
-export function decodeTasks(tasks: unknown, added: unknown, toMs: (v: unknown) => number | null): Task[] {
+export function decodeTasks(tasks: unknown, added: unknown, toMs: (v: unknown) => number | null, cancels?: unknown): Task[] {
   if (!Array.isArray(tasks)) return []
   const plain: { id: string; title: string; subs: unknown }[] = []
   const taken = new Set<string>()
@@ -62,12 +66,14 @@ export function decodeTasks(tasks: unknown, added: unknown, toMs: (v: unknown) =
     plain.push({ id, title: str(record(t).title), subs: record(t).subs })
   }
   const addedAt = record(added)
+  const crossed = cancels === undefined ? {} : decodeCancels(cancels, toMs)
   return plain.map(({ id, title, subs }) => {
     const task: Task = { id, title }
     const steps = decodeSubs(subs, taken)
     if (steps.length > 0) task.subtasks = steps
     const at = Object.hasOwn(addedAt, id) && !repeated.has(id) ? toMs(addedAt[id]) : null
     if (at !== null) task.addedAt = at
+    if (Object.hasOwn(crossed, id)) task.cancel = crossed[id]
     return task
   })
 }

@@ -7,6 +7,7 @@ import { formatCountdown, monthlyBounds, weekPhase } from '../../domain/time.ts'
 import type { WeekBounds, WeekPhase } from '../../domain/time.ts'
 import type { MonthlyData, Space, UID } from '../../domain/types.ts'
 import type { IconName } from '../../ui/icons.tsx'
+import { SKIPPED_PERIOD, openCount } from '../components/cancel.ts'
 import { formatScore, monthName } from '../components/format.ts'
 import { compactNames, listNames } from '../components/people.ts'
 
@@ -89,11 +90,14 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
   if (judging) return judgeView(inReview() ?? `You rate them in ${month}’s last week.`)
   const mine: MemberWeekResult | undefined = result.members[me]
   if (mine && mine.taskCount > 0) {
-    const done = mine.tasks.filter((t) => t.selfDone).length
+    if (result.revealed && mine.skipped) return { title: `Your ${month} list`, subtitle: SKIPPED_PERIOD, icon: 'calendar' }
     if (result.revealed && mine.score !== null) {
       return { title: `Your ${month} list`, subtitle: `Score ${formatScore(mine.score)}`, icon: 'calendar', score: { value: mine.score, provisional: false } }
     }
-    const subtitle = phase === 'review' ? `In review · due ${when(bounds.deadlineAt)}` : `${done} of ${mine.taskCount} done`
+    // Crossed-out tasks don't count yet (SPEC §10.5): "2 of 3 done" leaves them out.
+    const { open, done } = openCount(mine)
+    const progress = open === 0 ? 'Tasks crossed out' : `${done} of ${open} done`
+    const subtitle = phase === 'review' ? `In review · due ${when(bounds.deadlineAt)}` : progress
     return { title: `Your ${month} list`, subtitle, icon: 'calendar', score: { value: mine.provisionalScore, provisional: true } }
   }
   const holders = listHolders(result).filter((id) => id !== me)
@@ -141,7 +145,28 @@ export function judgeDetail(member: MemberWeekResult, phase: WeekPhase, former: 
 export function planningFooter(taskCount: number, lockText: string): string {
   return taskCount === 0
     ? `Optional. Bigger things that take the month. Locks ${lockText}.`
-    : `Saves as you type. Locks ${lockText}. After that you tick it off, but can’t add to it.`
+    : `Saves as you type. Locks ${lockText}. After that you can still add tasks, but not change them.`
+}
+
+/** Under your locked list while tasks can still be added (SPEC §10.5): until its reviews open, `untilText`. */
+export function addWindowFooter(untilText: string): string {
+  return `Locked. You can still add tasks until ${untilText}. Friends see the date you added them.`
+}
+
+/** The add sheet's footer for a monthly list: `month` "October", `today` "October 24" (the day it is added). */
+export function monthlyAddFooter(month: string, today: string): string {
+  return `The task joins your ${month} list and gets reviewed in ${month}’s last week. Friends see it was added on ${today}. Once added, it can’t be edited or removed.`
+}
+
+/**
+ * You can add to your locked monthly list now (SPEC §10.2): in its add window (`lockAt ≤ now < reviewOpenAt`), still
+ * in the space, a player of the list (not its judge) with ≥ 1 task on it (a list empty at its lock never grows).
+ */
+export function canAddToList(list: Pick<MonthlyData, 'monthly' | 'plans'>, me: UID, memberIds: readonly UID[], nowMs: number): boolean {
+  const period = list.monthly
+  if (!period || !memberIds.includes(me) || !period.members.includes(me) || judgesOf(period).includes(me)) return false
+  if (nowMs < period.lockAt || nowMs >= period.reviewOpenAt) return false
+  return (list.plans[me]?.tasks.length ?? 0) > 0
 }
 
 /** "Kim and Ana have no October list." (players in a locked list without tasks), or null. */

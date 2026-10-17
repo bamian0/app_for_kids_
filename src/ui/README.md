@@ -247,6 +247,7 @@ The Friday review control: **Done (1) / Half (0.5) / Not done (0)**. `value: Mar
 ```tsx
 <MarkPicker value={marks[t.id] ?? null} onChange={(m) => setMark(t.id, m)} aria-label={`Mark for ${t.title}`} />
 ```
+`choices="vote"` turns it into the vote on a crossed-out task (SPEC §10.4): two segments, **Fair, Skip It** (`'fair'`, a white thumb) and **Not Done** (0, red), with the same look, motion and 44pt targets. `value` and `onChange` take a `ReviewMark` (`0 | 0.5 | 1 | 'fair'`).
 
 ### `CheckCircle`
 Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a prism glint, pulses an iridescent ring, gives a spring bounce, and plays a haptic. Props: `checked`, `onChange(next)`, `size` (default 24; the hit target is always 44), `disabled`, `aria-label`. Wrap the row in `Shimmer` for the full-row sweep.

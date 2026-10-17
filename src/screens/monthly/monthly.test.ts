@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { computeMonthly } from '../../domain/scoring.ts'
 import { monthlyBounds, weekBounds } from '../../domain/time.ts'
 import type { MonthlyData, MonthlyList, Plan, Progress, Review, Space, UID, Week, WeekData } from '../../domain/types.ts'
-import { judgeDetail, listWhen, monthlyCardView, monthlyPill, monthlyReviewStatus, noListNote, planningFooter } from './copy.ts'
+import { addWindowFooter, canAddToList, judgeDetail, listWhen, monthlyAddFooter, monthlyCardView, monthlyPill, monthlyReviewStatus, noListNote, planningFooter } from './copy.ts'
 import { reviewParts } from './review.ts'
 
 const HOUR = 3_600_000
@@ -199,6 +199,21 @@ describe('monthlyCardView', () => {
     expect(revealed).toMatchObject({ subtitle: 'Score 83%', score: { value: 250 / 3, provisional: false } })
   })
 
+  it('leaves crossed-out tasks out of the count, and says when the list was skipped (SPEC §10.5)', () => {
+    const cancel = { cancelled: true, changes: 1, at: listBounds.lockAt + DAY, why: 'Injured' }
+    const crossed = (data: MonthlyData, ids: string[]): MonthlyData => ({
+      ...data,
+      plans: { ...data.plans, a: { ...data.plans.a, tasks: data.plans.a.tasks.map((t) => (ids.includes(t.id) ? { ...t, cancel } : t)) } },
+    })
+    const progress: Record<UID, Progress> = { a: { uid: 'a', updatedAt: SEP1, done: { a0: true, a1: true } } }
+    expect(card(crossed(monthlyData(list(), { a: 3, b: 1 }, progress), ['a1']), active)).toMatchObject({ subtitle: '1 of 2 done', score: { value: 50, provisional: true } })
+    expect(card(crossed(monthlyData(list(), { a: 2, b: 1 }), ['a0', 'a1']), active)).toMatchObject({ subtitle: 'Tasks crossed out', score: { value: null } })
+    // Revealed, and the one reviewer said fair: the list is skipped, with no score.
+    const reviews: Review[] = [{ id: 'b_a', reviewerId: 'b', revieweeId: 'a', marks: { a0: 'fair' }, submittedAt: REVIEW }]
+    const skipped = crossed(monthlyData(list({ submittedBy: ['a', 'b', 'c'] }), { a: 1, b: 1 }, {}, reviews), ['a0'])
+    expect(card(skipped, REVIEW)).toEqual({ title: 'Your October list', subtitle: 'Skipped: friends said fair', icon: 'calendar' })
+  })
+
   it('names the friends with a list when you have none, and hides when nobody has one', () => {
     expect(card(monthlyData(list(), { b: 2, c: 1 }), active)).toEqual({
       title: 'October lists',
@@ -227,10 +242,34 @@ describe('monthly screen copy', () => {
 
   it('words the planning footer and the no-list note', () => {
     expect(planningFooter(0, 'Monday at midnight')).toBe('Optional. Bigger things that take the month. Locks Monday at midnight.')
-    expect(planningFooter(2, 'Monday at midnight')).toBe('Saves as you type. Locks Monday at midnight. After that you tick it off, but can’t add to it.')
+    expect(planningFooter(2, 'Monday at midnight')).toBe('Saves as you type. Locks Monday at midnight. After that you can still add tasks, but not change them.')
     expect(noListNote('October', ['Kim', 'Ana'])).toBe('Kim and Ana have no October list.')
     expect(noListNote('October', ['Kim'])).toBe('Kim has no October list.')
     expect(noListNote('October', [])).toBeNull()
+  })
+
+  it('words monthly adds (SPEC §10.5)', () => {
+    expect(addWindowFooter('Friday, Oct 30 at midnight')).toBe('Locked. You can still add tasks until Friday, Oct 30 at midnight. Friends see the date you added them.')
+    expect(monthlyAddFooter('October', 'October 14')).toBe(
+      'The task joins your October list and gets reviewed in October’s last week. Friends see it was added on October 14. Once added, it can’t be edited or removed.',
+    )
+  })
+
+  it('lets a player add to a list that had tasks at its lock, in its add window only (SPEC §10.2)', () => {
+    const members = ['a', 'b', 'c']
+    const active = listBounds.lockAt + 3 * DAY
+    expect(canAddToList(monthlyData(list(), { a: 2 }), 'a', members, active)).toBe(true)
+    // No list at its lock: nothing to add to.
+    expect(canAddToList(monthlyData(list(), { b: 2 }), 'a', members, active)).toBe(false)
+    // Before the lock you plan instead; from reviews opening it's closed.
+    expect(canAddToList(monthlyData(list(), { a: 2 }), 'a', members, listBounds.lockAt - 1)).toBe(false)
+    expect(canAddToList(monthlyData(list(), { a: 2 }), 'a', members, listBounds.reviewOpenAt)).toBe(false)
+    expect(canAddToList(monthlyData(list(), { a: 2 }), 'a', members, listBounds.reviewOpenAt - 1)).toBe(true)
+    // The list's judge, someone the list started without, and someone who left can't.
+    expect(canAddToList(monthlyData(list({ judges: ['a'] }), { a: 2 }), 'a', members, active)).toBe(false)
+    expect(canAddToList(monthlyData(list({ members: ['b', 'c'] }), { a: 2 }), 'a', members, active)).toBe(false)
+    expect(canAddToList(monthlyData(list(), { a: 2 }), 'a', ['b', 'c'], active)).toBe(false)
+    expect(canAddToList(monthlyData(null, { a: 2 }), 'a', members, active)).toBe(false)
   })
 
   it('says how each judge did', () => {

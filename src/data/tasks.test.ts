@@ -73,6 +73,53 @@ describe('decodeTasks', () => {
   })
 })
 
+describe('decodeTasks with cross-outs (SPEC §10.3)', () => {
+  const list = [{ id: 'a', title: 'A' }, { id: 'b', title: 'B', subs: ['b1|Step'] }, { id: 'c', title: 'C' }]
+
+  it('reads plans without a log exactly as before', () => {
+    const before = decodeTasks(list, { c: 3_000 }, toMs)
+    expect(decodeTasks(list, { c: 3_000 }, toMs, undefined)).toStrictEqual(before)
+    expect(decodeTasks(list, { c: 3_000 }, toMs, {})).toStrictEqual(before)
+    expect(decodeTasks(list, { c: 3_000 }, toMs, 'junk')).toStrictEqual(before)
+    expect(before.every((t) => !('cancel' in t))).toBe(true)
+  })
+
+  it('gives each task its current state; others stay plain', () => {
+    const tasks = decodeTasks(
+      list,
+      { c: 3_000 },
+      toMs,
+      {
+        '1:a': { at: 1_000, why: 'Pool closed' },
+        '1:c': { at: 4_000, why: 'Sick' },
+        '2:c': { at: 5_000 },
+      },
+    )
+    expect(tasks).toStrictEqual([
+      { id: 'a', title: 'A', cancel: { cancelled: true, changes: 1, at: 1_000, why: 'Pool closed' } },
+      { id: 'b', title: 'B', subtasks: [{ id: 'b1', title: 'Step' }] },
+      { id: 'c', title: 'C', addedAt: 3_000, cancel: { cancelled: false, changes: 2, at: 5_000, why: 'Sick' } },
+    ])
+  })
+
+  it('ignores entries for ids that aren’t on the list, and malformed ones', () => {
+    const tasks = decodeTasks(list, undefined, toMs, {
+      '1:zz': { at: 1_000, why: 'Not on the list' },
+      '1:b': { at: 'not a time', why: 'Bad time' },
+      '2:a': { at: 2_000 },
+      'x:c': { at: 1_000, why: 'Bad key' },
+    })
+    expect(tasks).toStrictEqual(decodeTasks(list, undefined, toMs))
+  })
+
+  it('a repeated id: the first task (the one kept) carries the cross-out', () => {
+    const tasks = decodeTasks([{ id: 't1', title: 'Call the client' }, { id: 't1', title: 'Copy' }], { t1: 2_000 }, toMs, {
+      '1:t1': { at: 3_000, why: 'They’re away' },
+    })
+    expect(tasks).toStrictEqual([{ id: 't1', title: 'Call the client', cancel: { cancelled: true, changes: 1, at: 3_000, why: 'They’re away' } }])
+  })
+})
+
 describe('encodeTask', () => {
   it('stores steps as id|title lines and never the add time', () => {
     const task: Task = { id: 't1', title: 'Client work', subtasks: [{ id: 's1', title: 'Send the\ninvoice ' }], addedAt: 5 }

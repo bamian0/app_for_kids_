@@ -1,6 +1,7 @@
 // Monthly lists (SPEC §9.5): spaces/{id}/monthly/{monthId}, a week-shaped doc with plans, progress and
 // reviews, on the month's timeline (first week's start, second week's lock, last week's review window).
-// No appends after the lock and no revenue on monthly tasks.
+// After the lock a list grows only by appends until its reviews open (SPEC §10.2), for someone who had a
+// task on it at its lock. No revenue on monthly tasks.
 import {
   arrayRemove,
   arrayUnion,
@@ -15,30 +16,39 @@ import {
   writeBatch,
   type DocumentSnapshot,
 } from 'firebase/firestore'
+import { isCancelled } from '../domain/cancel.ts'
 import { now } from '../domain/clock.ts'
+import { isReviewMark } from '../domain/decode.ts'
 import { reviewDocId } from '../domain/ids.ts'
 import { boundsFor, RETIME_NOTICE_MS, scheduleOf } from '../domain/schedule.ts'
 import { judgesOf } from '../domain/scoring.ts'
 import { boundsDiffer, monthlyBounds, monthlyWeeks, weekBounds, weekIdsInMonth, type WeekBounds } from '../domain/time.ts'
-import type { Mark, MonthData, MonthId, MonthlyData, MonthlyList, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
+import type { MonthData, MonthId, MonthlyData, MonthlyList, ReviewMark, Space, Task, UID, Week, WeekData, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
-import { isMark, toMonthly, toPlan, toProgress, toSpace, toWeek } from './convert.ts'
-import { humanError, MSG } from './errors.ts'
+import { toMonthly, toPlan, toProgress, toSpace, toWeek } from './convert.ts'
+import { CROSSED_OUT_TICK, humanError, MSG } from './errors.ts'
 import { requireUser } from './session.ts'
+import { requireServer } from './spaces.ts'
 import { combine, peek, type Start } from './store.ts'
 import { encodeTask } from './tasks.ts'
 import {
+  appendTask,
   cleanTasks,
+  MAX_TASKS,
+  NOT_IN_SPACE,
   periodRef,
   rawJudges,
   sameList,
   staleTicks,
   startWeek,
   storedTime,
+  taskOf,
+  taskToAdd,
   upkeepKey,
   watchPeriod,
   weekKey,
   weekRef,
+  type NewTaskInput,
 } from './weeks.ts'
 
 const HOUR_MS = 3_600_000
@@ -48,9 +58,16 @@ const CREATE_LEAD_MS = 8 * DAY_MS
 /** The upkeep moves a list's bounds only when they are this far off where its weeks put them. */
 const RETIME_TOLERANCE_MS = 60_000
 
-const JUDGING_MONTH = 'You’re judging this month’s lists, so there’s no list to plan.'
+export const JUDGING_MONTH = 'You’re judging this month’s lists, so there’s no list to plan.'
 const NOT_IN_LIST = 'This month’s list started without you. You’re in from next month.'
 const NOT_REVIEW_TIME = 'Monthly lists are reviewed in the month’s last week.'
+const ADDS_CLOSED = 'Adding tasks closed when reviews opened.'
+
+/** "October": the month a list is named after in its messages. */
+export function monthName(monthId: MonthId): string {
+  const [year, month] = monthId.split('-').map(Number)
+  return new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month - 1, 15)))
+}
 
 function listRef(spaceId: string, monthId: MonthId) {
   return periodRef(spaceId, 'monthly', monthId)
@@ -347,6 +364,49 @@ export async function saveMonthlyPlan(space: Space, monthId: MonthId, tasks: Tas
   }
 }
 
+/**
+ * Appends one task (with its steps) to your monthly list after its lock, until its reviews open (SPEC §10.2), like
+ * addTaskAfterLock for a week: final, at most 25 tasks, `added[id]` the server time, the plan updated (never set) so
+ * its cross-outs stay. Only a list that had a task at its lock grows. An id already on the list resolves without
+ * writing. Resolves with the task (`addedAt` the device's estimate until the snapshot). Fails at once offline.
+ */
+export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, input: NewTaskInput): Promise<Task> {
+  const uid = requireUser().uid
+  const task = taskToAdd(input)
+  const month = monthName(monthId)
+  const noList = `You had no ${month} list when it locked, so there’s nothing to add to.`
+  const ref = planRef(space.id, monthId, uid)
+  try {
+    let list = await storedList(space, monthId)
+    const bounds = list ?? monthlyBounds(monthId, (w) => boundsFor(space, w))
+    if (now() < bounds.lockAt) throw new Error(`Your ${month} list hasn’t locked yet. Add the task to it instead.`)
+    if (now() >= bounds.reviewOpenAt) throw new Error(ADDS_CLOSED)
+    if (!space.memberIds.includes(uid)) throw new Error(NOT_IN_SPACE)
+    // Nobody opened the app while the list could be made: nobody had one at its lock.
+    if (!list) throw new Error(noList)
+    if (!list.members.includes(uid)) {
+      // The cached copy may be older than the server's.
+      const snap = await getDoc(listRef(space.id, monthId))
+      list = snap.exists() ? toMonthly(snap, space.id) : list
+      if (!list.members.includes(uid)) throw new Error(NOT_IN_LIST)
+    }
+    if (judgesOf(list).includes(uid)) throw new Error(JUDGING_MONTH)
+    await requireServer(uid)
+    await runTransaction(getFirebase().db, async (tx) => {
+      const snap = await tx.get(ref)
+      const stored: unknown = snap.get('tasks')
+      const ids = Array.isArray(stored) ? stored.map((t) => (t as { id?: unknown } | null)?.id) : []
+      if (ids.includes(task.id)) return
+      // A list grows only for someone who had a task on it at its lock (the rules' minBefore 1).
+      if (ids.length === 0) throw new Error(noList)
+      appendTask(tx, ref, snap, task, `Your ${month} list can have up to ${MAX_TASKS} tasks.`)
+    })
+  } catch (e) {
+    throw humanError(e)
+  }
+  return { ...task, addedAt: Date.now() }
+}
+
 /** Your monthly plan and check-offs as this device has them (cache, else the open list); undefined when it can't tell. */
 async function localList(space: Space, monthId: MonthId, uid: UID): Promise<{ tasks?: Task[]; done?: Record<string, boolean> }> {
   const fromCache = (ref: ReturnType<typeof planRef>) => getDocFromCache(ref).catch(() => null)
@@ -364,7 +424,7 @@ const ticking = new Map<string, Promise<void>>()
 /**
  * Ticks a monthly task or step until the list's deadline (no earnings). One check-off of a list at a time on
  * this device until its write is issued, like setTaskDone; a full list of steps makes room by clearing ticks
- * of deleted tasks.
+ * of deleted tasks. A task crossed out on this device's copy of the plan, or a step of one, isn't ticked.
  */
 export async function setMonthlyTaskDone(space: Space, monthId: MonthId, id: string, done: boolean): Promise<void> {
   const uid = requireUser().uid
@@ -383,6 +443,8 @@ export async function setMonthlyTaskDone(space: Space, monthId: MonthId, id: str
     if (!list || now() >= list.deadlineAt) throw new Error(MSG.closed)
     if (!list.members.includes(uid)) throw new Error(NOT_IN_LIST)
     const local = await localList(space, monthId, uid)
+    const task = local.tasks && taskOf(local.tasks, id)
+    if (task && isCancelled(task)) throw new Error(CROSSED_OUT_TICK)
     const write = setDoc(progressRef(space.id, monthId, uid), { done: { ...staleTicks(local, id), [id]: done }, updatedAt: serverTimestamp() }, { merge: true })
     release()
     await write
@@ -393,10 +455,11 @@ export async function setMonthlyTaskDone(space: Space, monthId: MonthId, id: str
   }
 }
 
-/** Submits your monthly reviews in one batch with the list's submittedBy, inside its review window. */
-export async function submitMonthlyReviews(space: Space, monthId: MonthId, reviews: { revieweeId: UID; marks: Record<string, Mark> }[]): Promise<void> {
+/** Submits your monthly reviews in one batch with the list's submittedBy, inside its review window. A crossed-out
+ *  task's mark is 'fair' (Fair, Skip It) or 0 (Not Done), SPEC §10.4. */
+export async function submitMonthlyReviews(space: Space, monthId: MonthId, reviews: { revieweeId: UID; marks: Record<string, ReviewMark> }[]): Promise<void> {
   const uid = requireUser().uid
-  if (reviews.some((r) => r.revieweeId === uid || !Object.values(r.marks).every(isMark))) throw new Error(MSG.generic)
+  if (reviews.some((r) => r.revieweeId === uid || !Object.values(r.marks).every(isReviewMark))) throw new Error(MSG.generic)
   const list = await storedList(space, monthId)
   if (!list) throw new Error(NOT_REVIEW_TIME)
   if (now() < list.reviewOpenAt) throw new Error(NOT_REVIEW_TIME)

@@ -4,6 +4,7 @@ import { formatCountdown } from '../../domain/time.ts'
 import type { WeekBounds, WeekPhase } from '../../domain/time.ts'
 import type { UID } from '../../domain/types.ts'
 import type { IconName } from '../../ui/index.ts'
+import { openCount } from './cancel.ts'
 
 export interface StatusLine {
   text: string
@@ -123,8 +124,11 @@ function usualLine(result: WeekResult, bounds: WeekBounds, uid: UID, nowMs: numb
       if (!inWeek) return { text: ctx.joinedLate ? 'You’re in from next week' : 'Sitting this week out', icon: 'calendar', tone: 'default' }
       if (judge) return { text: 'Judging this week', icon: 'person2', tone: 'default' }
       if (tasks === 0) return { text: 'Nothing planned this week', icon: 'xmark', tone: 'urgent' }
-      const done = me.tasks.filter((t) => t.selfDone).length
-      return { text: `${done} of ${tasks} done`, icon: done === tasks ? 'checkmark' : 'listBullet', tone: done === tasks ? 'done' : 'default' }
+      // Crossed-out tasks don't count yet (SPEC §10.5): left out of "2 of 3 done".
+      const { crossed, done } = openCount(me)
+      const open = tasks - crossed
+      if (open === 0) return { text: 'Tasks crossed out', icon: 'xmark', tone: 'default' }
+      return { text: `${done} of ${open} done`, icon: done === open ? 'checkmark' : 'listBullet', tone: done === open ? 'done' : 'default' }
     }
     case 'review': {
       if (!inWeek) return { text: 'Friends are reviewing', icon: 'clock', tone: 'default' }

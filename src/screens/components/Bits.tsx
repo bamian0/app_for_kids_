@@ -46,6 +46,24 @@ export function MarkGlyph({ mark }: { mark: number }) {
   )
 }
 
+/** A crossed-out task's lead (SPEC §10.5): a gray ✕ in a circle where its check circle was. Not a control. */
+export function CrossedOutGlyph({ small }: { small?: boolean }) {
+  return (
+    <span className={cx('s-crossed', small && 's-crossed--small')} role="img" aria-label="Crossed out">
+      <Icon name="xmark" size={small ? 9 : 11} weight={2.8} />
+    </span>
+  )
+}
+
+/** A crossed-out task friends excused ("Skipped"): a gray minus in a circle, where the mark glyph goes. */
+export function SkippedGlyph() {
+  return (
+    <span className="s-mark s-mark--skipped" role="img" aria-label="Skipped">
+      <Icon name="minusCircle" size={24} weight={1.7} />
+    </span>
+  )
+}
+
 /** Small score ring with the number beside it, for list rows. A provisional value stays graphite. */
 export function MiniScore({ value, threshold = 90, caption, iridescent = true }: { value: number | null; threshold?: number; caption?: string; iridescent?: boolean }) {
   return (

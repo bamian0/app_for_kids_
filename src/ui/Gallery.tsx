@@ -1,6 +1,6 @@
 // Dev-only component gallery (gallery.html). Doubles as a living reference for screen code.
 import { useState } from 'react'
-import type { Mark } from '../domain/types.ts'
+import type { ReviewMark } from '../domain/types.ts'
 import {
   ActivityIndicator,
   Avatar,
@@ -81,7 +81,7 @@ function Home() {
   const [ring, setRing] = useState<'60' | '90' | '95'>('95')
   const [done, setDone] = useState<Record<string, boolean>>({ t2: true })
   const [shimmerKey, setShimmerKey] = useState<string | undefined>()
-  const [marks, setMarks] = useState<Record<string, Mark | null>>({ t1: 1, t2: 0.5, t3: null, t4: 0 })
+  const [marks, setMarks] = useState<Record<string, ReviewMark | null>>({ t1: 1, t2: 0.5, t3: null, t4: 0 })
   const [reminders, setReminders] = useState(true)
   const [friday, setFriday] = useState(false)
   const [name, setName] = useState('Marco')
@@ -194,6 +194,12 @@ function Home() {
           title="Update the reel"
           accessory={<MarkPicker size="compact" value={marks.t4 ?? null} onChange={(m) => setMarks((x) => ({ ...x, t4: m }))} />}
         />
+        <div className="g-review-row">
+          <Text variant="body" as="div">
+            Swim 3 times (crossed out)
+          </Text>
+          <MarkPicker choices="vote" value={marks.t5 ?? null} onChange={(m) => setMarks((x) => ({ ...x, t5: m }))} aria-label="Vote for Swim 3 times" />
+        </div>
       </Section>
 
       <Section header="Friends" headerAccessory={<AvatarStack people={PEOPLE} max={4} size={26} />}>
@@ -398,7 +404,7 @@ function Home() {
 }
 
 function ReviewScreen() {
-  const [marks, setMarks] = useState<Record<string, Mark | null>>({})
+  const [marks, setMarks] = useState<Record<string, ReviewMark | null>>({})
   const glow = useEdgeGlow()
   const nav = useNav()
   const complete = TASKS.every((t) => marks[t.id] != null)

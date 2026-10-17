@@ -63,7 +63,7 @@ describe('help content', () => {
     // Judges and custom times.
     expect(section('spaces')).toContain('Turn on Only Rate Friends')
     expect(section('spaces')).toContain('weeks you judge count as 0%')
-    expect(section('spaces')).toContain('Changes start at least a day ahead, and everyone gets a notice.')
+    expect(section('spaces')).toContain('with at least a day’s notice to everyone.')
     // Monthly lists.
     expect(section('week')).toContain('it locks with the second week’s list and counts as one extra week')
     expect(section('review')).toContain('you also review your friends’ monthly lists')
@@ -80,10 +80,20 @@ describe('help content', () => {
     )
   })
 
+  it('covers monthly adds, crossing out and the fair vote (SPEC §10.9)', () => {
+    expect(section('week')).toContain('You can add to it until reviews open.')
+    expect(section('week')).toContain('Cross it out with a reason before reviews open.')
+    expect(section('week')).toContain('You can undo that twice.')
+    expect(section('review')).toContain('For a crossed-out task, pick Fair, Skip It or Not Done. If most say fair, it doesn’t count.')
+    // The steps and ticking paragraphs became one.
+    expect(section('week')).toContain('Tick tasks off as you finish them; everyone in the space sees your ticks.')
+    expect(section('week')).toContain('They can’t be changed, show the day you added them')
+  })
+
   it('reads in about three minutes', () => {
     const words = helpText.split(/\s+/).filter(Boolean).length
-    // SPEC §9.12: 689 words with the batch-2 paragraphs; the cap is 700.
-    expect(words).toBe(689)
+    // SPEC §10.9: 696 words with the batch-2.5 paragraphs; the cap is 700.
+    expect(words).toBe(696)
     expect(words).toBeLessThanOrEqual(700)
     for (const s of sections) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })
@@ -207,7 +217,8 @@ describe('help for a space’s own times', () => {
 
   it('stays within the limits', () => {
     const text = custom.flatMap((s) => [s.title, ...s.paragraphs]).join('\n')
-    expect(text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(700)
+    // SPEC §10.9: 699 words on these times.
+    expect(text.split(/\s+/).filter(Boolean).length).toBe(699)
     expect(text).not.toMatch(/['"]/)
     for (const s of custom) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })

@@ -483,3 +483,76 @@ button.tk-step__main {
 .s-review-task__hint .tk-badge {
   margin-left: 2px;
 }
+
+/* ---------- Crossed-out tasks (SPEC §10.5) ---------- */
+
+/* Where the check circle was: a gray ✕ in a hairline circle, like a check dot that won't be ticked. */
+.s-crossed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin: 1px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--system-gray3);
+  color: var(--system-gray);
+}
+.s-crossed--small {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.s-mark--skipped {
+  color: var(--system-gray);
+}
+/* The title of a crossed-out task: struck through in the secondary color (readable in both modes). */
+.tk-struck {
+  color: var(--secondary-label);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--secondary-label) 80%, transparent);
+}
+/* Its steps keep their ticks, dimmed: nothing more can be ticked. */
+.tk-block--crossed .tk-steps {
+  opacity: 0.55;
+}
+/* The reason, quoted under the title, may run long: up to two lines. */
+.tk-why {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* The review sheet's crossed-out line: glyph, then "Crossed out Wednesday: “…”". */
+.s-review-task__crossed {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0 2px;
+  color: var(--secondary-label);
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+}
+.s-review-task__crossed .s-crossed {
+  margin-top: 2px;
+}
+.s-review-task__crossed-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.s-review-task__note {
+  margin-top: 8px;
+  color: var(--secondary-label);
+  font: 400 13px/18px var(--font);
+  letter-spacing: -0.003em;
+}
+/* The reason field's counter, from 100 characters. */
+.tk-why-count {
+  color: var(--secondary-label);
+}
+.tk-why-count.is-full {
+  color: var(--system-red);
+}

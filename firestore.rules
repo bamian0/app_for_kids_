@@ -805,8 +805,9 @@ service cloud.firestore {
       // scoring ignores a judge's plan anyway).
       // The plan rules try three branches in this order (SPEC §10.7): the whole list before the lock,
       // then an append, then a cross-out or undo. A later branch pays for the ones before it (an append
-      // ~325, a cross-out ~482 with the longest log), so the whole list costs exactly what it did before
-      // the other two existed. Don't reorder them to make a cross-out cheaper: every save would pay.
+      // ~325, a cross-out ~482 with the longest log), so the whole list costs what it did before the
+      // other two existed (a week's exactly, a monthly list's one `||` more). Don't reorder them to make
+      // a cross-out cheaper: every save would pay.
 
       // Exactly {id, title} or {id, title, subs}: size() and the keys read leave no room for others.
       // matches() also rejects non-strings. Titles are 1-120 characters; blank titles are left to the
@@ -983,13 +984,14 @@ service cloud.firestore {
           allow read: if isMember(spaceId);
           // Before lockAt the whole list is written ({tasks, updatedAt}: both are read, so hasOnly
           // is enough); after it, tasks are only appended, crossed out and restored. Keep this order
-          // (SPEC §10.7): the whole list first, so it costs what it always did.
+          // and the brackets (SPEC §10.7): the whole list first, so it costs what it always did. With
+          // A || (B || C) a passing A evaluates one `||`, as before batch 2.5; A || B || C would be two.
           allow create, update: if (canPlan(spaceId, 'weeks', weekId, uid)
               && incoming().keys().hasOnly(['tasks', 'updatedAt'])
               && validTasks(incoming().tasks)
               && incoming().updatedAt == request.time)
-            || appendsTask(spaceId, 'weeks', weekId, uid, 0)
-            || togglesCancel(spaceId, 'weeks', weekId, uid);
+            || (appendsTask(spaceId, 'weeks', weekId, uid, 0)
+              || togglesCancel(spaceId, 'weeks', weekId, uid));
           // Before lockAt only: added and crossed-out tasks can't be taken back.
           allow delete: if canPlan(spaceId, 'weeks', weekId, uid);
         }
@@ -1022,13 +1024,14 @@ service cloud.firestore {
 
         match /plans/{uid} {
           allow read: if isMember(spaceId);
-          // As for a week, in the same order (SPEC §10.7).
+          // As for a week, in the same order and brackets (SPEC §10.7). Before batch 2.5 this rule had no
+          // `||`, so the whole list now costs one expression more (still measured at 895, as a week's).
           allow create, update: if (canPlan(spaceId, 'monthly', monthId, uid)
               && incoming().keys().hasOnly(['tasks', 'updatedAt'])
               && validTasks(incoming().tasks)
               && incoming().updatedAt == request.time)
-            || appendsTask(spaceId, 'monthly', monthId, uid, 1)
-            || togglesCancel(spaceId, 'monthly', monthId, uid);
+            || (appendsTask(spaceId, 'monthly', monthId, uid, 1)
+              || togglesCancel(spaceId, 'monthly', monthId, uid));
           allow delete: if canPlan(spaceId, 'monthly', monthId, uid);
         }
 

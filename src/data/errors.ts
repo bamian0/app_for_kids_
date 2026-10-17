@@ -12,6 +12,10 @@ export const MSG = {
   signedOut: 'Please sign in first.',
 }
 
+/** A tick on a task you crossed out (SPEC §10.3, §10.6), or on one of its steps: refused until you undo it. Lives
+ *  here so the tick code (weeks.ts, monthly.ts) and cancel.ts share it without importing each other. */
+export const CROSSED_OUT_TICK = 'You crossed this task out, so it can’t be ticked.'
+
 const AUTH: Record<string, string> = {
   'auth/email-already-in-use': 'An account with this email already exists. Try signing in.',
   'auth/weak-password': 'Use at least 6 characters for your password.',

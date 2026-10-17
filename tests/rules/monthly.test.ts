@@ -181,6 +181,16 @@ describe('monthly adds after the lock (SPEC §10.2)', () => {
     await allowed(append('alice', late()))
   })
 
+  test('a paused week doesn\'t stop adds: the list still counts (SPEC §10.2)', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(ABC, { paused: { [M]: 'W' } }),
+      'spaces/s1/weeks/W': weekDoc('active', ABC),
+      [`spaces/s1/monthly/${M}`]: monthlyDoc('active', ABC, []),
+      [`spaces/s1/monthly/${M}/plans/alice`]: { tasks: tasks(2), updatedAt: ts(Date.now() - DAY) },
+    })
+    await allowed(append('alice', late()))
+  })
+
   test('nothing else about the list can change in an append', async () => {
     await setupAdds('active')
     const [t0, t1, late0] = STORED

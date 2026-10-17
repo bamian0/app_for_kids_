@@ -1,7 +1,7 @@
 // Firestore documents -> domain types. Timestamps become epoch ms; a pending serverTimestamp()
 // reads as the SDK's local estimate, so optimistic writes render immediately.
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
-import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras } from '../domain/decode.ts'
+import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras, isReviewMark } from '../domain/decode.ts'
 import type {
   Earning,
   Goal,
@@ -16,6 +16,7 @@ import type {
   Plan,
   Progress,
   Review,
+  ReviewMark,
   Settlement,
   Space,
   UID,
@@ -126,9 +127,10 @@ function msOrNull(value: unknown): number | null {
   return value instanceof Timestamp ? value.toMillis() : typeof value === 'number' ? value : null
 }
 
+/** A plan with its tasks' add times and cross-outs (SPEC §6.2, §10.3); a pending cross-out reads with the SDK's estimate. */
 export function toPlan(snap: Snap): Plan {
   const d = data(snap)
-  return { uid: snap.id, tasks: decodeTasks(d.tasks, d.added, msOrNull), updatedAt: ms(d.updatedAt) }
+  return { uid: snap.id, tasks: decodeTasks(d.tasks, d.added, msOrNull, d.cancels), updatedAt: ms(d.updatedAt) }
 }
 
 export function toProgress(snap: Snap): Progress {
@@ -142,10 +144,11 @@ export function isMark(v: unknown): v is Mark {
   return v === 0 || v === 0.5 || v === 1
 }
 
+/** A review's marks: Done, Half, Not done and, since batch 2.5, the fair vote ('fair', SPEC §10.4); anything else is dropped. */
 export function toReview(snap: Snap): Review {
   const d = data(snap)
-  const marks: Record<string, Mark> = {}
-  for (const [taskId, value] of Object.entries(record(d.marks))) if (isMark(value)) marks[taskId] = value
+  const marks: Record<string, ReviewMark> = {}
+  for (const [taskId, value] of Object.entries(record(d.marks))) if (isReviewMark(value)) marks[taskId] = value
   return { id: snap.id, reviewerId: str(d.reviewerId), revieweeId: str(d.revieweeId), marks, submittedAt: ms(d.submittedAt) }
 }
 

@@ -8,16 +8,18 @@
 // that still passes is its headroom (a term is 5.24 expressions: 191 of them alone fill the limit, so
 // a change of a few expressions may not show); then likewise with k reads of missing docs (tried up to
 // 10). MEASURE_ONLY=<regex> measures only the cases whose names match. Measured 2026-10-14 (emulator of
-// firebase-tools 15.33), the plan and review rows again on 2026-10-17 for batch 2.5:
+// firebase-tools 15.33), the plan, append, cross-out and review rows again on 2026-10-17 for batch 2.5.
+// Spare reads of a batch can differ by one between runs of the same rules (the plan rows: 9 or 10):
 //
 //   case                                                       used   headroom   spare reads
-//   week plan, 25 × 8, batched with the week fill               895      105          10   (unchanged)
+//   week plan, 25 × 8, batched with the week fill               895      105        9-10   (unchanged, also
+//     at the finer steps of the guard at the end of this file)
 //   week append, the 25th full task, old client's set, no log   325      675           8   (was 304)
 //   week append, the 25th full task, 120-entry log (update)     325      675           8
 //   week cross-out: 5th change of the 25th of 25 × 8 tasks,     482      518           8
 //     124 log entries, a 120-character reason
-//   monthly plan, 25 × 8, batched with syncsPeriod              895      105           9   (unchanged; the
-//     batch-2 rules leave 9 spare reads too: the 10 recorded before was a slip)
+//   monthly plan, 25 × 8, batched with syncsPeriod              895      105        9-10   (one `||` more
+//     than its batch-2 rule, so now exactly a week plan's cost)
 //   monthly append, the 25th full task, 120-entry log           325      675           8
 //   monthly cross-out, as the week's                            482      518           8
 //   validNewWeek: own times, judges, a note, 8 members          450      550           9
@@ -37,15 +39,16 @@
 //   months create, its last week and list stored                288      712           7
 //   months re-freeze of an early freeze                         319      681           7
 //   owner's house-stakes edit, the space op (2 freezes)         702      298          10
-//   weekly review, 25 marks (one 'fair'), of a 7-review submit  487      513           9
-//   monthly review, 25 marks (one 'fair'), of a 7-review submit 487      513           9   ('fair': < 1 term)
+//   weekly review, 25 marks (one 'fair'), of a 7-review submit  487      513           9   ('fair' in the
+//   monthly review, 25 marks (one 'fair'), of a 7-review submit 487      513           9   list: ~2, < 1 term)
 //   setJudge, the space op of space + 4 periods                 283      717          10
 //   settlement, one of a group line of 7                        241      759           9
 //
 // The plan path keeps canPlan's judge check: its headroom (105) is above the 40 SPEC §9.4 asks for.
 // The plan rules try the whole list, then an append, then a cross-out (SPEC §10.7), so a cross-out
 // pays for both branches before it; that order keeps the whole-list save at 895 (guarded at the end
-// of this file). Don't reorder them to make cross-outs cheaper.
+// of this file, also at a finer step). Don't reorder them to make cross-outs cheaper, and keep them
+// as A || (B || C): a flat A || B || C costs every whole-list save one expression more.
 // "moved clock": validNewMonthly can't run on real time on most days, so it is measured on the
 // calendar.test.ts variant, which costs a little more than the published rule.
 import { describe, expect, test } from 'vitest'
@@ -121,14 +124,14 @@ const planBranch = (next: string) => ({
   point: `&& incoming().updatedAt == request.time)\n            || ${next}`,
   padded: `&& incoming().updatedAt == request.time && pad(1) && apad())\n            || ${next}`,
 })
-const WEEK_PLAN = planBranch("appendsTask(spaceId, 'weeks', weekId, uid, 0)")
+const WEEK_PLAN = planBranch("(appendsTask(spaceId, 'weeks', weekId, uid, 0)")
 /** appendsTask is shared by weeks and monthly lists, and so is togglesCancel. */
 const APPEND = atEnd('&& d.added[t.id] == request.time;')
 const TOGGLE = { point: '&& v.why.trim().size() > 0);', padded: '&& v.why.trim().size() > 0) && pad(1) && apad();' }
 const WEEK_REVIEW = atEnd("validReview(spaceId, 'weeks', weekId, rid);")
 const MONTHLY_UPDATE = atEnd('|| retimesMonthly(spaceId, monthId));')
 const MONTHLY_CREATE = atEnd('validNewMonthly(spaceId, monthId, incoming());')
-const MONTHLY_PLAN = planBranch("appendsTask(spaceId, 'monthly', monthId, uid, 1)")
+const MONTHLY_PLAN = planBranch("(appendsTask(spaceId, 'monthly', monthId, uid, 1)")
 const MONTHLY_REVIEW = atEnd("validReview(spaceId, 'monthly', monthId, rid);")
 const STAKES_CREATE = atEnd('&& incoming().agreed == {};')
 const STAKES_UPDATE = atEnd('(editsOwnStakes(spaceId, uid) || agreesToStakes(spaceId, uid));')
@@ -533,16 +536,22 @@ function padFns(k: number): string {
 const apadFn = (k: number) =>
   `function apad() { return ${k === 0 ? 'true' : Array.from({ length: k }, (_, i) => `!exists(/databases/$(database)/documents/zzpad/a${i})`).join(' && ')}; }`
 
-function padded(c: Pick<Case, 'point' | 'padded' | 'movedClock'>, terms: number, reads: number): string {
+/** `steps` + 1 `true`s: each step is about 3 expressions, a finer unit than a term (the guard below). */
+const fpadFn = (steps: number) => `function fpad() { return ${Array.from({ length: steps + 1 }, () => 'true').join(' && ')}; }`
+
+/** The published rules with the pads in `c`'s condition: `terms` terms, `reads` reads and, when
+ *  `steps` is given, `&& fpad()` with that many steps too. */
+function padded(c: Pick<Case, 'point' | 'padded' | 'movedClock'>, terms: number, reads: number, steps?: number): string {
   const base = c.movedClock ? movedClock(PUBLISHED_RULES) : PUBLISHED_RULES
   if (base.split(c.point).length !== 2) throw new Error(`injection point not unique: ${c.point}`)
+  const fine = steps === undefined ? '' : `\n${fpadFn(steps)}`
   return base
-    .replace('match /databases/{database}/documents {', `match /databases/{database}/documents {\n${padFns(terms)}\n${apadFn(reads)}\nmatch /zzcal/{id} { allow write: if pad(1); }`)
-    .replace(c.point, c.padded)
+    .replace('match /databases/{database}/documents {', `match /databases/{database}/documents {\n${padFns(terms)}\n${apadFn(reads)}${fine}\nmatch /zzcal/{id} { allow write: if pad(1); }`)
+    .replace(c.point, steps === undefined ? c.padded : c.padded.replace('&& apad()', '&& apad() && fpad()'))
 }
 
-async function passes(c: Case, terms: number, reads: number): Promise<boolean> {
-  if (!(await loadRules(padded(c, terms, reads)))) return false
+async function passes(c: Case, terms: number, reads: number, steps?: number): Promise<boolean> {
+  if (!(await loadRules(padded(c, terms, reads, steps)))) return false
   await clear()
   await seed(c.seed())
   try {
@@ -595,17 +604,24 @@ describe.runIf(process.env.MEASURE)('measure headroom', () => {
   })
 })
 
-// SPEC §10.7: the whole-list saves must cost exactly what they did before appends kept the cross-out
-// log and cross-outs existed (895, so the 20 pad terms of their measured 105 of headroom still fit).
-// If one of these fails, a change made every plan save more expensive: put new checks in the later
-// branches (append, cross-out), never in front of the whole-list branch.
+// SPEC §10.7: the whole-list saves must cost what they did before appends kept the cross-out log and
+// cross-outs existed (895, so the 20 pad terms of their measured 105 of headroom still fit). Terms are
+// coarse (5.24 expressions), so the finer check pads with 17 terms and 4 steps (about 3 expressions
+// each): that is the most a 25 × 8 week plan took under the batch-2 rules, measured on 2026-10-17
+// (firebase-tools 15.33) with 17 terms and 5 steps failing, and a monthly plan with the third branch
+// now costs the same (one `||` more than its batch-2 rule had). One expression more on the whole-list
+// branch, e.g. a flat A || B || C instead of A || (B || C), fails the finer check. If one of these
+// fails, a change made every plan save more expensive: put new checks in the later branches (append,
+// cross-out), never in front of the whole-list branch. (After an emulator upgrade, re-measure first.)
 describe('the whole-list saves keep their measured headroom', () => {
   const MEASURED_TERMS = 20
+  const FINE = { terms: 17, steps: 4 }
   for (const name of ['week plan, 25 × 8, batched with the week fill', 'monthly plan, 25 × 8, batched with syncsPeriod']) {
     test(name, async () => {
       const c = CASES.find((x) => x.name === name)!
       try {
         expect(await passes(c, MEASURED_TERMS, 0), `${name} with ${MEASURED_TERMS} pad terms`).toBe(true)
+        expect(await passes(c, FINE.terms, 0, FINE.steps), `${name} with ${FINE.terms} pad terms and ${FINE.steps} steps`).toBe(true)
       } finally {
         await loadRules(PUBLISHED_RULES)
       }

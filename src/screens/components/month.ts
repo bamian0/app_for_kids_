@@ -1,5 +1,6 @@
 // Which month to show, and the month verdict in words (who owes whom, and who may mark it settled).
 import { scheduleOf } from '../../domain/schedule.ts'
+import { isMonthPlayer } from '../../domain/scoring.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
 import { debtLines, monthDebts, monthTerms, streaksFor } from '../../domain/stakes.ts'
 import type { DebtLine, House, Streaks } from '../../domain/stakes.ts'
@@ -172,9 +173,10 @@ export function soFar(results: Record<UID, MemberMonthResult>, threshold: number
   return out
 }
 
-/** The member plays the month: a week they didn't judge (not paused) or a monthly list. */
+/** The member plays the month: a week they didn't judge that is neither paused nor skipped, or a monthly list that
+ *  isn't skipped (SPEC §10.4; the domain's own test, so screens and the reminders job agree). */
 export function playsMonth(result: MemberMonthResult): boolean {
-  return result.weeks.some((w) => !w.paused) || !!result.monthly
+  return isMonthPlayer(result)
 }
 
 /** The member only judged this month (weeks or its lists) and has no score. */
@@ -184,17 +186,23 @@ export function judgeOnly(result: MemberMonthResult): boolean {
 
 // ---------- The month view's rows (SPEC §9.3–§9.8) ----------
 
+/** Weeks and the monthly list friends excused entirely this month (SPEC §10.4): listed, never averaged. */
+export function skippedCount(result: MemberMonthResult): number {
+  return result.weeks.filter((w) => w.skipped).length + (result.monthly?.skipped ? 1 : 0)
+}
+
 /**
- * A member's month in a line: "3 weeks scored · 1 paused · −5 late", "4 weeks + October list scored", or for
- * someone who only judged "Judge · no score this month · didn’t review 2". `weekClosed` tells which judged weeks
- * have closed (in a month they also play, each one counts as a 0% week).
+ * A member's month in a line: "3 weeks scored · 1 paused · −5 late", "4 weeks + October list scored", "3 weeks
+ * scored · 1 skipped", or for someone who only judged "Judge · no score this month · didn’t review 2".
+ * `weekClosed` tells which judged weeks have closed (in a month they also play, each one counts as a 0% week).
  */
 export function monthSummary(result: MemberMonthResult, weekClosed: (weekId: string) => boolean): string {
   if (judgeOnly(result)) {
     const skipped = result.skippedAsJudge ?? 0
     return `Judge · no score this month${skipped > 0 ? ` · didn’t review ${skipped}` : ''}`
   }
-  if (result.finalScore === null) return 'No scored weeks yet'
+  const skipped = skippedCount(result)
+  if (result.finalScore === null) return skipped > 0 ? `No scored weeks yet · ${skipped} skipped` : 'No scored weeks yet'
   const judgedScored = playsMonth(result) ? (result.judged ?? []).filter(weekClosed).length : 0
   const scored = result.weeks.filter((w) => !w.paused && w.closed && w.score !== null).length + judgedScored
   const list = !!result.monthly?.closed && result.monthly.score !== null
@@ -202,29 +210,32 @@ export function monthSummary(result: MemberMonthResult, weekClosed: (weekId: str
   return [
     `${scored} week${scored === 1 ? '' : 's'}${list ? ` + ${monthName(result.monthId)} list` : ''} scored`,
     paused > 0 ? `${paused} paused` : null,
+    skipped > 0 ? `${skipped} skipped` : null,
     result.penaltyPoints ? `−${result.penaltyPoints} late` : null,
   ]
     .filter((p): p is string => !!p)
     .join(' · ')
 }
 
-/** A week row's detail in the month view: the score, "Paused", "Judge" ("Judge · 0%" once closed in a month they
- *  also play), "In progress", "Upcoming", "Sat out" or "Not in". */
+/** A week row's detail in the month view: the score, "Paused", "Skipped" (friends excused every task), "Judge"
+ *  ("Judge · 0%" once closed in a month they also play), "In progress", "Upcoming", "Sat out" or "Not in". */
 export function weekDetail(result: MemberMonthResult, weekId: string, bounds: { startAt: number; deadlineAt: number }, nowMs: number): string {
   const started = nowMs >= bounds.startAt
   const closed = nowMs >= bounds.deadlineAt
   const entry = result.weeks.find((w) => w.weekId === weekId)
   if (entry?.paused) return 'Paused'
+  if (entry?.skipped) return 'Skipped'
   if (result.judged?.includes(weekId)) return playsMonth(result) && closed ? 'Judge · 0%' : 'Judge'
   if (entry) return entry.score !== null ? `${formatScore(entry.score)}${entry.closed ? '' : ' so far'}` : started ? 'In progress' : 'Upcoming'
   return !started ? 'Upcoming' : closed ? 'Sat out' : 'Not in'
 }
 
-/** The "October list" row's detail: the list's score, "In progress", "Judge" or "No list". */
+/** The "October list" row's detail: the list's score, "Skipped", "In progress", "Judge" or "No list". */
 export function monthlyDetail(result: MemberMonthResult): string {
   if (result.monthlyJudge) return 'Judge'
   const list = result.monthly
   if (!list) return 'No list'
+  if (list.skipped) return 'Skipped'
   if (!list.closed) return 'In progress'
   return list.score !== null ? formatScore(list.score) : 'No score'
 }

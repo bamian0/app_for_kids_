@@ -9,10 +9,8 @@ import type {
   MonthlyData,
   MonthResults,
   MonthStakes,
-  Period,
   Settlement,
   Space,
-  Task,
   UID,
   UserProfile,
   WeekData,
@@ -28,7 +26,6 @@ import { startMySpaces, startSpace } from './spaces.ts'
 import { startStakes } from './stakes.ts'
 import { combine, useLive } from './store.ts'
 import { startWeek, weekKey } from './weeks.ts'
-import type { NewTaskInput } from './weeks.ts'
 
 export interface Live<T> {
   data: T | undefined
@@ -165,9 +162,11 @@ export function useWeek(space: Space, weekId: WeekId): Live<WeekData> {
  * savePlan(space, weekId, tasks): replaces your list, only before lockAt. Tasks may carry `subtasks`
  * (≤ 8); `addedAt` is ignored. Also, best effort: renames and deletes your earnings to match.
  * addTaskAfterLock(space, weekId, { title, subtasks }): appends one task while lockAt ≤ now <
- * reviewOpenAt (SPEC §6.2). Final: it can't be edited or removed. Resolves with the stored task.
+ * reviewOpenAt (SPEC §6.2). Final: it can't be edited or removed. Resolves with the stored task. An existing
+ * plan is updated, so its cross-outs stay (SPEC §10.3).
  * setTaskDone(space, weekId, id, done): `id` is a task id or a step (subtask) id. Also keeps your
- * earning for that task in step (earnedAt set when the task becomes done, cleared when it isn't).
+ * earning for that task in step (earnedAt set when the task becomes done, cleared when it isn't). A crossed-out
+ * task (or a step of one) on this device's copy of your plan throws CROSSED_OUT_TICK.
  */
 export { savePlan, addTaskAfterLock, setTaskDone, submitReviews, joinWeek, ensureWeek } from './weeks.ts'
 export type { NewTaskInput } from './weeks.ts'
@@ -291,10 +290,7 @@ export type { StakesInput } from './stakes.ts'
  * resolves without writing). Resolves with the task (`addedAt` the device's estimate until the snapshot).
  * Fails at once offline (a transaction). Messages in SPEC §10.6.
  */
-export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, input: NewTaskInput): Promise<Task> {
-  void [space, monthId, input]
-  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/monthly.ts and re-export here
-}
+export { addMonthlyTaskAfterLock } from './monthly.ts'
 
 /**
  * crossOutTask(space, period, taskId, why): crosses out one of your own tasks of a locked week or monthly list,
@@ -303,26 +299,19 @@ export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, in
  * `why` is trimmed and made one line (1–120 characters). Already crossed out: resolves without writing (a lost
  * answer or a retry). After the 2nd undo the cross-out is final. Fails at once offline. Messages in SPEC §10.6.
  * Pauses and whether anyone else can review you (`someoneCanReview`) are the sheet's to check, not this function's.
- */
-export async function crossOutTask(space: Space, period: Period, taskId: string, why: string): Promise<void> {
-  void [space, period, taskId, why]
-  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/cancel.ts and re-export here
-}
-
-/**
+ *
  * undoCrossOut(space, period, taskId): restores a crossed-out task (the next, even entry `${n}:${taskId}` → { at })
  * while undos are left (at most 2 per task) and reviews haven't opened. Not crossed out: resolves without
  * writing. Fails at once offline. Messages in SPEC §10.6.
+ *
+ * CROSSED_OUT_TICK: the message setTaskDone / setMonthlyTaskDone throw for a crossed-out task or one of its steps.
  */
-export async function undoCrossOut(space: Space, period: Period, taskId: string): Promise<void> {
-  void [space, period, taskId]
-  throw new Error('batch2.5: TODO') // batch2.5: TODO: implement in src/data/cancel.ts and re-export here
-}
+export { crossOutTask, undoCrossOut, CROSSED_OUT_TICK } from './cancel.ts'
 
 // Also batch 2.5 (SPEC §10.6), in the existing writes: submitReviews / submitMonthlyReviews take
 // `marks: Record<string, ReviewMark>` ('fair' on a crossed-out task); setTaskDone / setMonthlyTaskDone refuse a
-// crossed-out task or one of its steps; addTaskAfterLock keeps the plan's `cancels` (an update, not a set).
-// batch2.5: TODO
+// crossed-out task or one of its steps (from this device's copy of your plan); addTaskAfterLock keeps the plan's
+// `cancels` (an update, not a set).
 
 // ---------- Money (private, SPEC §6.3) ----------
 // Hooks, all live and scoped to the signed-in user (data undefined while signed out):

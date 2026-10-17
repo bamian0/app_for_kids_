@@ -1,7 +1,7 @@
 // Segmented control with a sliding capsule thumb, and the 3-way review MarkPicker built on the same track.
 import type { ReactNode } from 'react'
 import { motion } from 'motion/react'
-import type { Mark } from '../domain/types.ts'
+import type { ReviewMark } from '../domain/types.ts'
 import { Icon } from './icons.tsx'
 import type { IconName } from './icons.tsx'
 import { haptic } from './haptics.ts'
@@ -80,16 +80,27 @@ export function SegmentedControl<T extends string>({
   )
 }
 
-const MARKS: Array<{ value: Mark; label: string; icon: IconName }> = [
+type Choice = { value: ReviewMark; label: string; icon: IconName }
+
+const MARKS: Choice[] = [
   { value: 1, label: 'Done', icon: 'checkmark' },
   { value: 0.5, label: 'Half', icon: 'halfCircle' },
   { value: 0, label: 'Not done', icon: 'xmark' },
 ]
 
+/** The vote on a crossed-out task (SPEC §10.4): Fair, Skip It ('fair') or Not Done (0). */
+const VOTES: Choice[] = [
+  { value: 'fair', label: 'Fair, Skip It', icon: 'minusCircle' },
+  { value: 0, label: 'Not Done', icon: 'xmark' },
+]
+
 export interface MarkPickerProps {
   /** null until the reviewer picks. */
-  value: Mark | null
-  onChange: (mark: Mark) => void
+  value: ReviewMark | null
+  onChange: (mark: ReviewMark) => void
+  /** marks (default): Done / Half / Not done. vote: a crossed-out task's Fair, Skip It / Not Done (two segments,
+   *  same look and motion); its values are 'fair' and 0. */
+  choices?: 'marks' | 'vote'
   /** compact: icons only (≈132px), for trailing placement in a row. */
   size?: 'regular' | 'compact'
   disabled?: boolean
@@ -98,26 +109,27 @@ export interface MarkPickerProps {
   'aria-label'?: string
 }
 
-/** Friday review control: Done (1) / Half (0.5) / Not done (0). */
-export function MarkPicker({ value, onChange, size = 'regular', disabled, className, 'aria-label': ariaLabel }: MarkPickerProps) {
-  const index = MARKS.findIndex((m) => m.value === value)
+/** Friday review control: Done (1) / Half (0.5) / Not done (0); with `choices="vote"`, Fair, Skip It / Not Done. */
+export function MarkPicker({ value, onChange, choices = 'marks', size = 'regular', disabled, className, 'aria-label': ariaLabel }: MarkPickerProps) {
+  const options = choices === 'vote' ? VOTES : MARKS
+  const index = options.findIndex((m) => m.value === value)
   const compact = size === 'compact'
   return (
     <div
       role="radiogroup"
       aria-label={ariaLabel ?? 'Mark'}
-      className={cx('ui-segmented ui-mark', compact ? 'ui-mark--compact' : 'ui-segmented--full', className)}
-      data-mark={value ?? undefined}
+      className={cx('ui-segmented ui-mark', choices === 'vote' && 'ui-mark--vote', compact ? 'ui-mark--compact' : 'ui-segmented--full', className)}
+      data-mark={index < 0 ? undefined : String(value)}
     >
       <motion.span
         className="ui-segmented__thumb ui-mark__thumb"
-        style={{ width: 'calc((100% - 6px) / 3)' }}
+        style={{ width: `calc((100% - 6px) / ${options.length})` }}
         initial={false}
         animate={{ x: `${Math.max(0, index) * 100}%`, opacity: index < 0 ? 0 : 1, scale: index < 0 ? 0.85 : 1 }}
         transition={springs.snappy}
         aria-hidden
       />
-      {MARKS.map((m) => {
+      {options.map((m) => {
         const selected = m.value === value
         return (
           <button
@@ -128,14 +140,14 @@ export function MarkPicker({ value, onChange, size = 'regular', disabled, classN
             aria-label={m.label}
             disabled={disabled}
             className={cx('ui-segmented__option ui-mark__option', selected && 'is-selected')}
-            data-value={m.value}
+            data-value={String(m.value)}
             onClick={() => {
               if (selected) return
               haptic()
               onChange(m.value)
             }}
           >
-            <Icon name={m.icon} size={compact ? 17 : 15} weight={m.icon === 'halfCircle' ? 1.8 : 2.4} />
+            <Icon name={m.icon} size={compact ? 17 : m.icon === 'minusCircle' ? 17 : 15} weight={m.icon === 'halfCircle' || m.icon === 'minusCircle' ? 1.8 : 2.4} />
             {!compact && <span>{m.label}</span>}
           </button>
         )

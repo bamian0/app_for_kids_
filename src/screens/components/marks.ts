@@ -30,9 +30,20 @@ export function weekdayIn(ms: number, timezone: string, long = false): string {
   }
 }
 
-/** "Added Wed": when a task joined the list after the lock, so friends can judge a late addition. */
-export function addedLabel(addedAt: number, timezone: string): string {
-  return `Added ${weekdayIn(addedAt, timezone)}`
+/** The date of `ms` on the space's clock: "Oct 24", or "October 24" with `long`. */
+export function monthDayIn(ms: number, timezone: string, long = false): string {
+  const options: Intl.DateTimeFormatOptions = { month: long ? 'long' : 'short', day: 'numeric' }
+  try {
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: timezone }).format(ms)
+  } catch {
+    return new Intl.DateTimeFormat('en-US', options).format(ms)
+  }
+}
+
+/** "Added Wed": when a task joined the list after the lock, so friends can judge a late addition. A monthly list
+ *  spans weeks, so its badge names the date: "Added Oct 24" (SPEC §10.5). */
+export function addedLabel(addedAt: number, timezone: string, kind: 'week' | 'month' = 'week'): string {
+  return `Added ${kind === 'month' ? monthDayIn(addedAt, timezone) : weekdayIn(addedAt, timezone)}`
 }
 
 /** Steps ticked so far, as the list shows them beside the task: "2/4". */

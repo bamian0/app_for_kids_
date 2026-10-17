@@ -17,25 +17,29 @@ import {
   Timestamp,
   where,
   writeBatch,
+  type DocumentReference,
   type DocumentSnapshot,
   type FieldValue,
+  type Transaction,
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
 import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
+import { isCancelled } from '../domain/cancel.ts'
+import { isReviewMark } from '../domain/decode.ts'
 import { earningId } from '../domain/money.ts'
 import { boundsFor, isUsualSchedule, needsRetime, RETIME_NOTICE_MS, sameSchedule, scheduleOf } from '../domain/schedule.ts'
 import { isRevealed, isTaskDone, joinedAfterLock, judgesOf } from '../domain/scoring.ts'
 import { boundsDiffer, weekBounds, type WeekBounds } from '../domain/time.ts'
-import type { Mark, Plan, Progress, Review, Space, Task, UID, Week, WeekData, WeekId, WeekSchedule } from '../domain/types.ts'
+import type { Plan, Progress, Review, ReviewMark, Space, Task, UID, Week, WeekData, WeekId, WeekSchedule } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
-import { isMark, toMonthly, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
-import { errorCode, humanError, isDenied, MSG } from './errors.ts'
+import { toMonthly, toPlan, toProgress, toReview, toSpace, toWeek } from './convert.ts'
+import { CROSSED_OUT_TICK, errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { earnedAtChange, earningRef, inBackground, keepsEarned, knownEarning, settleEarning, syncPlanEarnings } from './money.ts'
 import { requireUser } from './session.ts'
 import { peek, type Emit, type Start } from './store.ts'
 import { encodeTask, oneLine, TASK_ID } from './tasks.ts'
 
-const MAX_TASKS = 25
+export const MAX_TASKS = 25
 /** Keys a progress doc may hold (the rules' cap): 25 tasks × 8 steps. */
 const MAX_TICKS = 200
 /** Rules compare against server time; give the server a moment past deadlineAt before asking for everyone's reviews. */
@@ -495,6 +499,8 @@ export const MAX_TITLE = 120
 const TOO_MANY_STEPS = `A task can have up to ${MAX_SUBTASKS} steps.`
 const LONG_TASK = `Keep each task under ${MAX_TITLE} characters.`
 const LONG_STEP = `Keep each step under ${MAX_TITLE} characters.`
+/** Not a space member any more: no adds, cross-outs or undos (SPEC §10.6). */
+export const NOT_IN_SPACE = 'You’re no longer in this space.'
 
 /** Steps are edited in the task sheet, not inline, so they are tidied: one line, trimmed, blank ones dropped. */
 function cleanSteps(task: Task): Task {
@@ -584,13 +590,8 @@ export interface NewTaskInput {
   subtasks?: string[]
 }
 
-/**
- * Appends one task (with its steps) to the current user's list after the lock, until the review window
- * opens (SPEC §6.2). Final: it can't be edited or removed. Resolves with the task as stored; its
- * addedAt is the device's estimate until the plan's snapshot brings the server time.
- */
-export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewTaskInput): Promise<Task> {
-  const uid = requireUser().uid
+/** The task an add after the lock appends (a week's or a monthly list's), checked with the planner's messages. */
+export function taskToAdd(input: NewTaskInput): Task {
   const title = input.title.trim()
   if (!title) throw new Error('Give the task a title.')
   if (title.length > MAX_TITLE) throw new Error(LONG_TASK)
@@ -600,29 +601,51 @@ export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewT
   if (input.id !== undefined && !TASK_ID.test(input.id)) throw new Error(MSG.generic)
   const task: Task = { id: input.id ?? newTaskId(), title }
   if (steps.length > 0) task.subtasks = steps.map((step) => ({ id: newTaskId(), title: step }))
+  return task
+}
+
+/**
+ * The append itself, inside a transaction that has read the plan (`snap`): everything already stored goes back
+ * exactly as it is (the rules compare it item by item) with the task at the end and its `added` time. An existing
+ * plan is updated, never set, so its cross-out log (`cancels`) stays as stored (SPEC §10.2, §10.3); a set would
+ * drop it, and the rules refuse that once there is one. false when the task is already there: an earlier attempt
+ * went through though its answer was lost (the SDK retries the transaction, or the user tries again).
+ */
+export function appendTask(tx: Transaction, ref: DocumentReference, snap: DocumentSnapshot, task: Task, cap: string): boolean {
+  const stored: unknown = snap.get('tasks')
+  const existing = Array.isArray(stored) ? stored : []
+  if (existing.some((t) => (t as { id?: unknown } | null)?.id === task.id)) return false
+  if (existing.length >= MAX_TASKS) throw new Error(cap)
+  const added: unknown = snap.get('added')
+  const data = {
+    tasks: [...existing, encodeTask(task)],
+    added: { ...(added && typeof added === 'object' ? added : {}), [task.id]: serverTimestamp() },
+    updatedAt: serverTimestamp(),
+  }
+  if (snap.exists()) tx.update(ref, data)
+  else tx.set(ref, data)
+  return true
+}
+
+/**
+ * Appends one task (with its steps) to the current user's list after the lock, until the review window
+ * opens (SPEC §6.2). Final: it can't be edited or removed. Resolves with the task as stored; its
+ * addedAt is the device's estimate until the plan's snapshot brings the server time. Keeps the plan's
+ * cross-outs (an update of an existing plan, SPEC §10.3); without a plan it starts one.
+ */
+export async function addTaskAfterLock(space: Space, weekId: WeekId, input: NewTaskInput): Promise<Task> {
+  const uid = requireUser().uid
+  const task = taskToAdd(input)
   const ref = planRef(space.id, weekId, uid)
   try {
     const bounds = await boundsOf(space, weekId)
     if (now() < bounds.lockAt) throw new Error('Your list hasn’t locked yet. Add the task to it instead.')
     if (now() >= bounds.reviewOpenAt) throw new Error('Adding tasks closed when reviews opened.')
-    if (!space.memberIds.includes(uid)) throw new Error('You’re no longer in this space.')
+    if (!space.memberIds.includes(uid)) throw new Error(NOT_IN_SPACE)
     if (!(await joinWeek(space, weekId))) throw new Error(await notInWeekMessage(space, weekId, uid))
     if (await judgesWeek(space, weekId, uid)) throw new Error(JUDGING_WEEK)
     await runTransaction(getFirebase().db, async (tx) => {
-      const snap = await tx.get(ref)
-      // Everything already stored goes back exactly as it is: the rules compare it item by item.
-      const stored: unknown = snap.get('tasks')
-      const existing = Array.isArray(stored) ? stored : []
-      // Already there: an earlier attempt went through though its answer was lost (the SDK retries
-      // the transaction, or the user tries again). Done, rather than refused or added twice.
-      if (existing.some((t) => (t as { id?: unknown } | null)?.id === task.id)) return
-      if (existing.length >= MAX_TASKS) throw new Error(`You can plan up to ${MAX_TASKS} tasks a week.`)
-      const added: unknown = snap.get('added')
-      tx.set(ref, {
-        tasks: [...existing, encodeTask(task)],
-        added: { ...(added && typeof added === 'object' ? added : {}), [task.id]: serverTimestamp() },
-        updatedAt: serverTimestamp(),
-      })
+      appendTask(tx, ref, await tx.get(ref), task, `You can plan up to ${MAX_TASKS} tasks a week.`)
     })
   } catch (e) {
     throw humanError(e)
@@ -636,6 +659,7 @@ const ticking = new Map<string, Promise<void>>()
 /**
  * Self check-off (until deadlineAt). `id` is a task id or a step id. The task's earning, if it has one,
  * follows: earned when the task becomes done (its last step, or the task itself), not when it isn't.
+ * A task crossed out on this device's copy of the plan, or a step of one, isn't ticked (SPEC §10.3).
  */
 export async function setTaskDone(space: Space, weekId: WeekId, id: string, done: boolean): Promise<void> {
   const uid = requireUser().uid
@@ -658,8 +682,10 @@ export async function setTaskDone(space: Space, weekId: WeekId, id: string, done
     const ref = progressRef(space.id, weekId, uid)
     // Ticking reads only what this device has, so it stays instant and works offline.
     const local = await localWeek(space, weekId, uid)
-    const progress = { done: { ...staleTicks(local, id), [id]: done }, updatedAt: serverTimestamp() }
     const task = local.tasks && taskOf(local.tasks, id)
+    // The rules don't check this (it would read the plan on every tick, SPEC §10.12): the app does.
+    if (task && isCancelled(task)) throw new Error(CROSSED_OUT_TICK)
+    const progress = { done: { ...staleTicks(local, id), [id]: done }, updatedAt: serverTimestamp() }
     const taskDone = task && local.done ? isTaskDone(task, { ...local.done, [id]: done }) : undefined
     const earning = task ? earningId(space.id, weekId, task.id) : null
     const known = earning ? await knownEarning(uid, earning) : null
@@ -709,10 +735,11 @@ function settleLater(spaceId: string, weekId: WeekId, uid: UID, id: string, know
   })
 }
 
-/** Writes all of the current user's reviews and marks them submitted, in one batch. Final. */
-export async function submitReviews(space: Space, weekId: WeekId, reviews: { revieweeId: UID; marks: Record<string, Mark> }[]): Promise<void> {
+/** Writes all of the current user's reviews and marks them submitted, in one batch. Final. A crossed-out task's
+ *  mark is 'fair' (Fair, Skip It) or 0 (Not Done), SPEC §10.4. */
+export async function submitReviews(space: Space, weekId: WeekId, reviews: { revieweeId: UID; marks: Record<string, ReviewMark> }[]): Promise<void> {
   const uid = requireUser().uid
-  if (reviews.some((r) => r.revieweeId === uid || !Object.values(r.marks).every(isMark))) throw new Error(MSG.generic)
+  if (reviews.some((r) => r.revieweeId === uid || !Object.values(r.marks).every(isReviewMark))) throw new Error(MSG.generic)
   const bounds = await boundsOf(space, weekId)
   if (now() < bounds.reviewOpenAt) throw new Error('Reviews haven’t opened yet.')
   if (now() >= bounds.deadlineAt) throw new Error(MSG.closed)

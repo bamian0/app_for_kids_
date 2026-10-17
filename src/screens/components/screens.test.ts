@@ -5,7 +5,7 @@ import { monthCompleteAt, weekBounds } from '../../domain/time.ts'
 import type { Space, WeekData } from '../../domain/types.ts'
 import { formatScore, monthName, wholePercent } from './format.ts'
 import { addedLabel, stepCount, summarizeMarks, weekdayIn } from './marks.ts'
-import { canSettle, defaultMonth, freshVerdictMonth, settleHint, verdictStatus, verdictText } from './month.ts'
+import { canSettle, defaultMonth, freshVerdictMonth, judgeOnly, monthSummary, monthlyDetail, playsMonth, settleHint, skippedCount, verdictStatus, verdictText, weekDetail } from './month.ts'
 import { personOf } from './people.ts'
 import { spaceStatus } from './status.ts'
 import type { StatusContext } from './status.ts'
@@ -154,6 +154,18 @@ describe('spaceStatus', () => {
     expect(spaceStatus(paused('active', member('a')), b, 'a', b.lockAt + DAY, { ...ctx, notice: 'New times from next week' }).text).toBe('Paused this week')
   })
 
+  it('counts only tasks that aren’t crossed out (SPEC §10.5)', () => {
+    const t = (id: string, selfDone: boolean, cancelled = false) => ({
+      taskId: id, title: id, mark: 0, source: 'self' as const, reviewerMarks: {}, selfDone, subtasks: [], selfFraction: selfDone ? 1 : 0,
+      ...(cancelled ? { cancel: { cancelled: true, changes: 1, at: 0, why: 'Sick' } } : {}),
+    })
+    const active = b.lockAt + DAY
+    const mine = (tasks: ReturnType<typeof t>[]) => week('active', [member('a', { taskCount: tasks.length, tasks }), member('b')])
+    expect(spaceStatus(mine([t('1', true), t('2', false), t('3', false, true)]), b, 'a', active, ctx)).toEqual({ text: '1 of 2 done', icon: 'listBullet', tone: 'default' })
+    expect(spaceStatus(mine([t('1', true), t('3', false, true)]), b, 'a', active, ctx)).toEqual({ text: '1 of 1 done', icon: 'checkmark', tone: 'done' })
+    expect(spaceStatus(mine([t('1', true, true), t('2', false, true)]), b, 'a', active, ctx)).toEqual({ text: 'Tasks crossed out', icon: 'xmark', tone: 'default' })
+  })
+
   it('reviews a friend who left after the lock', () => {
     const left = { ...ctx, memberIds: ['a'], counted: ['a', 'b'] }
     expect(spaceStatus(week('review', [member('a'), member('b')]), b, 'a', friday, left)).toMatchObject({ text: 'Review due in 22h', tone: 'urgent' })
@@ -253,6 +265,38 @@ describe('default month', () => {
 
   it('skips a verdict from before you joined', () => {
     expect(defaultMonth(space, 'b', done + 3 * DAY + HOUR)).toBe('2026-11')
+  })
+})
+
+describe('skipped periods in the month (SPEC §10.4)', () => {
+  const closed = () => true
+  it('lists a skipped week and list, never as scored', () => {
+    const skippedWeek = monthResult('a', {
+      monthId: '2026-10',
+      weeks: [
+        { weekId: '2026-09-28', score: 90, closed: true },
+        { weekId: '2026-10-05', score: 100, closed: true },
+        { weekId: '2026-10-12', score: null, closed: true, skipped: true },
+        { weekId: '2026-10-19', score: 80, closed: true },
+      ],
+      monthly: { score: null, closed: true, taskCount: 2, skipped: true },
+    })
+    expect(skippedCount(skippedWeek)).toBe(2)
+    expect(monthSummary(skippedWeek, closed)).toBe('3 weeks scored · 2 skipped')
+    const bounds = weekBounds('2026-10-12', ROME)
+    expect(weekDetail(skippedWeek, '2026-10-12', bounds, bounds.deadlineAt + DAY)).toBe('Skipped')
+    expect(monthlyDetail(skippedWeek)).toBe('Skipped')
+    expect(monthSummary(monthResult('a', { weeks: [{ weekId: '2026-09-28', score: null, closed: true, skipped: true }], finalScore: null, average: null }), closed)).toBe(
+      'No scored weeks yet · 1 skipped',
+    )
+  })
+
+  it('doesn’t make a member whose only week was skipped a player', () => {
+    const onlySkipped = monthResult('a', { weeks: [{ weekId: '2026-09-28', score: null, closed: true, skipped: true }], judged: ['2026-10-05'], finalScore: null, average: null })
+    expect(playsMonth(onlySkipped)).toBe(false)
+    expect(judgeOnly(onlySkipped)).toBe(true)
+    expect(playsMonth(monthResult('a', { weeks: [{ weekId: '2026-09-28', score: 80, closed: true }] }))).toBe(true)
+    expect(playsMonth(monthResult('a', { weeks: [], monthly: { score: null, closed: true, taskCount: 1, skipped: true } }))).toBe(false)
   })
 })
 

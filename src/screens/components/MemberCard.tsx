@@ -1,13 +1,16 @@
 // One participant's week: who they are, their tasks (and steps) with check-offs, and once revealed,
-// the marks each friend gave and the week score.
+// the marks each friend gave and the week score. Batch 2.5 (SPEC §10.5): a crossed-out task shows struck through
+// with its reason and when, can't be ticked, and once revealed shows friends' vote (Skipped or Not done).
 import type { ReactNode } from 'react'
 import { addedAfterLock } from '../../domain/scoring.ts'
 import type { MemberWeekResult, TaskResult } from '../../domain/scoring.ts'
 import type { WeekPhase } from '../../domain/time.ts'
 import type { CurrencyCode, Earning, UID } from '../../domain/types.ts'
-import { Avatar, CheckCircle, Facts, Icon, Row, Section, Shimmer, cx } from '../../ui/index.ts'
-import { AmountBadge, CheckDot, MarkGlyph, MiniScore, StepList, StepRing, TaskBadge } from './Bits.tsx'
+import { Avatar, CheckCircle, Facts, Icon, Pill, Row, Section, Shimmer, cx } from '../../ui/index.ts'
+import { AmountBadge, CheckDot, CrossedOutGlyph, MarkGlyph, MiniScore, SkippedGlyph, StepList, StepRing, TaskBadge } from './Bits.tsx'
 import type { StepListProps } from './Bits.tsx'
+import { SKIPPED_PERIOD, crossedOut, crossedOutBadge, crossedOutResult, doneLine, quoted, skippedSuffix } from './cancel.ts'
+import type { ListKind } from './cancel.ts'
 import { addedLabel, stepCount, summarizeMarks } from './marks.ts'
 import { firstName, listNames, nameOf, personOf, shortName } from './people.ts'
 import type { Profiles } from './people.ts'
@@ -45,6 +48,8 @@ export interface MemberCardProps {
   paused?: boolean
   /** Missed reviews cost nothing here (a monthly list whose month's last week is paused): no missed-review row. */
   penaltyFree?: boolean
+  /** A week's list (default) or a monthly list: its badges name a weekday ("Added Wed") or a date ("Added Oct 24"). */
+  kind?: ListKind
 }
 
 export function MemberCard({
@@ -69,12 +74,14 @@ export function MemberCard({
   footer,
   paused = false,
   penaltyFree = false,
+  kind = 'week',
 }: MemberCardProps) {
   const isMe = member.uid === me
   const person = personOf(profiles, member.uid)
   const n = member.taskCount
-  const done = member.tasks.filter((t) => t.selfDone).length
-  const scored = revealed && member.score !== null && !paused
+  // Friends excused every task (SPEC §10.4): results are in, but the period doesn't count for them (no score).
+  const skippedPeriod = revealed && !paused && member.skipped === true
+  const scored = (revealed && member.score !== null && !paused) || skippedPeriod
   const reviewed = member.reviewedBy.length > 0
   // After friends' marks are in, your own check-offs no longer change anything.
   const checkable = isMe && !!canCheck && !(scored && reviewed)
@@ -83,19 +90,29 @@ export function MemberCard({
 
   let subtitle: string
   let score = null
-  if (scored) {
+  if (skippedPeriod) {
+    subtitle = SKIPPED_PERIOD
+    score = (
+      <Pill tone="gray" size="small">
+        Skipped
+      </Pill>
+    )
+  } else if (scored) {
     subtitle = n === 0 ? 'Nothing planned' : reviewed ? `Reviewed by ${listNames(member.reviewedBy.map((uid) => (uid === me ? 'you' : who(uid))))}` : 'Nobody reviewed, check-offs count'
+    subtitle += skippedSuffix(member)
     score = <MiniScore value={member.score} threshold={threshold} caption={phase === 'closed' || reviewed ? 'Final' : 'So far'} />
   } else if (phase === 'planning') {
     subtitle = n === 0 ? 'No tasks yet' : `${n} task${n === 1 ? '' : 's'} planned`
   } else if (paused) {
     // Nothing counts: what's done, without scores or review lines.
-    subtitle = n === 0 ? 'No tasks' : `${done} of ${n} done`
+    subtitle = n === 0 ? 'No tasks' : doneLine(member, true)
   } else {
-    subtitle = n === 0 ? 'Nothing planned' : `${done} of ${n} done`
+    // Crossed-out tasks don't count yet: left out of "2 of 3 done", and said so (the provisional score's label).
+    subtitle = n === 0 ? 'Nothing planned' : doneLine(member)
     // Someone who left can't review anymore: no "still reviewing" for them.
     if (phase === 'review' && !isMe && (member.hasSubmitted || !former)) subtitle += member.hasSubmitted ? ' · reviews in' : ' · still reviewing'
-    if (n > 0) score = <MiniScore value={member.provisionalScore} threshold={threshold} caption="Provisional" iridescent={false} />
+    // Every task crossed out: no provisional score, so no ring.
+    if (n > 0 && member.provisionalScore !== null) score = <MiniScore value={member.provisionalScore} threshold={threshold} caption="Provisional" iridescent={false} />
   }
   if (former) subtitle = `Left · ${subtitle}`
 
@@ -103,6 +120,8 @@ export function MemberCard({
     const steps = task.subtasks
     const ticked = steps.filter((step) => step.done).length
     const marks = Object.entries(task.reviewerMarks)
+    const crossed = crossedOut(task)
+    if (crossed) return crossedRow(task)
     let lead: ReactNode
     if (checkable && steps.length > 0) {
       lead = <StepRing done={ticked} total={steps.length} onPress={onOpenTask ? () => onOpenTask(task.taskId) : undefined} />
@@ -130,15 +149,7 @@ export function MemberCard({
       subtitleText = summarizeMarks(marks, me, who) || undefined
     }
 
-    const earning = isMe ? earnings?.[task.taskId] : undefined
-    const added = task.addedAt !== undefined && addedAfterLock(task, lockAt)
-    const badges =
-      added || earning ? (
-        <>
-          {added && <TaskBadge>{addedLabel(task.addedAt as number, timezone)}</TaskBadge>}
-          {earning && currency && <AmountBadge amount={earning.amount} currency={currency} earned={earning.earnedAt !== null} />}
-        </>
-      ) : undefined
+    const badges = badgesOf(task)
 
     let stepMode: StepListProps['mode'] = 'dots'
     if (checkable) stepMode = 'check'
@@ -166,6 +177,51 @@ export function MemberCard({
       </Shimmer>
     ) : (
       row
+    )
+  }
+
+  /** "Crossed out Wed", "Added Wed" and your amount, when they apply. */
+  function badgesOf(task: TaskResult): ReactNode {
+    const earning = isMe ? earnings?.[task.taskId] : undefined
+    const added = task.addedAt !== undefined && addedAfterLock(task, lockAt)
+    const cancel = crossedOut(task) ? task.cancel : undefined
+    if (!added && !earning && !cancel) return undefined
+    return (
+      <>
+        {cancel && <TaskBadge>{crossedOutBadge(cancel.at, timezone, kind)}</TaskBadge>}
+        {added && <TaskBadge>{addedLabel(task.addedAt as number, timezone, kind)}</TaskBadge>}
+        {earning && currency && <AmountBadge amount={earning.amount} currency={currency} earned={earning.earnedAt !== null} />}
+      </>
+    )
+  }
+
+  /** A crossed-out task (SPEC §10.5): no check circles, struck through, its reason; once revealed, friends' vote. */
+  function crossedRow(task: TaskResult): ReactNode {
+    const steps = task.subtasks
+    let lead: ReactNode = <CrossedOutGlyph />
+    let subtitleText = task.cancel ? quoted(task.cancel.why) : undefined
+    let detail: string | undefined
+    if (scored && !paused) {
+      const shown = crossedOutResult(task, member.reviewedBy.length)
+      subtitleText = shown.subtitle
+      detail = shown.detail
+      lead = task.source === 'self' ? <MarkGlyph mark={task.mark} /> : task.excused ? <SkippedGlyph /> : <MarkGlyph mark={0} />
+    }
+    return (
+      <TaskRow
+        key={task.taskId}
+        lead={lead}
+        title={task.title}
+        crossed
+        subtitle={subtitleText}
+        badges={badgesOf(task)}
+        showCount={false}
+        detail={detail}
+        steps={steps}
+        stepMode="dots"
+        onOpen={isMe && onOpenTask ? () => onOpenTask(task.taskId) : undefined}
+        owner={isMe ? undefined : person.name}
+      />
     )
   }
 
@@ -210,6 +266,8 @@ export function MemberCard({
 interface TaskRowProps {
   lead: ReactNode
   title: string
+  /** Crossed out: the title struck through, the steps dimmed and never ticked here. */
+  crossed?: boolean
   subtitle?: string
   /** "Added Wed", your amount. */
   badges?: ReactNode
@@ -224,12 +282,12 @@ interface TaskRowProps {
 }
 
 /** A task as a list row with its steps under it. The lead stays its own control; the rest opens the task. */
-function TaskRow({ lead, title, subtitle, badges, showCount, detail, steps, stepMode, onToggleStep, onOpen, owner }: TaskRowProps) {
+function TaskRow({ lead, title, crossed, subtitle, badges, showCount, detail, steps, stepMode, onToggleStep, onOpen, owner }: TaskRowProps) {
   const body = (
     <>
       <span className="ui-row__text">
-        <span className="ui-row__title">{title}</span>
-        {subtitle && <span className="ui-row__subtitle">{subtitle}</span>}
+        <span className={cx('ui-row__title', crossed && 'tk-struck')}>{title}</span>
+        {subtitle && <span className={cx('ui-row__subtitle', crossed && 'tk-why')}>{subtitle}</span>}
         {badges && <span className="tk-meta">{badges}</span>}
       </span>
       {showCount && (
@@ -247,7 +305,7 @@ function TaskRow({ lead, title, subtitle, badges, showCount, detail, steps, step
     </>
   )
   return (
-    <div className={cx('tk-block', steps.length > 0 && 'tk-block--steps')}>
+    <div className={cx('tk-block', steps.length > 0 && 'tk-block--steps', crossed && 'tk-block--crossed')}>
       <div className={cx('ui-row tk-row', subtitle && 'ui-row--subtitle')}>
         <span className="ui-row__leading">{lead}</span>
         {onOpen ? (
@@ -258,7 +316,7 @@ function TaskRow({ lead, title, subtitle, badges, showCount, detail, steps, step
           <span className="ui-row__main">{body}</span>
         )}
       </div>
-      {steps.length > 0 && <StepList steps={steps} mode={stepMode} onToggle={onToggleStep} onOpen={onOpen} owner={owner} />}
+      {steps.length > 0 && <StepList steps={steps} mode={stepMode} onToggle={crossed ? undefined : onToggleStep} onOpen={onOpen} owner={owner} />}
     </div>
   )
 }

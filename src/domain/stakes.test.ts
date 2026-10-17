@@ -11,12 +11,14 @@ import {
   HOUSE_SLACK_MS,
   houseFreezeAt,
   houseFreezeMonths,
+  inLockedWeek,
   lineSettlement,
   MAX_PAST,
   memberTerms,
   missingFor,
   monthDebts,
   monthHouse,
+  monthLocks,
   monthTerms,
   needsHouseFreeze,
   nextAgreement,
@@ -34,8 +36,8 @@ import {
   waitingFor,
   wasMemberAt,
 } from './stakes.ts'
-import { weekBounds } from './time.ts'
-import type { MemberStakes, MonthResults, MonthStakes, PairTerms, Settlement, Space, TermsInForce, UID, Week } from './types.ts'
+import { weekBounds, weekIdsInMonth } from './time.ts'
+import type { MemberStakes, MonthlyList, MonthResults, MonthStakes, PairTerms, Settlement, Space, TermsInForce, UID, Week } from './types.ts'
 
 const TZ = 'Europe/Berlin'
 const H = 3_600_000
@@ -144,6 +146,27 @@ describe('terms and agreements', () => {
     expect(agreementStatus(changed, 'lena')).toBe('waiting')
     expect(waitingFor(changed, ['sam', 'lena'])).toEqual(['sam', 'lena'])
     expect(agreementStatus(edit(changed, { reward: 'Dinner, on you' }), 'lena')).toBe('agreed')
+  })
+
+  it('with what counts now, a change back to terms everyone agreed to waits for nobody (review logic-3)', () => {
+    const sp = space(['marco', 'lena', 'sam'])
+    // Dinner (both agree), then Lunch (only Lena agrees), then back to Dinner.
+    const dinner = agree(agree(GROUP, 'lena', t1), 'sam', t2)
+    const lunch = agree(edit(dinner, { reward: 'Lunch, on you' }), 'lena', t3)
+    const back = edit(lunch, { reward: 'Dinner, on you' })
+    const inForce = memberTerms(sp, 'marco', ['lena', 'sam'], { marco: back }, HOUSE, Infinity)
+    expect(texts(inForce)).toEqual({ lena: ['Dinner, on you', 'Lunch for everyone', []], sam: ['Dinner, on you', 'Lunch for everyone', []] })
+    // By her latest agreement alone Lena reads as waiting; by what counts, nobody is.
+    expect(agreementStatus(back, 'lena')).toBe('waiting')
+    expect(agreementStatus(back, 'lena', inForce)).toBe('agreed')
+    expect(waitingFor(back, ['lena', 'sam'], inForce)).toEqual([])
+    // Not while the current terms don't count for someone: Kim (new, no Agree) needs Lena's Agree too.
+    const four = space(['marco', 'lena', 'sam', 'kim'], { joinedAt: { marco: T0, lena: T0, sam: T0, kim: t4 } })
+    const withKim = memberTerms(four, 'marco', ['lena', 'sam', 'kim'], { marco: back }, HOUSE, Infinity)
+    expect(texts(withKim).kim[0]).toBe(HOUSE.reward)
+    expect(waitingFor(back, ['lena', 'sam', 'kim'], withKim)).toEqual(['lena', 'kim'])
+    // A friend who isn't among them goes by their latest agreement.
+    expect(agreementStatus(back, 'lena', { sam: inForce.sam })).toBe('waiting')
   })
 
   it('agreementsOf lists past then the current one with its time', () => {
@@ -520,6 +543,37 @@ describe('termsFriends', () => {
     expect(terms.marco.lena).toEqual(card.lena)
     expect(terms.marco.sam).toEqual(card.sam)
   })
+
+  it('a friend who left counts only when they played: a week of the month that isn’t paused, or its list (review logic-2)', () => {
+    const sp = space(['marco', 'lena', 'sam'])
+    const weeks = weekIdsInMonth('2026-11')
+    const locks = monthLocks(sp, '2026-11')
+    expect(locks).toEqual(weeks.map((w) => weekBounds(w, TZ).lockAt))
+    // A paused week can't be played; the month's list can.
+    const paused = { ...sp, paused: { '2026-11': weeks[2] } }
+    expect(monthLocks(paused, '2026-11')).toEqual(locks.filter((_, i) => i !== 2))
+    const list = { id: '2026-11', lockAt: locks[3] + D } as MonthlyList
+    expect(monthLocks(sp, '2026-11', null, list)).toEqual([...locks, locks[3] + D])
+
+    const gone = (left: number, joined?: number): Space => ({ ...sp, leftAt: { x: left }, ...(joined === undefined ? {} : { formerJoinedAt: { x: joined } }) })
+    const played = (s: Space, l = locks) => inLockedWeek(s, 'x', l)
+    // Joined after the last lock, gone before the month ended (the review's case).
+    expect(played(gone(locks[3] + 2 * D, locks[3] + D))).toBe(false)
+    // Left before the first lock; in and out between two locks.
+    expect(played(gone(locks[0] - H, T0))).toBe(false)
+    expect(played(gone(locks[2] - H, locks[1] + H))).toBe(false)
+    // In a week at its lock (and leaving at the lock itself still counts).
+    expect(played(gone(locks[1], T0))).toBe(true)
+    expect(played(gone(locks[3] - H, locks[1] + H))).toBe(true)
+    // ...unless that week is paused.
+    expect(played(gone(locks[3] - H, locks[1] + H), monthLocks(paused, '2026-11'))).toBe(false)
+    // No kept join time (an older app's leave): assumed in the space before.
+    expect(played(gone(locks[3] + 2 * D))).toBe(true)
+
+    const late = gone(locks[3] + 2 * D, locks[3] + D)
+    expect(termsFriends(late, 'marco', locks[0], undefined, (u) => inLockedWeek(late, u, locks))).toEqual(['lena', 'sam'])
+    expect(termsFriends(late, 'marco', locks[0])).toEqual(['lena', 'sam', 'x'])
+  })
 })
 
 function result(uid: UID, others: UID[], r: Partial<MemberMonthResult> = {}): MemberMonthResult {
@@ -574,6 +628,18 @@ describe('monthTerms', () => {
     const st = agree(agree(GROUP, 'lena', t1), 'sam', t2)
     const terms = monthTerms(sp, '2026-10', progress, { marco: st }, HOUSE, { completeAt, firstLockAt })
     expect(texts(terms.marco).lena[0]).toBe('Dinner, on you')
+  })
+
+  it('a month in progress waits for a friend who left only when they played it, as the verdict does (review logic-2)', () => {
+    const progress = Object.fromEntries(Object.entries(month).map(([u, r]) => [u, { ...r, complete: false, passed: null }]))
+    const st = agree(agree(GROUP, 'lena', t1), 'sam', t2)
+    // Ben was in the space when Lena and Sam agreed, never agreed, and left this month without playing it
+    // (only judged, or only in its paused week): nobody's others.
+    const gone = { ...sp, leftAt: { ben: firstLockAt + D } }
+    expect(texts(monthTerms(gone, '2026-10', progress, { marco: st }, HOUSE, { completeAt, firstLockAt }).marco).lena[0]).toBe('Dinner, on you')
+    // Had he played, his missing Agree would hold the shared line back.
+    const withBen = { ...progress, marco: { ...progress.marco, others: ['lena', 'sam', 'ben'] } }
+    expect(texts(monthTerms(gone, '2026-10', withBen, { marco: st }, HOUSE, { completeAt, firstLockAt }).marco).lena[0]).toBe(HOUSE.reward)
   })
 
   it('the month’s house stakes: a binding freeze, else the space’s (an early October freeze doesn’t bind)', () => {

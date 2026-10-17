@@ -19,9 +19,11 @@
 //   setsSchedule (8th in the space chain)                       550      450          10
 //   validNewMonthly, 8 members, judges (moved clock)            461      539           9
 //   retimesMonthly with both weeks stored                       513      487           7
-//   finalizesPause, 8 members (last in the space chain)         644      356           9
-//   declinesPause: Not Now, 8 members (reads the week)          602      398           9   (2026-10-16)
-//   asksToPause after a lapsed request, 8 members               654      346           8
+//   finalizesPause, 8 members (last in the space chain)         649      351           9   (2026-10-17)
+//   declinesPause: Not Now, 8 members (reads the week)          602      398           9   (2026-10-17)
+//   asksToPause after a lapsed request, 8 members               660      340           8   (2026-10-17)
+//   an owner who judges leaves 8 members, keeping the join time 408      592          10   (2026-10-17)
+//   the owner removes a judge of 8, keeping the join time       366      634          10   (2026-10-17)
 //   stakes create: 7 per, 5 streak rewards                      832      168           9
 //   stakes owner edit: 7 per, 5 streaks, 7 × 6 agreements       838      162           9
 //   Agree, the 6th (drops the oldest), per friend, 5 streaks    335      665           9
@@ -38,7 +40,7 @@
 import { describe, expect, test } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import {
-  arrayUnion, doc, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch, type DocumentData, type Firestore,
+  arrayRemove, arrayUnion, deleteField, doc, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
   addMonths, allowed, CUSTOM, DAY, fullTask, HOUR, mondayOf, monthlyDoc, monthlyOn, monthStr, monthWeeks, movedClock,
@@ -249,6 +251,32 @@ const CASES: Case[] = [
       'spaces/s1/weeks/2026-11-23': weekDoc('planning', M8),
     }),
     run: (db) => updateDoc(doc(db('m1'), 'spaces/s1'), { pause: { weekId: '2026-11-23', by: 'm1', at: serverTimestamp(), oks: ['m1'] } }),
+  },
+  {
+    name: 'an owner who judges leaves 8 members, keeping the join time',
+    ...atEnd('&& (uid == e.ownerId && d.memberIds.size() > 0 ? earliestJoined(d) : d.ownerId == e.ownerId);'),
+    seed: () => ({ 'spaces/s1': space({ judges: ['m1'], leftAt: { x: ts(Date.now() - DAY) }, formerJoinedAt: { x: ts(Date.now() - 9 * DAY) } }) }),
+    run: async (db) => {
+      const ref = doc(db('m1'), 'spaces/s1')
+      const joined = (await getDoc(ref)).get('joinedAt.m1')
+      return updateDoc(ref, {
+        memberIds: arrayRemove('m1'), 'joinedAt.m1': deleteField(), 'leftAt.m1': serverTimestamp(), judges: arrayRemove('m1'),
+        ownerId: 'm2', 'formerJoinedAt.m1': joined,
+      })
+    },
+  },
+  {
+    name: 'the owner removes a judge of 8 members, keeping the join time',
+    ...atEnd('&& keepsJoinTime(removed[0]);'),
+    seed: () => ({ 'spaces/s1': space({ judges: ['m8'], leftAt: { x: ts(Date.now() - DAY) }, formerJoinedAt: { x: ts(Date.now() - 9 * DAY) } }) }),
+    run: async (db) => {
+      const ref = doc(db('m1'), 'spaces/s1')
+      const joined = (await getDoc(ref)).get('joinedAt.m8')
+      return updateDoc(ref, {
+        memberIds: arrayRemove('m8'), 'joinedAt.m8': deleteField(), 'leftAt.m8': serverTimestamp(), judges: arrayRemove('m8'),
+        'formerJoinedAt.m8': joined,
+      })
+    },
   },
   {
     name: 'stakes create: 7 per, 5 tiers',

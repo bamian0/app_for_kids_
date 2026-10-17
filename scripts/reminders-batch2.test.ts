@@ -624,6 +624,23 @@ describe('event pushes', () => {
       expect(run(space, local('2026-10-14T13:00'), { memberStakes: { b: agreed } }).send).toEqual([])
     })
 
+    it('a change back to terms everyone agreed to asks nobody (review logic-3)', () => {
+      // Lunch (Anna and Chris agreed), then Dinner (only Anna agreed), then back to Lunch.
+      const dinner: PairTerms = { ...terms, reward: 'Dinner' }
+      const back: MemberStakes = {
+        uid: 'b',
+        ...terms,
+        per: {},
+        agreed: { a: { at: updatedAt - 1000, terms: dinner, past: [{ ...terms, at: updatedAt - 3000 }] }, c: { at: updatedAt - 2000, terms, past: [] } },
+        updatedAt,
+      }
+      expect(stakesCandidates(space, { b: back }, local('2026-10-14T12:00'))).toEqual([])
+      expect(run(space, local('2026-10-14T12:00'), { memberStakes: { b: back } }).send).toEqual([])
+      // Without Chris's Agree, Lunch never counted: both are asked.
+      const onlyAnna = { ...back, agreed: { a: back.agreed.a } }
+      expect(stakesCandidates(space, { b: onlyAnna }, local('2026-10-14T12:00')).map((c) => c.friend)).toEqual(['a', 'c'])
+    })
+
     it('only in the daytime, and not for changes older than a week', () => {
       expect(run(space, local('2026-10-14T21:17'), { memberStakes: { b: ben } }).send).toEqual([])
       expect(run(space, local('2026-10-14T08:30'), { memberStakes: { b: ben } }).send).toEqual([])

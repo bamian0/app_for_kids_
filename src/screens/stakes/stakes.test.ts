@@ -26,8 +26,10 @@ import {
   draftInput,
   draftValid,
   friendRows,
+  friendStatus,
   groupedText,
   isJudging,
+  myStatus,
   ownFooter,
   saveMessage,
   stakesAfterSave,
@@ -36,8 +38,10 @@ import {
   streakLine,
   streakNote,
   switchMode,
+  termsInForceNow,
   termsNow,
   unusedTierChoices,
+  waitingAfterSave,
   waitingFooter,
 } from './stakes.ts'
 import { waitingFor } from '../../domain/stakes.ts'
@@ -191,6 +195,52 @@ describe('the stakes card', () => {
     const card = stakesCard({ space: gone, me: 'marco', stakes: { marco: st }, nowMs: MID, name })
     expect(card.rows.map((r) => r.text)).toEqual(['Dinner on me', 'Coffee for a week'])
     expect(card.pending).toEqual({ kind: 'leaver', text: 'Ben left before agreeing, so your shared stakes count from November.', uids: ['ben'] })
+  })
+
+  it('a friend who left without playing the month holds nothing back, as in the verdict (review logic-2)', () => {
+    const lock = (w: string) => weekBounds(w, TZ).lockAt
+    // Lena and Sam agreed in October while Ben, who never agreed, was in Film Club.
+    const st = agree(agree(GROUP, 'lena', MID - 2 * D), 'sam', MID - D)
+    const gone = (extra: Partial<Space>) => space(['marco', 'lena', 'sam'], extra)
+    // November's first week is paused; Ben leaves after its lock, before the next one: he never played November.
+    const left = lock('2026-11-02') + D
+    const paused = gone({ leftAt: { ben: left }, paused: { '2026-11': '2026-11-02' } })
+    const card = stakesCard({ space: paused, me: 'marco', stakes: { marco: st }, nowMs: left + H, name })
+    expect(card.rows.map((r) => r.text)).toEqual(['Dinner, on you', 'Pizza for all'])
+    expect(card.pending).toEqual({ kind: 'agreed', text: 'Everyone agreed' })
+    // Without the pause he played that week: the leaver line, until November completes.
+    const played = stakesCard({ space: gone({ leftAt: { ben: left } }), me: 'marco', stakes: { marco: st }, nowMs: left + H, name })
+    expect(played.pending).toMatchObject({ kind: 'leaver', uids: ['ben'] })
+
+    // The review's case: Zoe joins after November's last lock and leaves two days later (her join time kept).
+    const last = lock('2026-11-23')
+    const nov = agree(agree(GROUP, 'lena', lock('2026-11-02') + D), 'sam', lock('2026-11-02') + 2 * D)
+    const zoe = gone({ leftAt: { zoe: last + 2 * D }, formerJoinedAt: { zoe: last + D } })
+    const after = stakesCard({ space: zoe, me: 'marco', stakes: { marco: nov }, nowMs: last + 2 * D + H, name })
+    expect(after.rows.map((r) => r.text)).toEqual(['Dinner, on you', 'Pizza for all'])
+    expect(after.pending).toEqual({ kind: 'agreed', text: 'Everyone agreed' })
+  })
+
+  it('back to terms everyone agreed to: they count, and nobody is asked to agree again (review logic-3)', () => {
+    // Dinner (Lena and Sam agree), then Lunch (only Lena agrees), then back to Dinner.
+    const dinner = agree(agree(GROUP, 'lena', MID - 4 * D), 'sam', MID - 4 * D + H)
+    const lunch = agree({ ...dinner, reward: 'Lunch, on you', updatedAt: MID - 3 * D }, 'lena', MID - 3 * D + H)
+    const back = { ...lunch, reward: 'Dinner, on you', updatedAt: MID - 2 * D }
+    const marco = stakesCard({ space: three, me: 'marco', stakes: { marco: back }, nowMs: MID, name })
+    expect(marco.rows.map((r) => r.text)).toEqual(['Dinner, on you', 'Pizza for all'])
+    expect(marco.pending).toEqual({ kind: 'agreed', text: 'Everyone agreed' })
+    const now = termsNow(three, MID)
+    expect(friendStatus(back, 'lena', termsInForceNow(three, 'marco', { marco: back }, now))).toEqual({ kind: 'agreed' })
+    // Lena hears Marco has new stakes, but isn't asked to agree.
+    const lena = stakesCard({ space: three, me: 'lena', stakes: { marco: back }, nowMs: MID, name })
+    expect(lena.news).toMatchObject({ kind: 'friend', uid: 'marco' })
+    expect(myStatus(three, 'marco', 'lena', { marco: back }, now)).toBe('agreed')
+    // The save toast for the change back.
+    expect(saveMessage(waitingAfterSave(three, 'marco', back, { marco: lunch }, now).map(name), 2, now)).toBe('Counts now.')
+    // While Sam hasn't agreed to Dinner, Lena's Agree to Lunch doesn't make it count: both are asked.
+    const onlyLena = { ...back, agreed: { lena: back.agreed.lena } }
+    expect(stakesCard({ space: three, me: 'marco', stakes: { marco: onlyLena }, nowMs: MID, name }).pending).toMatchObject({ kind: 'waiting', uids: ['lena', 'sam'] })
+    expect(saveMessage(waitingAfterSave(three, 'marco', onlyLena, { marco: onlyLena }, now).map(name), 2, now)).toBe('Counts as soon as Lena and Sam agree.')
   })
 
   it('asks for stakes for a friend who has none, and tells a judge nothing is owed', () => {

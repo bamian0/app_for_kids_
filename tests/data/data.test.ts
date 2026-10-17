@@ -255,6 +255,7 @@ describe('spaces', () => {
     const key = `${kim.uid}|space|${space.id}`
     const release = watch(key, startSpace(space.id), () => {})
     await eventually(() => peek<Space | null>(key).data != null)
+    const joinedBefore = (await adminGet(`spaces/${space.id}`))?.joinedAt[kim.uid]
     await leaveSpace(space.id)
     // Losing read access reads as "no space" rather than an error.
     await eventually(() => peek<Space | null>(key).data === null && peek(key).error === null)
@@ -263,6 +264,8 @@ describe('spaces', () => {
     expect(stored?.memberIds).toEqual([alex.uid, sam.uid])
     expect(Object.keys(stored?.joinedAt).sort()).toEqual([alex.uid, sam.uid].sort())
     expect(stored?.leftAt[kim.uid].toMillis()).toBeGreaterThan(Date.now() - 60_000)
+    // The join time is kept, exactly (SPEC §9.7: who was in the space when stakes were agreed).
+    expect(stored?.formerJoinedAt[kim.uid].isEqual(joinedBefore)).toBe(true)
     await leaveSpace(space.id)
     expect(await lookupInvite(space.inviteCode)).not.toBeNull()
 
@@ -305,6 +308,7 @@ describe('spaces', () => {
     const stored = await adminGet(`spaces/${crew.id}`)
     expect(stored?.memberIds).toEqual([sam.uid])
     expect(Object.keys(stored?.leftAt).sort()).toEqual([lee.uid, kim.uid].sort())
+    expect(Object.keys(stored?.formerJoinedAt).sort()).toEqual([lee.uid, kim.uid].sort())
     await leaveSpace(crew.id)
 
     // A space whose owner left before ownership moved with them: its earliest-joined member takes over on open.

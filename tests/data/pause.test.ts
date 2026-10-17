@@ -137,6 +137,18 @@ describe('the week’s own times', () => {
     // A lapsed request doesn't hold up asking again (next week).
     expect(await askToPause(await adminSpace('lapsed'), nextWeek())).toBe('asked')
   })
+
+  it('someone who joined after the week locked isn’t asked: their Not Now is refused, the request goes on', async () => {
+    const at = Date.now()
+    // Cleo is in the space but not in this week (she joined after its lock).
+    await freshSpace('late', { pause: { weekId: thisWeek(), by: ana.uid, at: ts(at - HOUR), oks: [ana.uid] } })
+    await seed({ [`spaces/late/weeks/${thisWeek()}`]: boundsDoc({ startAt: at - DAY, lockAt: at - HOUR / 2, reviewOpenAt: at + 2 * DAY, deadlineAt: at + 3 * DAY }, [ana.uid, ben.uid]) })
+    await as(cleo)
+    await rejectsWith(answerPause(await adminSpace('late'), 'not-now'), 'You’re not in that week, so you don’t need to answer.')
+    expect((await adminGet('spaces/late'))?.pause.declinedBy).toBeUndefined()
+    await as(ben)
+    expect(await answerPause(await adminSpace('late'), 'ok')).toBe('paused')
+  })
 })
 
 describe('upkeep and races', () => {

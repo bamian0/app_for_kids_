@@ -115,6 +115,19 @@ export interface SpaceExtras {
   paused?: Record<MonthId, WeekId>
   judges?: UID[]
   stakesNote?: StakesNote
+  formerJoinedAt?: Record<UID, number>
+}
+
+/** uid → a valid time; malformed entries left out, null when none is left. */
+function timesMap(v: unknown, toMs: ToMs): Record<UID, number> | null {
+  const o = obj(v)
+  if (!o) return null
+  const out: Record<UID, number> = {}
+  for (const [key, value] of Object.entries(o)) {
+    const at = time(value, toMs)
+    if (key.length > 0 && at !== null) out[key] = at
+  }
+  return Object.keys(out).length > 0 ? out : null
 }
 
 export function decodeSpaceExtras(d: unknown, toMs: ToMs): SpaceExtras {
@@ -132,6 +145,8 @@ export function decodeSpaceExtras(d: unknown, toMs: ToMs): SpaceExtras {
   if (judges) out.judges = judges
   const house = stakesNote(o.stakesNote, toMs)
   if (house) out.stakesNote = house
+  const former = timesMap(o.formerJoinedAt, toMs)
+  if (former) out.formerJoinedAt = former
   return out
 }
 

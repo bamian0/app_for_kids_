@@ -16,6 +16,7 @@ import { ensureWeek, weekRef } from './weeks.ts'
 const FAILED = 'Couldn’t do that. Try again.'
 const CANCELLED = 'This request was cancelled.'
 const TOO_LATE = 'Too late: reviews for that week have opened.'
+const NOT_ASKED = 'You’re not in that week, so you don’t need to answer.'
 
 function spaceRef(spaceId: string) {
   return doc(getFirebase().db, 'spaces', spaceId)
@@ -138,6 +139,8 @@ function answering(space: Space, me: UID, answer: 'ok' | 'not-now'): Promise<'wa
     if (answer === 'not-now') {
       // Someone who already said OK can't take it back (the asker cancels instead).
       if (oks.includes(me) && me !== request.by) throw new Error(FAILED)
+      // Someone who isn't in that week (joined after its lock) isn't asked (the rules refuse it too).
+      if (me !== request.by && !week.members.includes(me)) throw new Error(NOT_ASKED)
       tx.update(spaceRef(space.id), new FieldPath('pause', 'declinedBy'), me)
       return 'declined'
     }

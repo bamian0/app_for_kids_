@@ -32,6 +32,9 @@ export interface Space {
   /** When each former member left or was removed (the latest time, if they left more than once).
    *  Weeks that had locked by then still count them. Missing on spaces nobody has left since it existed. */
   leftAt?: Record<UID, number>
+  /** A former member's join time, kept by their leave or removal (the latest stay; batch-2 apps only), so who was in
+   *  the space when stakes were agreed stays known (SPEC §9.7). Absent for anyone who left before, or with an older app. */
+  formerJoinedAt?: Record<UID, number>
   /** IANA timezone, fixed at creation. All deadlines use it. */
   timezone: string
   /** The zone's UTC offset in minutes when the space was created. Immutable; the rules anchor every

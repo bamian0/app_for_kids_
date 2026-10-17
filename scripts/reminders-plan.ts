@@ -21,7 +21,18 @@ import {
   spaceJudges,
   taskSelfFraction,
 } from '../src/domain/scoring.ts'
-import { agreementStatus, monthDebts, monthHouse, monthTerms, termsMonth, type Debt } from '../src/domain/stakes.ts'
+import {
+  agreementStatus,
+  inLockedWeek,
+  memberTerms,
+  monthDebts,
+  monthHouse,
+  monthLocks,
+  monthTerms,
+  termsFriends,
+  termsMonth,
+  type Debt,
+} from '../src/domain/stakes.ts'
 import {
   addMonths,
   addWeeks,
@@ -34,7 +45,7 @@ import {
   weekIdFor,
   weekIdsInMonth,
 } from '../src/domain/time.ts'
-import type { MemberStakes, MonthId, MonthlyData, MonthlyList, MonthResults, Space, UID, UserProfile, Week, WeekData, WeekId } from '../src/domain/types.ts'
+import type { MemberStakes, MonthId, MonthlyData, MonthlyList, MonthResults, Space, TermsInForce, UID, UserProfile, Week, WeekData, WeekId } from '../src/domain/types.ts'
 
 export type ReminderKind =
   | 'plan'
@@ -825,17 +836,28 @@ export interface StakesCandidate {
 
 /**
  * The `stakes` pushes that may be due (SPEC §9.11): for each current member whose stakes changed in the last 7
- * days, each current friend who doesn't judge and whose agreement is 'waiting'. Keys depend on the change
- * (`${spaceId}_${owner}@${updatedAtMs}_stakes_${friend}`), so the job reads them from the sent log after loading.
+ * days, each current friend who doesn't judge and whose agreement is 'waiting' by what counts now (as on the
+ * stakes card, on computed times: a change back to terms everyone agreed to waits for nobody). Keys depend on the
+ * change (`${spaceId}_${owner}@${updatedAtMs}_stakes_${friend}`), so the job reads them from the sent log after loading.
  */
 export function stakesCandidates(space: Space, memberStakes: Record<UID, MemberStakes> | undefined, nowMs: number): StakesCandidate[] {
   const judges = spaceJudges(space)
+  const month = termsMonth(space, nowMs)
+  const firstLockAt = boundsFor(space, weekIdsInMonth(month)[0]).lockAt
+  const locks = monthLocks(space, month)
   const out: StakesCandidate[] = []
   for (const owner of space.memberIds) {
     const stakes = memberStakes?.[owner]
     if (!stakes || !(stakes.updatedAt > nowMs - STAKES_DAYS * DAY_MS)) continue
+    let inForce: Record<UID, TermsInForce> | undefined
+    const counted = () => {
+      const friends = termsFriends(space, owner, firstLockAt, judges, (uid) => inLockedWeek(space, uid, locks))
+      inForce ??= memberTerms(space, owner, friends, memberStakes, { reward: space.reward, penalty: space.penalty }, Infinity)
+      return inForce
+    }
     for (const friend of space.memberIds) {
       if (friend === owner || judges.includes(friend) || agreementStatus(stakes, friend) !== 'waiting') continue
+      if (agreementStatus(stakes, friend, counted()) !== 'waiting') continue
       out.push({ owner, friend, key: reminderKey(space.id, `${owner}@${stakes.updatedAt}`, 'stakes', friend), expiresAt: stakes.updatedAt + STAKES_DAYS * DAY_MS })
     }
   }

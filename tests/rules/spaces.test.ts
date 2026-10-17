@@ -197,6 +197,26 @@ describe('spaces: update', () => {
     await allowed(leave(db('carol'), 'carol', 's1'))
   })
 
+  test('leaving or being removed may keep the join time in formerJoinedAt, exactly as it was (SPEC §9.7)', async () => {
+    await seed({ 'spaces/s1': staggered(['alice', 'bob', 'carol', 'dave'], { formerJoinedAt: { erin: ts(Date.now() - 60 * DAY) } }) })
+    const joined = (await getDoc(doc(db('alice'), 'spaces/s1'))).data()!.joinedAt as Record<string, Timestamp>
+    await allDenied({
+      'another time': () => leave(db('carol'), 'carol', 's1', { 'formerJoinedAt.carol': Timestamp.fromMillis(joined.carol.toMillis() + DAY) }),
+      'someone else\'s': () => leave(db('carol'), 'carol', 's1', { 'formerJoinedAt.bob': joined.bob }),
+      'changing an earlier one': () => leave(db('carol'), 'carol', 's1', { 'formerJoinedAt.carol': joined.carol, 'formerJoinedAt.erin': joined.bob }),
+      'dropping an earlier one': () => leave(db('carol'), 'carol', 's1', { formerJoinedAt: { carol: joined.carol } }),
+      'without leaving': () => updateDoc(doc(db('carol'), 'spaces/s1'), { 'formerJoinedAt.carol': joined.carol }),
+      'the owner, without removing': () => updateDoc(doc(db('alice'), 'spaces/s1'), { 'formerJoinedAt.dave': joined.dave }),
+    })
+    await allowed(leave(db('carol'), 'carol', 's1', { 'formerJoinedAt.carol': joined.carol }))
+    await allowed(leave(db('alice'), 'dave', 's1', { 'formerJoinedAt.dave': joined.dave }))
+    const after = (await getDoc(doc(db('alice'), 'spaces/s1'))).data()!
+    expect(Object.keys(after.formerJoinedAt).sort()).toEqual(['carol', 'dave', 'erin'])
+    expect((after.formerJoinedAt.carol as Timestamp).isEqual(joined.carol)).toBe(true)
+    // An older client's leave, without it, still passes.
+    await allowed(leave(db('bob'), 'bob', 's1'))
+  })
+
   test('an owner who leaves hands the space to the earliest-joined member', async () => {
     await seed({ 'spaces/s1': staggered(['alice', 'bob', 'carol', 'dave']) })
     const alice = db('alice')

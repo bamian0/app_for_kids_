@@ -204,6 +204,16 @@ describe('wasMemberAt', () => {
     expect(wasMemberAt(sp, 'c', 300)).toBe(false)
     expect(wasMemberAt(sp, 'x', 1)).toBe(false)
   })
+
+  it('a former member whose leave kept the join time counts only from it (formerJoinedAt)', () => {
+    const kept = { ...sp, formerJoinedAt: { c: 150, b: 50 } }
+    expect(wasMemberAt(kept, 'c', 149)).toBe(false)
+    expect(wasMemberAt(kept, 'c', 150)).toBe(true)
+    expect(wasMemberAt(kept, 'c', 299)).toBe(true)
+    expect(wasMemberAt(kept, 'c', 300)).toBe(false)
+    // b is back: the current stay decides, not the kept one.
+    expect(wasMemberAt(kept, 'b', 100)).toBe(false)
+  })
 })
 
 describe('memberTerms (SPEC §9.7: what counts, line by line)', () => {
@@ -573,6 +583,32 @@ describe('monthTerms', () => {
     const early = { ...frozen, createdAt: firstLockAt + H }
     const live = monthHouse(sp, '2026-10', early, completeAt)
     expect(monthTerms(sp, '2026-10', month, {}, live, { completeAt, firstLockAt }).marco.lena.reward.text).toBe('Dinner on me')
+  })
+
+  it('a friend who joined after everyone agreed and left without agreeing holds nothing back (review logic-1)', () => {
+    // lena and sam agreed in early October; fin joined Oct 10, played two weeks and left Oct 20.
+    let st = own('marco', { reward: 'Dinner, on you', penalty: 'Lunch for everyone', tiers: [{ months: 2, reward: 'Weekend away' }] })
+    st = agree(agree(st, 'lena', Date.parse('2026-10-02T10:00:00Z')), 'sam', Date.parse('2026-10-03T10:00:00Z'))
+    const joined = Date.parse('2026-10-10T10:00:00Z')
+    const left = Date.parse('2026-10-20T10:00:00Z')
+    const after = { ...sp, leftAt: { fin: left }, formerJoinedAt: { fin: joined } }
+    const played = {
+      marco: result('marco', ['lena', 'sam', 'fin']),
+      lena: result('lena', ['marco', 'sam', 'fin']),
+      sam: result('sam', ['marco', 'lena', 'fin']),
+      fin: result('fin', ['marco', 'lena', 'sam'], { former: true }),
+    }
+    const terms = monthTerms(after, '2026-10', played, { marco: st }, HOUSE, { completeAt, firstLockAt })
+    expect(texts(terms.marco)).toEqual({
+      lena: ['Dinner, on you', 'Lunch for everyone', [2]],
+      sam: ['Dinner, on you', 'Lunch for everyone', [2]],
+      fin: [HOUSE.reward, HOUSE.penalty, []],
+    })
+    const prev: MonthResults = { monthId: '2026-09', completeAt: 0, createdAt: 0, members: { marco: { score: 95, passed: true, streak: 1, tierRuns: { '2': 1 } } } }
+    expect(buildMonthResults('2026-10', completeAt, played, prev, terms).members.marco.tierRuns).toEqual({ '2': 2 })
+    // An older app's leave keeps no join time: fin is then assumed to have been there, as before.
+    const old = { ...sp, leftAt: { fin: left } }
+    expect(texts(monthTerms(old, '2026-10', played, { marco: st }, HOUSE, { completeAt, firstLockAt }).marco).lena[0]).toBe(HOUSE.reward)
   })
 
   it('judge-only members and members with nobody else have no pairs', () => {

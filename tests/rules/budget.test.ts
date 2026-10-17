@@ -20,6 +20,7 @@
 //   validNewMonthly, 8 members, judges (moved clock)            461      539           9
 //   retimesMonthly with both weeks stored                       513      487           7
 //   finalizesPause, 8 members (last in the space chain)         644      356           9
+//   declinesPause: Not Now, 8 members (reads the week)          602      398           9   (2026-10-16)
 //   asksToPause after a lapsed request, 8 members               654      346           8
 //   stakes create: 7 per, 5 streak rewards                      832      168           9
 //   stakes owner edit: 7 per, 5 streaks, 7 × 6 agreements       838      162           9
@@ -229,6 +230,15 @@ const CASES: Case[] = [
       'spaces/s1/weeks/2026-11-23': weekDoc('active', M8),
     }),
     run: (db) => updateDoc(doc(db('m9'), 'spaces/s1'), { 'paused.2026-11': '2026-11-23' }),
+  },
+  {
+    name: 'declinesPause: Not Now, 8 members (reads the week)',
+    ...SPACE,
+    seed: () => ({
+      'spaces/s1': space({ pause: { weekId: '2026-11-23', by: 'm1', at: ts(Date.now() - DAY), oks: M8.slice(0, 7) } }),
+      'spaces/s1/weeks/2026-11-23': weekDoc('active', M8),
+    }),
+    run: (db) => updateDoc(doc(db('m8'), 'spaces/s1'), { 'pause.declinedBy': 'm8' }),
   },
   {
     name: 'asksToPause after a lapsed request, 8 members',

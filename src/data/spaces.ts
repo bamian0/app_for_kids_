@@ -14,6 +14,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -299,21 +300,31 @@ function earliestJoined(space: Space, among: UID[]): UID {
  * space update (the new owner). If the weeks part is refused (a lock just passed), the space part
  * still goes and the leaver stays in that week, as they should once it has locked.
  */
-async function removeFromSpace(ref: DocumentReference, space: Space, uid: UID, patch: Record<string, unknown> = {}): Promise<void> {
-  const write = async (withWeeks: boolean) => {
+async function removeFromSpace(snap: DocumentSnapshot, space: Space, uid: UID, patch: Record<string, unknown> = {}): Promise<void> {
+  // Their join time moves to formerJoinedAt, exactly as stored (the rules compare it; a server time has
+  // microseconds), so who was in the space when stakes were agreed stays known (SPEC §9.7).
+  const joined: unknown = snap.get(new FieldPath('joinedAt', uid))
+  const write = async (withWeeks: boolean, keepJoined: boolean) => {
     const batch = writeBatch(getFirebase().db)
     if (withWeeks) await leaveUnlockedWeeks(batch, space, uid)
     const extra = Object.entries(patch).flat()
     // A judge leaving drops their own entry (SPEC §9.4); nobody else's changes.
     if (space.judges?.includes(uid)) extra.push('judges', arrayRemove(uid))
-    batch.update(ref, 'memberIds', arrayRemove(uid), new FieldPath('joinedAt', uid), deleteField(), new FieldPath('leftAt', uid), serverTimestamp(), ...extra)
+    if (keepJoined && joined instanceof Timestamp) extra.push(new FieldPath('formerJoinedAt', uid), joined)
+    batch.update(snap.ref, 'memberIds', arrayRemove(uid), new FieldPath('joinedAt', uid), deleteField(), new FieldPath('leftAt', uid), serverTimestamp(), ...extra)
     await batch.commit()
   }
   try {
-    await write(true)
+    await write(true, true)
   } catch (e) {
     if (!isDenied(e)) throw e
-    await write(false)
+    try {
+      await write(false, true)
+    } catch (again) {
+      // Leaving never fails over the kept join time (a stale copy of it is refused): go without it.
+      if (!isDenied(again) || !(joined instanceof Timestamp)) throw again
+      await write(false, false)
+    }
   }
 }
 
@@ -328,7 +339,7 @@ async function leave(snap: DocumentSnapshot, uid: string): Promise<void> {
   }
   // An owner who leaves others behind hands the space to whoever joined first.
   const patch = space.ownerId === uid && others.length > 0 ? { ownerId: earliestJoined(space, others) } : {}
-  await removeFromSpace(snap.ref, space, uid, patch)
+  await removeFromSpace(snap, space, uid, patch)
   forgetSpace(uid, space.id)
 }
 
@@ -372,7 +383,7 @@ export async function removeMember(spaceId: string, uid: UID): Promise<void> {
     if (space.ownerId !== me) throw new Error('Only the owner can remove people.')
     if (uid === me) throw new Error(MSG.generic)
     if (!space.memberIds.includes(uid)) return
-    await removeFromSpace(snap.ref, space, uid)
+    await removeFromSpace(snap, space, uid)
   } catch (e) {
     throw humanError(e, MSG.noAccess)
   }

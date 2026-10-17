@@ -2,6 +2,7 @@
 // reminders job. What counts between two people is decided line by line from the agreements' server times, so
 // an agreed change counts at once for the month in progress and a finished month never changes.
 import type { MemberMonthResult } from './scoring.ts'
+import { isWeekPaused } from './pause.ts'
 import { monthEndsAtFor, spaceJudges } from './scoring.ts'
 import { boundsFor } from './schedule.ts'
 import { addMonths, monthIdForWeek, weekIdFor, weekIdsInMonth } from './time.ts'
@@ -94,18 +95,48 @@ export function agreementsOf(stakes: MemberStakes | null | undefined, friend: UI
   return [...agreement.past, { ...agreement.terms, at: agreement.at }]
 }
 
-/** 'agreed': the friend's current agreement equals the current terms (by content, so changing back to terms
- *  they agreed to reads as agreed); 'waiting': it doesn't, or they never agreed; 'missing': no terms for them. */
-export function agreementStatus(stakes: MemberStakes | null | undefined, friend: UID): 'agreed' | 'waiting' | 'missing' {
+/** What counts between a subject and a friend is exactly `terms`: the texts, each line together exactly when it is
+ *  Same for everyone, and the streak rewards. */
+export function countsAs(inForce: TermsInForce, terms: PairTerms): boolean {
+  return (
+    inForce.reward.text === terms.reward &&
+    inForce.reward.together === (terms.rewardMode === 'group') &&
+    inForce.penalty.text === terms.penalty &&
+    inForce.penalty.together === (terms.penaltyMode === 'group') &&
+    sameTiers(inForce.tiers, terms.tiers)
+  )
+}
+
+/** Every friend in `inForce` (what counts between the subject and them, memberTerms) who has terms is on the
+ *  subject's current terms, both lines from agreements: nothing the subject set waits for anyone. */
+export function currentTermsCount(stakes: MemberStakes | null | undefined, inForce: Record<UID, TermsInForce>): boolean {
+  return Object.entries(inForce).every(([f, t]) => {
+    const terms = pairTerms(stakes, f)
+    return !terms || (t.reward.source === 'agreed' && t.penalty.source === 'agreed' && countsAs(t, terms))
+  })
+}
+
+/**
+ * 'agreed': the friend's current agreement equals the current terms (by content, so changing back to terms they
+ * agreed to reads as agreed), or, given what counts with the subject's friends (`inForce`, memberTerms; the friend
+ * among them), the current terms already count for all of them (changing back to terms everyone agreed to, even
+ * after some agreed to a change in between); 'waiting': otherwise, or they never agreed; 'missing': no terms for them.
+ */
+export function agreementStatus(
+  stakes: MemberStakes | null | undefined,
+  friend: UID,
+  inForce?: Record<UID, TermsInForce>,
+): 'agreed' | 'waiting' | 'missing' {
   const terms = pairTerms(stakes, friend)
   if (!terms) return 'missing'
   const agreement = stakes?.agreed[friend]
-  return agreement && sameTerms(agreement.terms, terms) ? 'agreed' : 'waiting'
+  if (agreement && sameTerms(agreement.terms, terms)) return 'agreed'
+  return inForce && friend in inForce && currentTermsCount(stakes, inForce) ? 'agreed' : 'waiting'
 }
 
-/** The friends (in that order) whose status is 'waiting'. */
-export function waitingFor(stakes: MemberStakes | null | undefined, friends: UID[]): UID[] {
-  return friends.filter((f) => agreementStatus(stakes, f) === 'waiting')
+/** The friends (in that order) whose status is 'waiting' (with `inForce` as for agreementStatus). */
+export function waitingFor(stakes: MemberStakes | null | undefined, friends: UID[], inForce?: Record<UID, TermsInForce>): UID[] {
+  return friends.filter((f) => agreementStatus(stakes, f, inForce) === 'waiting')
 }
 
 /** The friends (in that order) with no terms ('missing'). */
@@ -131,18 +162,22 @@ export function nextAgreement<T = number>(
   return { terms: next, past: past.slice(Math.max(0, past.length - MAX_PAST)) }
 }
 
+/** The space fields that tell who was in it when (wasMemberAt). */
+export type Stays = Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt' | 'formerJoinedAt'>
+
 /**
  * Whether `uid` was in the space at `ms`: a current member who joined at or before it (someone who left and
- * rejoined counts from their latest join), or a former member who left after it (their join time is gone, so
- * assumed earlier).
+ * rejoined counts from their latest join), or a former member who joined at or before it (`formerJoinedAt`, kept
+ * by their leave; without it, assumed earlier: they left with an older app) and left after it.
  */
-export function wasMemberAt(space: Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt'>, uid: UID, ms: number): boolean {
+export function wasMemberAt(space: Stays, uid: UID, ms: number): boolean {
   if (space.memberIds.includes(uid)) {
     const joined = space.joinedAt[uid]
     return !(typeof joined === 'number' && joined > ms)
   }
   const left = space.leftAt?.[uid]
-  return typeof left === 'number' && left > ms
+  const joined = space.formerJoinedAt?.[uid]
+  return typeof left === 'number' && left > ms && !(typeof joined === 'number' && joined > ms)
 }
 
 // ---------- What counts (memberTerms) ----------
@@ -168,7 +203,7 @@ function unique(uids: UID[]): UID[] {
  * The walk back of SPEC §9.7: over the times of the counted agreements (`at < cutoffMs`), latest first, the
  * latest time at which each line (and the streak rewards) is settled.
  */
-function walk(space: Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt'>, subject: UID, friends: UID[], stakes: Stakes, cutoffMs: number): Walk {
+function walk(space: Stays, subject: UID, friends: UID[], stakes: Stakes, cutoffMs: number): Walk {
   const own = stakes?.[subject]
   const pals = unique(friends).filter((f) => f !== subject)
   const history = new Map<UID, AgreedTerms[]>()
@@ -238,7 +273,7 @@ function termsFromWalk(w: Walk, house: House): Record<UID, TermsInForce> {
  * a per-friend change with that friend's Agree, and a switch between the modes waits for everyone who had agreed.
  */
 export function memberTerms(
-  space: Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt'>,
+  space: Stays,
   subject: UID,
   friends: UID[],
   stakes: Stakes,
@@ -257,7 +292,7 @@ export function memberTerms(
  * latest agreement doesn't have them. `friends` as for the stakes card (termsFriends of the subject).
  */
 export function agreeOutcome(
-  space: Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt'>,
+  space: Stays,
   subject: UID,
   me: UID,
   friends: UID[],
@@ -320,24 +355,57 @@ export function termsMonth(space: Pick<Space, 'timezone' | 'schedule'>, nowMs: n
 }
 
 /**
- * Whose agreement a month in progress waits for, as near to its `others` as the space doc tells: current members
+ * Whose agreement a month in progress waits for, as near to its `others` as the caller knows: current members
  * other than `me` who don't judge, plus former members who left at or after the month's first lock
- * (`firstLockAt`: its first week's stored lock, else computed), since they still owe or are owed for it.
+ * (`firstLockAt`: its first week's stored lock, else computed) and `played` it, since they still owe or are owed
+ * for it. `played`: the month's players when its weeks are loaded (the month view), else inLockedWeek on the
+ * space doc (the stakes card); a friend who joined and left between two locks, or only during a paused week,
+ * never played and holds nothing back.
  */
-export function termsFriends(space: Pick<Space, 'memberIds' | 'leftAt' | 'judges'>, me: UID, firstLockAt: number, judges: UID[] = spaceJudges(space)): UID[] {
+export function termsFriends(
+  space: Pick<Space, 'memberIds' | 'leftAt' | 'judges'>,
+  me: UID,
+  firstLockAt: number,
+  judges: UID[] = spaceJudges(space),
+  played: (uid: UID) => boolean = () => true,
+): UID[] {
   const current = space.memberIds.filter((uid) => uid !== me && !judges.includes(uid))
-  const left = Object.entries(space.leftAt ?? {}).flatMap(([uid, at]) => (uid !== me && !space.memberIds.includes(uid) && at >= firstLockAt ? [uid] : []))
+  const left = Object.entries(space.leftAt ?? {}).flatMap(([uid, at]) =>
+    uid !== me && !space.memberIds.includes(uid) && at >= firstLockAt && played(uid) ? [uid] : [],
+  )
   return unique([...current, ...left])
+}
+
+/** The locks of a month's weeks that aren't paused (`thisWeek`'s stored lock when it is one of them, else computed)
+ *  and of its list when known (`monthly`): the periods a friend who left could have played in (inLockedWeek). */
+export function monthLocks(space: Pick<Space, 'timezone' | 'schedule' | 'paused'>, monthId: MonthId, thisWeek?: Week | null, monthly?: MonthlyList | null): number[] {
+  const locks = weekIdsInMonth(monthId)
+    .filter((w) => !isWeekPaused(space, w))
+    .map((w) => boundsFor(space, w, thisWeek && thisWeek.id === w ? thisWeek : null).lockAt)
+  if (monthly && monthly.id === monthId) locks.push(monthly.lockAt)
+  return locks
+}
+
+/**
+ * Whether former member `uid` was in a period that locked at one of `locks` (a month's weeks that aren't paused,
+ * and its list), as the space doc tells: they joined before that lock (`formerJoinedAt`; without it, assumed
+ * earlier) and left at or after it (from its lock on, nobody leaves a period). Judging isn't known here.
+ */
+export function inLockedWeek(space: Pick<Space, 'leftAt' | 'formerJoinedAt'>, uid: UID, locks: number[]): boolean {
+  const left = space.leftAt?.[uid]
+  const joined = space.formerJoinedAt?.[uid]
+  return typeof left === 'number' && locks.some((lock) => lock <= left && !(typeof joined === 'number' && joined >= lock))
 }
 
 /**
  * A month's terms, subject → friend (SPEC §9.7): the results doc's stored terms when present; else, once the
  * month is complete, memberTerms from the agreements made before `completeAt` with each player's `others`; before
- * that, every agreement so far with termsFriends ∪ others (what counts now, as on the stakes card). `house` is
+ * that, every agreement so far with termsFriends (its leavers only when they played) ∪ others (what counts now, as
+ * on the stakes card). `house` is
  * the month's (monthHouse). Subjects without pairs are left out.
  */
 export function monthTerms(
-  space: Pick<Space, 'memberIds' | 'joinedAt' | 'leftAt' | 'judges'>,
+  space: Stays & Pick<Space, 'judges'>,
   _monthId: MonthId,
   month: Record<UID, MemberMonthResult>,
   stakes: Stakes,
@@ -350,6 +418,8 @@ export function monthTerms(
   const complete = results.some((r) => r.complete)
   const players = new Set(results.flatMap((r) => r.others))
   const judges = spaceJudges(space)
+  // A friend who left waits only when they played this month (as in the verdict).
+  const played = (uid: UID) => players.has(uid)
   const out: Record<UID, Record<UID, TermsInForce>> = {}
   for (const r of results) {
     const friends = complete
@@ -357,7 +427,7 @@ export function monthTerms(
         ? r.others
         : []
       : players.has(r.uid) || (space.memberIds.includes(r.uid) && !judges.includes(r.uid))
-        ? unique([...termsFriends(space, r.uid, at.firstLockAt, judges), ...r.others])
+        ? unique([...termsFriends(space, r.uid, at.firstLockAt, judges, played), ...r.others])
         : []
     if (friends.length === 0) continue
     out[r.uid] = memberTerms(space, r.uid, friends, stakes, house, complete ? at.completeAt : Infinity)

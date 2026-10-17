@@ -30,6 +30,7 @@ describe('decodeSpaceExtras', () => {
     paused: { '2026-09': '2026-09-14', '2026-13': '2026-12-28', '2026-11': 'soon' },
     judges: ['ana', 'ana', '', 3],
     stakesNote: { by: 'lena', at: ts(T + 2) },
+    formerJoinedAt: { ben: ts(T - 5), kim: 'yesterday', lee: ts(-1) },
   }
 
   it('every valid batch-2 field', () => {
@@ -40,6 +41,7 @@ describe('decodeSpaceExtras', () => {
       paused: { '2026-09': '2026-09-14' },
       judges: ['ana'],
       stakesNote: { by: 'lena', at: T + 2 },
+      formerJoinedAt: { ben: T - 5 },
     })
   })
 
@@ -60,8 +62,9 @@ describe('decodeSpaceExtras', () => {
     expect(decodeSpaceExtras({ ...good, judges: 'ana' }, toMs).judges).toBeUndefined()
     expect(decodeSpaceExtras({ ...good, stakesNote: { by: 'lena' } }, toMs).stakesNote).toBeUndefined()
     expect(decodeSpaceExtras({ ...good, judges: [] }, toMs).judges).toEqual([])
+    expect(decodeSpaceExtras({ ...good, formerJoinedAt: { kim: 'x' } }, toMs).formerJoinedAt).toBeUndefined()
     for (const v of JUNK) {
-      const all = Object.fromEntries(['schedule', 'scheduleNote', 'pause', 'paused', 'judges', 'stakesNote'].map((k) => [k, v]))
+      const all = Object.fromEntries(['schedule', 'scheduleNote', 'pause', 'paused', 'judges', 'stakesNote', 'formerJoinedAt'].map((k) => [k, v]))
       expect(() => decodeSpaceExtras(all, toMs)).not.toThrow()
       expect(() => decodeSpaceExtras(v, toMs)).not.toThrow()
     }

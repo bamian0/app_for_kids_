@@ -243,6 +243,23 @@ describe('Not Now and cancelling', () => {
     await setup({ pause: { ...pending, declinedBy: 'carol' } })
     await denied(decline(db('alice'), 'alice', { ...pending, declinedBy: 'carol' }))
   })
+
+  test('someone who joined after the week locked isn\'t asked, so can\'t say Not Now', async () => {
+    // dave joined after this week's lock: he is in the space, not in the week.
+    const thisWeek = request(NOV_A, 'alice', ['alice', 'bob'])
+    await seed({
+      'spaces/s1': spaceDoc([...ABC, 'dave'], { pause: thisWeek }),
+      [`spaces/s1/weeks/${NOV_A}`]: weekDoc('active', ABC),
+    })
+    await denied(decline(db('dave'), 'dave', thisWeek))
+    // carol, the one still needed, completes it; before that she could still have said Not Now.
+    await allowed(ok(db('carol'), 'carol', thisWeek, '2026-11'))
+    await seed({
+      'spaces/s1': spaceDoc([...ABC, 'dave'], { pause: thisWeek }),
+      [`spaces/s1/weeks/${NOV_A}`]: weekDoc('active', ABC),
+    })
+    await allowed(decline(db('carol'), 'carol', thisWeek))
+  })
 })
 
 describe('finalizing', () => {

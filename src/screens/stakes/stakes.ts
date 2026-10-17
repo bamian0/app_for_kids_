@@ -5,7 +5,7 @@
 // never complete, so no freeze binds for it and nothing here reads a months/ doc).
 import { judgesOf, spaceJudges } from '../../domain/scoring.ts'
 import { boundsFor } from '../../domain/schedule.ts'
-import { agreementStatus, agreeOutcome, memberTerms, missingFor, pairTerms, termsFriends, termsMonth, waitingFor } from '../../domain/stakes.ts'
+import { agreementStatus, agreeOutcome, inLockedWeek, memberTerms, missingFor, monthLocks, pairTerms, termsFriends, termsMonth, waitingFor } from '../../domain/stakes.ts'
 import type { House } from '../../domain/stakes.ts'
 import { addMonths, monthIdForWeek, weekIdFor, weekIdsInMonth } from '../../domain/time.ts'
 import type { MemberStakes, MonthId, MonthlyList, PairTerms, Space, StakesMode, StreakTier, TermsInForce, UID, Week } from '../../domain/types.ts'
@@ -29,6 +29,9 @@ export interface TermsNow {
   thisMonth: MonthId
   /** The first lock of `month`: its first week's stored lock when that is this week, else computed. */
   firstLockAt: number
+  /** The locks of `month`'s weeks that aren't paused (stored for this week, else computed) and of its list when
+   *  known: a friend who left counts only when they were in one of these (inLockedWeek). */
+  locks: number[]
   /** Between a month's completion and the next month's first week: changes count from `month`, `thisMonth` is final. */
   window: boolean
 }
@@ -38,7 +41,7 @@ export function termsNow(space: Space, nowMs: number, thisWeek?: Week | null, mo
   const month = termsMonth(space, nowMs, thisWeek ?? null, monthly ?? null)
   const first = weekIdsInMonth(month)[0]
   const firstLockAt = boundsFor(space, first, thisWeek && thisWeek.id === first ? thisWeek : null).lockAt
-  return { month, thisMonth, firstLockAt, window: month !== thisMonth }
+  return { month, thisMonth, firstLockAt, locks: monthLocks(space, month, thisWeek, monthly), window: month !== thisMonth }
 }
 
 /** The space's house stakes: what counts between two people who haven't agreed on their own, right now. */
@@ -46,15 +49,24 @@ export function houseOf(space: Pick<Space, 'reward' | 'penalty'>): House {
   return { reward: space.reward, penalty: space.penalty }
 }
 
-/** The friends whose agreement `subject`'s terms wait for right now (termsFriends of the month that counts). */
+/** The friends whose agreement `subject`'s terms wait for right now (termsFriends of the month that counts; a
+ *  friend who left counts when they were in one of its weeks, by the space doc). */
 export function friendsOf(space: Space, subject: UID, now: TermsNow): UID[] {
-  return termsFriends(space, subject, now.firstLockAt)
+  return termsFriends(space, subject, now.firstLockAt, undefined, (uid) => inLockedWeek(space, uid, now.locks))
 }
 
 /** What counts right now between `subject` and each of their friends. */
 export function termsInForceNow(space: Space, subject: UID, stakes: StakesDocs | undefined, now: TermsNow, extra: UID[] = []): Record<UID, TermsInForce> {
   const friends = [...new Set([...friendsOf(space, subject, now), ...extra])].filter((f) => f !== subject)
   return memberTerms(space, subject, friends, stakes, houseOf(space), Infinity)
+}
+
+/** Where `me` stands on `subject`'s current stakes right now: agreementStatus with what counts now, so a change back
+ *  to terms that already count (everyone had agreed to them) doesn't wait on anyone. */
+export function myStatus(space: Space, subject: UID, me: UID, stakes: StakesDocs | undefined, now: TermsNow): 'agreed' | 'waiting' | 'missing' {
+  const theirs = stakes?.[subject]
+  const status = agreementStatus(theirs, me)
+  return status === 'waiting' ? agreementStatus(theirs, me, termsInForceNow(space, subject, stakes, now, [me])) : status
 }
 
 /** You judge this week: its snapshot when the doc exists (a locked week keeps its role), else the space's list. */
@@ -259,7 +271,7 @@ export function stakesCard({ space, me, stakes, nowMs, thisWeek, monthly, name, 
 
   // News: one line.
   let news: CardNews | null = null
-  const waitingOnMe = judge ? [] : subjects.filter((s) => stakes[s] && agreementStatus(stakes[s], me) === 'waiting')
+  const waitingOnMe = judge ? [] : subjects.filter((s) => stakes[s] && myStatus(space, s, me, stakes, now) === 'waiting')
   if (waitingOnMe.length > 0) {
     news = { kind: 'agree', text: `New stakes from ${shortWho(waitingOnMe.map(name))}`, uids: waitingOnMe, focus: waitingOnMe[0] }
   } else {
@@ -290,7 +302,7 @@ export function stakesCard({ space, me, stakes, nowMs, thisWeek, monthly, name, 
   } else if (!own) {
     pending = { kind: 'house', text: 'Same stakes for everyone, for now.' }
   } else {
-    const waiting = waitingFor(own, shown)
+    const waiting = waitingFor(own, shown, terms)
     const missing = missingFor(own, shown)
     if (waiting.length > 0) {
       pending = { kind: 'waiting', text: `Your new stakes: waiting for ${shortWho(waiting.map(name))} to agree`, uids: waiting }
@@ -311,10 +323,10 @@ export function stakesCard({ space, me, stakes, nowMs, thisWeek, monthly, name, 
  */
 export function leaversHolding(space: Space, own: MemberStakes, friends: UID[], terms: Record<UID, TermsInForce>): UID[] {
   const current = friends.filter((f) => space.memberIds.includes(f))
-  if (current.some((f) => agreementStatus(own, f) === 'waiting')) return []
+  if (current.some((f) => agreementStatus(own, f, terms) === 'waiting')) return []
   const blocked = current.some((f) => differsFromCurrent(terms[f], pairTerms(own, f)))
   if (!blocked) return []
-  return friends.filter((f) => !space.memberIds.includes(f) && agreementStatus(own, f) !== 'agreed')
+  return friends.filter((f) => !space.memberIds.includes(f) && agreementStatus(own, f, terms) !== 'agreed')
 }
 
 /** "Ben left before agreeing, so your shared stakes count from November." */
@@ -342,11 +354,13 @@ export function streakLine(streak: number | null | undefined): string | null {
 
 export const NO_OWN_FOOTER = 'Set what you get and what you give, the same for everyone or per friend. They count as soon as your friends tap Agree.'
 
-/** A friend's status row in "Your stakes": "Agreed", "Waiting" (with what counts meanwhile), or missing terms. */
-export function friendStatus(own: MemberStakes, friend: UID, inForce?: TermsInForce): { kind: 'agreed' } | { kind: 'waiting'; subtitle: string } | { kind: 'missing' } {
-  const status = agreementStatus(own, friend)
+/** A friend's status row in "Your stakes": "Agreed", "Waiting" (with what counts meanwhile), or missing terms.
+ *  `terms`: what counts now with your friends (memberTerms), so terms that already count read as agreed. */
+export function friendStatus(own: MemberStakes, friend: UID, terms?: Record<UID, TermsInForce>): { kind: 'agreed' } | { kind: 'waiting'; subtitle: string } | { kind: 'missing' } {
+  const status = agreementStatus(own, friend, terms)
   if (status === 'agreed') return { kind: 'agreed' }
   if (status === 'missing') return { kind: 'missing' }
+  const inForce = terms?.[friend]
   const earlier = inForce ? inForce.reward.source === 'agreed' || inForce.penalty.source === 'agreed' || inForce.tiers.length > 0 : !!own.agreed[friend]
   return { kind: 'waiting', subtitle: earlier ? 'What they agreed before counts for now' : 'The house stakes count for now' }
 }
@@ -360,10 +374,10 @@ export function waitingFooter(waiting: UID[], me: UID, name: Name): string {
 }
 
 /** Friend sections in order: those whose stakes wait on you first, then join order. */
-export function friendOrder(space: Space, me: UID, stakes: StakesDocs | undefined, judge: boolean): UID[] {
+export function friendOrder(space: Space, me: UID, stakes: StakesDocs | undefined, judge: boolean, now: TermsNow): UID[] {
   const friends = playingFriends(space, me)
   if (judge || !stakes) return friends
-  const waits = (f: UID) => (stakes[f] && agreementStatus(stakes[f], me) === 'waiting' ? 0 : 1)
+  const waits = (f: UID) => (stakes[f] && myStatus(space, f, me, stakes, now) === 'waiting' ? 0 : 1)
   return [...friends].sort((a, b) => waits(a) - waits(b))
 }
 
@@ -509,6 +523,13 @@ export function draftChanged(d: EditorDraft, initial: EditorDraft, friends: UID[
 /** Your stakes as they will read once saved (agreements kept), to tell who has to agree. */
 export function stakesAfterSave(me: UID, input: EditorDraft, own: MemberStakes | undefined, nowMs: number): MemberStakes {
   return { uid: me, ...input, agreed: own?.agreed ?? {}, updatedAt: nowMs }
+}
+
+/** The friends (in the space) whose Agree your stakes wait for once saved as `after`, by what counts now: going back
+ *  to terms everyone agreed to waits for nobody, though some agreed to a change in between. */
+export function waitingAfterSave(space: Space, me: UID, after: MemberStakes, stakes: StakesDocs | undefined, now: TermsNow): UID[] {
+  const shown = friendsOf(space, me, now).filter((f) => space.memberIds.includes(f))
+  return waitingFor(after, shown, termsInForceNow(space, me, { ...stakes, [me]: after }, now))
 }
 
 /** The save toast's message: when your stakes count ("Counts now.", "Counts as soon as Lena agrees."); none alone. */

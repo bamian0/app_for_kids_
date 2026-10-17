@@ -390,19 +390,31 @@ service cloud.firestore {
       return changed.hasOnly([who]) && changed.hasAll([who]) && after[who] == request.time;
     }
 
-    // Leaving removes self from memberIds and joinedAt (and may drop self from judges). An owner who
-    // leaves others behind hands the space to the earliest-joined of them in the same write.
+    // The join time of whoever leaves may move to formerJoinedAt[who], exactly as it was (older clients
+    // don't send it), so who was in the space when stakes were agreed stays known (SPEC §9.7). Nothing
+    // else there changes, and no other branch touches it.
+    function keepsJoinTime(who) {
+      let before = existing().get('formerJoinedAt', {});
+      let after = incoming().get('formerJoinedAt', {});
+      return after == before
+        || (after.diff(before).affectedKeys().hasOnly([who]) && after[who] == existing().joinedAt[who]);
+    }
+
+    // Leaving removes self from memberIds and joinedAt (and may drop self from judges, and keep the join
+    // time). An owner who leaves others behind hands the space to the earliest-joined of them in the
+    // same write.
     function leavesSpace() {
       let uid = request.auth.uid;
       let e = existing();
       let d = incoming();
       return uid in e.memberIds
-        && changedOnly(['memberIds', 'joinedAt', 'ownerId', 'leftAt', 'judges'])
+        && changedOnly(['memberIds', 'joinedAt', 'ownerId', 'leftAt', 'judges', 'formerJoinedAt'])
         && d.memberIds == e.memberIds.removeAll([uid])
         && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([uid])
         && !(uid in d.joinedAt)
         && recordsLeft(uid)
         && ownJudgeOnly([uid])
+        && keepsJoinTime(uid)
         && (uid == e.ownerId && d.memberIds.size() > 0 ? earliestJoined(d) : d.ownerId == e.ownerId);
     }
 
@@ -412,14 +424,15 @@ service cloud.firestore {
       let d = incoming();
       let removed = e.memberIds.removeAll(d.memberIds);
       return request.auth.uid == e.ownerId && request.auth.uid in e.memberIds
-        && changedOnly(['memberIds', 'joinedAt', 'leftAt', 'judges'])
+        && changedOnly(['memberIds', 'joinedAt', 'leftAt', 'judges', 'formerJoinedAt'])
         && removed.size() == 1
         && !(request.auth.uid in removed)
         && d.memberIds == e.memberIds.removeAll(removed)
         && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly(removed)
         && !d.joinedAt.keys().hasAny(removed)
         && recordsLeft(removed[0])
-        && ownJudgeOnly(removed);
+        && ownJudgeOnly(removed)
+        && keepsJoinTime(removed[0]);
     }
 
     // Spaces whose owner left before ownership moved with them: the earliest-joined member takes over.
@@ -567,7 +580,8 @@ service cloud.firestore {
           && pauses(p, q.oks, pauseWeek(p.weekId));
       }
 
-      // Not Now from a member who hasn't said OK, or the asker cancelling (withdrawn). The request
+      // Not Now from someone the request waits on (in that week, no OK yet), or the asker cancelling
+      // (withdrawn). Someone who joined after the week locked isn't asked, so can't end it. The request
       // stays, so the asker's 12-hour wait still holds. There is no delete.
       function declinesPause() {
         return 'pause' in existing() && changedOnly(['pause'])
@@ -577,7 +591,7 @@ service cloud.firestore {
       function declines(uid, p, q) {
         return exactKeys(q, ['weekId', 'by', 'at', 'oks', 'declinedBy'])
           && q.declinedBy == uid && !('declinedBy' in p)
-          && (!(uid in p.oks) || uid == p.by)
+          && (uid == p.by || (!(uid in p.oks) && uid in pauseWeek(p.weekId).members))
           && q.weekId == p.weekId && q.by == p.by && q.at == p.at && q.oks == p.oks
           && !(monthOfWeek(p.weekId) in existing().get('paused', {}));
       }

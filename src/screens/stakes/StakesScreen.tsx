@@ -172,7 +172,7 @@ function StakesBody({ space, focus }: { space: Space; focus?: UID }) {
       )}
 
       {stakes &&
-        friendOrder(space, me, stakes, judge).map((subject) => (
+        friendOrder(space, me, stakes, judge, now).map((subject) => (
           <FriendStakes
             key={subject}
             sectionRef={(el) => {
@@ -226,7 +226,7 @@ function YourStakes({ space, own, friends, shown, terms, now, streak, judge, nam
     )
   }
   const differs = shown.some((f) => differsFromCurrent(terms[f], pairTerms(own, f)))
-  const waiting = waitingFor(own, shown)
+  const waiting = waitingFor(own, shown, terms)
   const missing = missingFor(own, shown)
   const footer = ownFooter({
     waiting: waiting.map(name),
@@ -239,7 +239,7 @@ function YourStakes({ space, own, friends, shown, terms, now, streak, judge, nam
   const statusRows = shown.map((f) => {
     const person = personOf(profiles, f)
     const avatar = <Avatar name={person.name} color={person.color} photo={person.photo} size={30} />
-    const status = friendStatus(own, f, terms[f])
+    const status = friendStatus(own, f, terms)
     if (status.kind === 'missing') {
       return judge ? (
         <Row key={f} leading={avatar} title={name(f)} subtitle="No stakes set for them yet" />
@@ -316,15 +316,16 @@ function FriendStakes({ sectionRef, space, me, subject, stakes, now, judge, busy
   const theirs = stakes[subject]
   const subjectName = name(subject)
   const person = personOf(profiles, subject)
-  // What counts between them and you now (with you among their friends even while you judge).
-  const forMe = termsInForceNow(space, subject, stakes, now, [me])[me]
+  // What counts between them and their friends now; for you, even while you judge (you're then not among them).
+  const inForce = termsInForceNow(space, subject, stakes, now)
+  const forMe = inForce[me] ?? termsInForceNow(space, subject, stakes, now, [me])[me]
   const theirFriends = friendsOf(space, subject, now).filter((f) => space.memberIds.includes(f))
   const alone = theirFriends.length <= 1
   const current = pairTerms(theirs, me)
-  const status = theirs ? agreementStatus(theirs, me) : 'missing'
+  const status = theirs ? agreementStatus(theirs, me, inForce) : 'missing'
   const showNew = differsFromCurrent(forMe, current)
   const footer =
-    theirs && status !== 'missing' ? waitingFooter(waitingFor(theirs, theirFriends), me, name) : `${subjectName} hasn’t set stakes with you yet. The house stakes count.`
+    theirs && status !== 'missing' ? waitingFooter(waitingFor(theirs, theirFriends, inForce), me, name) : `${subjectName} hasn’t set stakes with you yet. The house stakes count.`
   return (
     <div className="sk-section" ref={sectionRef}>
       <Section

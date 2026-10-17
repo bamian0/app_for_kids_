@@ -5,12 +5,12 @@ import { useEffect, useRef, useState } from 'react'
 import { saveMyStakes, useAuth, useProfiles, useStakes } from '../../data/api.ts'
 import { now as appNow } from '../../domain/clock.ts'
 import { spaceJudges } from '../../domain/scoring.ts'
-import { MAX_TIERS, TIER_CHOICES, waitingFor } from '../../domain/stakes.ts'
+import { MAX_TIERS, TIER_CHOICES } from '../../domain/stakes.ts'
 import type { MemberStakes, Space, StakesMode, UID } from '../../domain/types.ts'
 import { Avatar, GlassButton, Icon, Row, Screen, Section, SegmentedControl, TextArea, useAlert, useToast } from '../../ui/index.ts'
 import { firstName, nameOf, personOf } from '../components/people.ts'
 import { SwipeToDelete } from '../components/SwipeToDelete.tsx'
-import { draftChanged, draftFrom, draftInput, draftValid, EDITOR_FOOTER, friendsOf, houseOf, saveMessage, stakesAfterSave, switchMode, termsNow, TIERS_FOOTER, unusedTierChoices } from './stakes.ts'
+import { draftChanged, draftFrom, draftInput, draftValid, EDITOR_FOOTER, friendsOf, houseOf, saveMessage, stakesAfterSave, switchMode, termsNow, TIERS_FOOTER, unusedTierChoices, waitingAfterSave } from './stakes.ts'
 import type { EditorDraft, TermsNow } from './stakes.ts'
 import './stakes.css'
 
@@ -89,7 +89,7 @@ export function StakesEditorSheet({ space, own, now, focus, close }: StakesEdito
       const when = now ?? termsNow(space, nowMs)
       const shown = friendsOf(space, me, when).filter((f) => space.memberIds.includes(f))
       const after = stakesAfterSave(me, input, live.data?.[me] ?? mine, nowMs)
-      const waiting = waitingFor(after, shown).map(name)
+      const waiting = waitingAfterSave(space, me, after, live.data, when).map(name)
       toast({ title: 'Saved', message: saveMessage(waiting, shown.length, when), icon: 'checkmark', tone: 'success' })
       close()
     } catch (e) {

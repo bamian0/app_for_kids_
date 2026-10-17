@@ -302,6 +302,7 @@ export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, in
  * entry of the task's `cancels` log (`${n}:${taskId}` → { at: serverTimestamp(), why }), with `updatedAt`.
  * `why` is trimmed and made one line (1–120 characters). Already crossed out: resolves without writing (a lost
  * answer or a retry). After the 2nd undo the cross-out is final. Fails at once offline. Messages in SPEC §10.6.
+ * Pauses and whether anyone else can review you (`someoneCanReview`) are the sheet's to check, not this function's.
  */
 export async function crossOutTask(space: Space, period: Period, taskId: string, why: string): Promise<void> {
   void [space, period, taskId, why]

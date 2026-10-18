@@ -94,11 +94,14 @@ export function monthlyCardView({ space, me, nowMs, data, result, name, when }: 
     if (result.revealed && mine.score !== null) {
       return { title: `Your ${month} list`, subtitle: `Score ${formatScore(mine.score)}`, icon: 'calendar', score: { value: mine.score, provisional: false } }
     }
-    // Crossed-out tasks don't count yet (SPEC §10.5): "2 of 3 done" leaves them out.
+    // Crossed-out tasks don't count yet (SPEC §10.5): "2 of 3 done" leaves them out. Every task crossed out: no
+    // provisional score, so no ring (as on the member card); the subtitle says why.
     const { open, done } = openCount(mine)
     const progress = open === 0 ? 'Tasks crossed out' : `${done} of ${open} done`
     const subtitle = phase === 'review' ? `In review · due ${when(bounds.deadlineAt)}` : progress
-    return { title: `Your ${month} list`, subtitle, icon: 'calendar', score: { value: mine.provisionalScore, provisional: true } }
+    const view: MonthlyCardView = { title: `Your ${month} list`, subtitle, icon: 'calendar' }
+    if (mine.provisionalScore !== null) view.score = { value: mine.provisionalScore, provisional: true }
+    return view
   }
   const holders = listHolders(result).filter((id) => id !== me)
   if (holders.length === 0) return null

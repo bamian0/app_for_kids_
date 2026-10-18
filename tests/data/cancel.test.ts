@@ -171,6 +171,9 @@ describe('crossing out a week’s task, and undoing that', () => {
     await as(lena)
     await rejectsWith(crossOutTask(space, week(W), 't2', ''), 'Say why in a few words.')
     await rejectsWith(crossOutTask(space, week(W), 't2', '  \n\r  '), 'Say why in a few words.')
+    // Blank as the rules see it too (WHY_BLANK): no-break, ideographic and zero-width spaces alone.
+    await rejectsWith(crossOutTask(space, week(W), 't2', '\u00a0\u3000'), 'Say why in a few words.')
+    await rejectsWith(crossOutTask(space, week(W), 't2', '\u200b\u200b'), 'Say why in a few words.')
     await rejectsWith(crossOutTask(space, week(W), 't2', 'x'.repeat(121)), 'Keep the reason to 120 characters.')
     expect((await adminGet(`${weekPath(W)}/plans/${lena.uid}`))?.cancels['1:t2']).toBeUndefined()
     await crossOutTask(space, week(W), 't2', `${'x'.repeat(119)}\n`)

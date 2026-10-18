@@ -5,7 +5,7 @@ import { useAuth, useMonthData, useMySpaces, useProfiles, useWeek } from '../dat
 import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, pushSupport } from '../push/index.ts'
 import { isWeekPaused, pauseView } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
-import { computeMonth, computeWeek, isMonthPlayer, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { computeMonth, computeWeek, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
 import { addWeeks, isMonthlyReviewWeek, monthIdForWeek, weekIdFor, weekPhase } from '../domain/time.ts'
 import type { Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useTabBar, useToast } from '../ui/index.ts'
@@ -14,7 +14,7 @@ import { usePress } from '../ui/press.ts'
 import { Loading } from './components/Bits.tsx'
 import { useNow } from './components/clock.ts'
 import { monthName, wholePercent } from './components/format.ts'
-import { freshVerdictMonth, verdictStatus } from './components/month.ts'
+import { freshVerdictMonth, judgeOnly, verdictStatus } from './components/month.ts'
 import { takeOpenTarget } from './components/openTarget.ts'
 import { takePendingJoin } from './components/pendingJoin.ts'
 import { firstName, nameOf, personOf } from './components/people.ts'
@@ -181,7 +181,8 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
   const profiles = useProfiles([...space.memberIds, ...(verdict?.others ?? [])])
   const name = (id: UID) => firstName(nameOf(profiles, id))
   const meWeek = week?.members[uid]
-  const judgeOnlyMonth = !!mine && mine.finalScore === null && ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && !isMonthPlayer(mine)
+  // Only judged this month: someone who also played a week friends skipped isn't (their week says "Skipped").
+  const judgeOnlyMonth = !!mine && mine.finalScore === null && judgeOnly(mine)
 
   let ring: number | null = null
   let caption = ''

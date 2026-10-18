@@ -179,9 +179,18 @@ export function playsMonth(result: MemberMonthResult): boolean {
   return isMonthPlayer(result)
 }
 
-/** The member only judged this month (weeks or its lists) and has no score. */
+/** The member only judged this month (weeks or its lists) and has no score. Someone who also played a week or a
+ *  list that friends skipped (SPEC §10.4) isn't: they played, and their summary says what was skipped. */
 export function judgeOnly(result: MemberMonthResult): boolean {
-  return !playsMonth(result) && ((result.judged?.length ?? 0) > 0 || result.monthlyJudge === true)
+  return !playsMonth(result) && skippedCount(result) === 0 && ((result.judged?.length ?? 0) > 0 || result.monthlyJudge === true)
+}
+
+/** Overview's "This month" line while a member has no score: "Judge · no score this month", "No scored weeks yet ·
+ *  1 skipped" (friends excused every task of a week or list they played), else "No finished weeks yet". */
+export function noScoreLine(result: MemberMonthResult): string {
+  if (judgeOnly(result)) return 'Judge · no score this month'
+  const skipped = skippedCount(result)
+  return skipped > 0 ? `No scored weeks yet · ${skipped} skipped` : 'No finished weeks yet'
 }
 
 // ---------- The month view's rows (SPEC §9.3–§9.8) ----------

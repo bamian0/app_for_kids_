@@ -4,7 +4,7 @@ import { useAuth, useCurrency, useEarnings, useMonthData, useMySpaces } from '..
 import { earnedByWeek, earnedInMonth, earningId, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
 import { isWeekPaused } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
-import { computeMonth, computeWeek, isMonthPlayer, joinedAfterLock, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { computeMonth, computeWeek, joinedAfterLock, membersAt, spaceJudges } from '../domain/scoring.ts'
 import { addWeeks, formatWeekRange, monthIdForWeek, weekIdFor } from '../domain/time.ts'
 import type { CurrencyCode, Earning, Space, UID } from '../domain/types.ts'
 import { EmptyState, Icon, Row, ScoreRing, Screen, Section, cx, useNav, useTabBar } from '../ui/index.ts'
@@ -12,7 +12,7 @@ import { Loading, MiniScore } from './components/Bits.tsx'
 import { crossedOut } from './components/cancel.ts'
 import { useNow } from './components/clock.ts'
 import { formatScore, monthName, wholePercent } from './components/format.ts'
-import { currentMonth } from './components/month.ts'
+import { currentMonth, noScoreLine } from './components/month.ts'
 import { spaceStatus } from './components/status.ts'
 import type { StatusLine } from './components/status.ts'
 import { deadlineDay } from './components/zone.ts'
@@ -235,9 +235,8 @@ function SpaceMonthRow({ space, uid, onOpen }: { space: Space; uid: UID; onOpen:
   if (mine) {
     const score = mine.finalScore
     if (score === null) {
-      // Judged every week so far (and played none): nothing at stake this month.
-      const judgeOnly = ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && !isMonthPlayer(mine)
-      line = judgeOnly ? 'Judge · no score this month' : 'No finished weeks yet'
+      // Judged every week so far (and played none): nothing at stake this month; or friends skipped what you played.
+      line = noScoreLine(mine)
     } else {
       const short = space.threshold - wholePercent(score)
       const points = `${short} ${short === 1 ? 'point' : 'points'}`

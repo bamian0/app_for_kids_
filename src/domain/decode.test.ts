@@ -284,7 +284,8 @@ describe('decodeCancels', () => {
   })
 
   it('an odd entry needs a reason that isn’t blank; it is read on one line', () => {
-    for (const why of [undefined, null, '', '   ', '\n', 5, ['Sick'], { text: 'Sick' }]) {
+    // Blank as the rules and the app see it (whyIsBlank): spaces of any width and zero-width characters too.
+    for (const why of [undefined, null, '', '   ', '\n', '\u00a0', '\u3000', '\u2003', '\u2028', '\u200b', '\u200b\ufeff', 5, ['Sick'], { text: 'Sick' }]) {
       expect(decodeCancels({ '1:swim': { at: ts(T), why } }, toMs)).toEqual({})
       expect(decodeCancels({ '1:swim': out(1), '2:swim': out(2), '3:swim': { at: ts(T + 3), why } }, toMs).swim).toMatchObject({ changes: 2, cancelled: false, why: WHY })
     }

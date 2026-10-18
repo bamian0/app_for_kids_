@@ -2,7 +2,7 @@
 // §10.4). Pure and defensive: a malformed value decodes as absent (or a safe default), never throws. Shared by the
 // data layer and the reminders job (like decodeTasks). `toMs` turns a stored time (a Firestore Timestamp, as the
 // caller's SDK gives it) into epoch ms, or null.
-import { CANCEL_MAX_CHANGES, cleanWhy } from './cancel.ts'
+import { CANCEL_MAX_CHANGES, cleanWhy, whyIsBlank } from './cancel.ts'
 import { scheduleProblem } from './schedule.ts'
 import type {
   Agreement,
@@ -323,7 +323,8 @@ export function isReviewMark(v: unknown): v is ReviewMark {
 
 /**
  * A plan's `cancels` log (§10.3) → each task's state, by task id: `changes` = the largest n with entries 1…n all
- * present and well formed (a valid time `at`; odd n also a reason that isn't blank), crossed out when it is odd,
+ * present and well formed (a valid time `at`; odd n also a reason that isn't blank: whyIsBlank, the rules' own
+ * test, so an entry the rules accepted is never dropped), crossed out when it is odd,
  * `at` = entry n's, `why` = the latest odd entry's. Malformed keys (n outside 1–5, a bad id), values, times and
  * reasons are dropped, and so is everything after the first gap; an even entry may carry extra fields. Tasks with
  * no valid entry 1 are absent. Ids not on the list are kept here (decodeTasks ignores them). Never throws.
@@ -343,7 +344,7 @@ export function decodeCancels(v: unknown, toMs: ToMs): Record<string, TaskCancel
     const entry: { at: number; why?: string } = { at }
     if (n % 2 === 1) {
       const why = typeof e.why === 'string' ? cleanWhy(e.why) : ''
-      if (why === '') continue
+      if (whyIsBlank(why)) continue
       entry.why = why
     }
     const id = match[2]

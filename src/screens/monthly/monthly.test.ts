@@ -207,7 +207,9 @@ describe('monthlyCardView', () => {
     })
     const progress: Record<UID, Progress> = { a: { uid: 'a', updatedAt: SEP1, done: { a0: true, a1: true } } }
     expect(card(crossed(monthlyData(list(), { a: 3, b: 1 }, progress), ['a1']), active)).toMatchObject({ subtitle: '1 of 2 done', score: { value: 50, provisional: true } })
-    expect(card(crossed(monthlyData(list(), { a: 2, b: 1 }), ['a0', 'a1']), active)).toMatchObject({ subtitle: 'Tasks crossed out', score: { value: null } })
+    // Every task crossed out: no provisional score, so no ring (review finding: it drew "—" captioned "So far").
+    expect(card(crossed(monthlyData(list(), { a: 2, b: 1 }), ['a0', 'a1']), active)).toEqual({ title: 'Your October list', subtitle: 'Tasks crossed out', icon: 'calendar' })
+    expect(card(crossed(monthlyData(list(), { a: 2, b: 1 }), ['a0', 'a1']), REVIEW)).toEqual({ title: 'Your October list', subtitle: 'In review · due tonight at midnight', icon: 'calendar' })
     // Revealed, and the one reviewer said fair: the list is skipped, with no score.
     const reviews: Review[] = [{ id: 'b_a', reviewerId: 'b', revieweeId: 'a', marks: { a0: 'fair' }, submittedAt: REVIEW }]
     const skipped = crossed(monthlyData(list({ submittedBy: ['a', 'b', 'c'] }), { a: 1, b: 1 }, {}, reviews), ['a0'])

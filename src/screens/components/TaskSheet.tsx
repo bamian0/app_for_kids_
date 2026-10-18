@@ -9,7 +9,7 @@ import { flushSync } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { addMonthlyTaskAfterLock, addTaskAfterLock, crossOutTask, setTaskRevenue, undoCrossOut, useAuth, useCurrency, useEarnings, useMonthly, useWeek } from '../../data/api.ts'
 import type { Live } from '../../data/api.ts'
-import { CANCEL_WHY_MAX, cancelOptions, cleanWhy, isCancelled, whyProblem, whyProblemText } from '../../domain/cancel.ts'
+import { CANCEL_WHY_MAX, cancelOptions, isCancelled, whyIsBlank, whyProblem, whyProblemText } from '../../domain/cancel.ts'
 import { MAX_SUBTASKS, newTaskId } from '../../domain/ids.ts'
 import { earningId } from '../../domain/money.ts'
 import { boundsFor } from '../../domain/schedule.ts'
@@ -199,7 +199,7 @@ function TaskSheetBody({ space, period, doc, stored: storedTasks, mode, close, o
   const options = mode.kind === 'locked' && task ? cancelOptions(task, bounds, nowMs) : null
   const offerCrossOut = !!options && !crossed && options.action === 'cross-out' && gate.crossOut
   const offerUndo = !!options && crossed && options.action === 'undo' && gate.undo
-  const reasonReady = cleanWhy(why) !== ''
+  const reasonReady = !whyIsBlank(why)
   const valid = (!editable || title.trim() !== '') && !(revenue.on && revenue.invalid)
 
   const saveRevenue = (target: Pick<Task, 'id' | 'title'>, isDone: boolean) => {

@@ -1,13 +1,15 @@
 // Crossing out a task and undoing that (SPEC §10.3, §10.7): the cancels log on a week's or a monthly
 // list's plan. Every change adds one key "<n>:<taskId>" (odd {at, why}, even {at}) with the server time.
-import { describe, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import {
   deleteDoc, deleteField, doc, FieldPath, getDoc, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch,
   type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
-  allDenied, allowed, DAY, denied, fullTask, HOUR, monthlyDoc, spaceDoc, ts, useRulesEnv, weekDoc, type Phase,
+  allDenied, allowed, DAY, denied, fullTask, HOUR, monthlyDoc, PUBLISHED_RULES, spaceDoc, ts, useRulesEnv, weekDoc, type Phase,
 } from './helpers.ts'
+import { WHY_BLANK, whyProblem, whyVisibleRe2 } from '../../src/domain/cancel.ts'
+import { decodeCancels } from '../../src/domain/decode.ts'
 
 const { db, seed } = useRulesEnv()
 
@@ -120,6 +122,13 @@ describe.each(PERIODS)('cross out on $name', ({ coll, id }) => {
     await allDenied({
       'empty': () => crossOut('1:t0', ''),
       'blank': () => crossOut('1:t0', '   '),
+      // Review finding: trim() kept these, so the rules took a reason the app and the decoder call blank.
+      'no-break spaces': () => crossOut('1:t0', '\u00a0\u00a0'),
+      'an ideographic space': () => crossOut('1:t0', '\u3000'),
+      'an em space': () => crossOut('1:t0', '\u2003'),
+      'a line separator': () => crossOut('1:t0', '\u2028'),
+      'zero-width spaces and joiners': () => crossOut('1:t0', '\u200b\u200d\u2060\ufeff'),
+      'a tab and a control character': () => crossOut('1:t0', '\t\u0001'),
       '121 characters': () => crossOut('1:t0', 'x'.repeat(121)),
       'a newline': () => crossOut('1:t0', 'Pool closed\nall week'),
       'a carriage return': () => crossOut('1:t0', 'Pool closed\rall week'),
@@ -130,6 +139,7 @@ describe.each(PERIODS)('cross out on $name', ({ coll, id }) => {
     })
     await allowed(crossOut('1:t0', 'Ж'.repeat(120)))
     await allowed(crossOut('1:t1', 'Sick 🤒 so no swimming 🏊‍♀️'))
+    await allowed(crossOut('1:t2', '\u3000\u200bFlu\u00a0'))
   })
 
   test('the log grows by one well-formed entry per write', async () => {
@@ -229,6 +239,58 @@ describe.each(PERIODS)('cross out on $name', ({ coll, id }) => {
     await allowed(setDoc(doc(db('alice'), `${period}/progress/alice`), { done: { t0: true }, updatedAt: serverTimestamp() }, { merge: true }))
     // Friends read the plan and its log.
     await allowed(getDoc(planRef(db('bob'), 'alice')))
+  })
+})
+
+// The reason must show something (SPEC §10.3), decided by one class: WHY_BLANK in src/domain/cancel.ts, which the
+// app (whyProblem), the decoder (decodeCancels) and these rules all use. The review found the rules' trim() and
+// the app's trim disagreeing: the rules took a reason of no-break spaces that every client then dropped, hiding
+// the cross-out while the rules still counted it.
+describe('the rules, the app and the decoder agree on every reason', () => {
+  const period = 'spaces/s1/weeks/W'
+  const planPath = `${period}/plans/alice`
+  const toMs = (v: unknown) => (v instanceof Timestamp ? v.toMillis() : null)
+
+  test('the rules hold the app\'s class, written for RE2', () => {
+    const literal = whyVisibleRe2().replaceAll('\\', '\\\\')
+    expect(PUBLISHED_RULES).toContain(`v.why.matches('.*${literal}.*')`)
+  })
+
+  test('both edges of every blank range, and the characters just outside them', async () => {
+    await seed({
+      'spaces/s1': spaceDoc(['alice', 'bob']),
+      [period]: weekDoc('active', ['alice', 'bob']),
+      [planPath]: { tasks: tasks(1), updatedAt: earlier() },
+    })
+    const blank = (cp: number) => WHY_BLANK.some(([lo, hi]) => lo <= cp && cp <= hi)
+    const points = new Set<number>()
+    for (const [lo, hi] of WHY_BLANK) {
+      // U+0000 can't be sent; U+000A and U+000D are refused as line breaks before this check.
+      for (const cp of [lo, hi, lo - 1, hi + 1]) if (cp > 0 && cp !== 0x0a && cp !== 0x0d) points.add(cp)
+    }
+    const cases = [...points].map((cp) => String.fromCodePoint(cp))
+    // Mixed: blank around something that shows, and every kind of blank together.
+    cases.push(`\u3000\u200b${String.fromCodePoint(0x1f912)}\u200b`, WHY_BLANK.map(([lo, hi]) => String.fromCodePoint(Math.max(lo, 1), hi)).join(''))
+    const disagree: string[] = []
+    const accepted: string[] = []
+    for (const [i, why] of cases.entries()) {
+      // Keys aren't checked against the list (§10.12), so each case gets its own.
+      let ok = true
+      try {
+        await updateDoc(doc(db('alice'), planPath), new FieldPath('cancels', `1:c${i}`), { at: serverTimestamp(), why }, 'updatedAt', serverTimestamp())
+      } catch {
+        ok = false
+      }
+      if (ok) accepted.push(`c${i}`)
+      const cps = [...why].map((c) => c.codePointAt(0)!.toString(16)).join(' ')
+      if (ok !== (whyProblem(why) === null)) disagree.push(`${cps}: rules ${ok ? 'accept' : 'refuse'}, app ${whyProblem(why) ?? 'accepts'}`)
+      if ([...why].length === 1 && ok === blank(why.codePointAt(0)!)) disagree.push(`${cps}: rules ${ok ? 'accept' : 'refuse'} it`)
+    }
+    expect(disagree).toEqual([])
+    expect(accepted.length).toBeGreaterThan(20)
+    // Every entry the rules took is read by the decoder, so nobody's view differs from what the rules count.
+    const snap = await getDoc(doc(db('alice'), planPath))
+    expect(Object.keys(decodeCancels(snap.get('cancels'), toMs)).sort()).toEqual([...accepted].sort())
   })
 })
 

@@ -8,7 +8,8 @@
 // that still passes is its headroom (a term is 5.24 expressions: 191 of them alone fill the limit, so
 // a change of a few expressions may not show); then likewise with k reads of missing docs (tried up to
 // 10). MEASURE_ONLY=<regex> measures only the cases whose names match. Measured 2026-10-14 (emulator of
-// firebase-tools 15.33), the plan, append, cross-out and review rows again on 2026-10-17 for batch 2.5.
+// firebase-tools 15.33), the plan, append, cross-out and review rows again on 2026-10-17 for batch 2.5,
+// and the plan and cross-out rows on 2026-10-18 after the reason's blank test became one regex (unchanged).
 // Spare reads of a batch can differ by one between runs of the same rules (the plan rows: 9 or 10):
 //
 //   case                                                       used   headroom   spare reads
@@ -127,7 +128,8 @@ const planBranch = (next: string) => ({
 const WEEK_PLAN = planBranch("(appendsTask(spaceId, 'weeks', weekId, uid, 0)")
 /** appendsTask is shared by weeks and monthly lists, and so is togglesCancel. */
 const APPEND = atEnd('&& d.added[t.id] == request.time;')
-const TOGGLE = { point: '&& v.why.trim().size() > 0);', padded: '&& v.why.trim().size() > 0) && pad(1) && apad();' }
+/** The end of togglesCancel: the reason's class (WHY_BLANK) closes its last check. */
+const TOGGLE = { point: "{e0fff}].*'));", padded: "{e0fff}].*')) && pad(1) && apad();" }
 const WEEK_REVIEW = atEnd("validReview(spaceId, 'weeks', weekId, rid);")
 const MONTHLY_UPDATE = atEnd('|| retimesMonthly(spaceId, monthId));')
 const MONTHLY_CREATE = atEnd('validNewMonthly(spaceId, monthId, incoming());')

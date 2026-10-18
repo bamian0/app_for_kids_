@@ -31,12 +31,60 @@ export function cleanWhy(text: string): string {
   return text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()
 }
 
+/**
+ * Code point ranges that show nothing on their own: controls, spaces of every width, line and paragraph separators,
+ * zero-width spaces and joiners, direction marks, invisible operators, variation selectors, fillers and tags. A
+ * reason needs at least one character outside them (SPEC §10.3). The rules test exactly this class (togglesCancel,
+ * written as whyVisibleRe2()), so the app, the rules and decodeCancels agree on every reason: a reason the rules
+ * accept is never dropped by the decoder. Plain ranges rather than Unicode properties, so no difference between
+ * the rules engine's Unicode tables and the browser's can split them. tests/rules/cancels.test.ts checks the rules
+ * file holds this class and tries both edges of every range against the rules.
+ */
+export const WHY_BLANK: ReadonlyArray<readonly [number, number]> = [
+  [0x0000, 0x0020], // controls, space
+  [0x007f, 0x00a0], // delete, C1 controls, no-break space
+  [0x00ad, 0x00ad], // soft hyphen
+  [0x034f, 0x034f], // combining grapheme joiner
+  [0x061c, 0x061c], // Arabic letter mark
+  [0x115f, 0x1160], // Hangul fillers
+  [0x1680, 0x1680], // Ogham space mark
+  [0x17b4, 0x17b5], // Khmer inherent vowels
+  [0x180b, 0x180f], // Mongolian variation selectors, vowel separator
+  [0x2000, 0x200f], // en quad … hair space, zero-width space, joiners, direction marks
+  [0x2028, 0x202f], // line and paragraph separators, embeddings, narrow no-break space
+  [0x205f, 0x206f], // medium space, word joiner, invisible operators, isolates
+  [0x2800, 0x2800], // Braille blank
+  [0x3000, 0x3000], // ideographic space
+  [0x3164, 0x3164], // Hangul filler
+  [0xfe00, 0xfe0f], // variation selectors
+  [0xfeff, 0xfeff], // zero-width no-break space
+  [0xffa0, 0xffa0], // halfwidth Hangul filler
+  [0xe0000, 0xe0fff], // tags, variation selectors supplement
+]
+
+function charClass(escape: (cp: number) => string): string {
+  return `[^${WHY_BLANK.map(([lo, hi]) => (lo === hi ? escape(lo) : `${escape(lo)}-${escape(hi)}`)).join('')}]`
+}
+
+/** One character that shows something (not in WHY_BLANK), as RE2 writes it: the rules' class (togglesCancel). */
+export function whyVisibleRe2(): string {
+  return charClass((cp) => `\\x{${cp.toString(16)}}`)
+}
+
+const VISIBLE = new RegExp(charClass((cp) => `\\u{${cp.toString(16)}}`), 'u')
+
+/** A reason with nothing to show: every character is in WHY_BLANK (an empty one too). */
+export function whyIsBlank(text: string): boolean {
+  return !VISIBLE.test(text)
+}
+
 export type WhyProblem = 'empty' | 'long'
 
-/** What's wrong with a reason once cleaned (cleanWhy): nothing left, or more than 120 UTF-16 units. */
+/** What's wrong with a reason once cleaned (cleanWhy): nothing that shows (whyIsBlank), or more than 120 UTF-16
+ *  units. */
 export function whyProblem(text: string): WhyProblem | null {
   const why = cleanWhy(text)
-  if (why === '') return 'empty'
+  if (whyIsBlank(why)) return 'empty'
   if (why.length > CANCEL_WHY_MAX) return 'long'
   return null
 }

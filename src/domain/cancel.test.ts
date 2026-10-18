@@ -9,8 +9,11 @@ import {
   cleanWhy,
   isCancelled,
   someoneCanReview,
+  WHY_BLANK,
+  whyIsBlank,
   whyProblem,
   whyProblemText,
+  whyVisibleRe2,
 } from './cancel.ts'
 import type { Task, TaskCancel } from './types.ts'
 
@@ -73,6 +76,36 @@ describe('the reason', () => {
     // An emoji is two UTF-16 units, as the field counts it.
     expect(whyProblem('🏊'.repeat(60))).toBeNull()
     expect(whyProblem(`${'🏊'.repeat(60)}x`)).toBe('long')
+  })
+
+  it('a reason has to show something: spaces of any width, zero-width and control characters alone are blank', () => {
+    // Review finding: the rules' trim() kept these, the app's trim stripped some and missed U+200B, so the app,
+    // the rules and the decoder disagreed. Now one class (WHY_BLANK) decides everywhere.
+    for (const why of ['\u00a0', '\u3000', '\u2003', '\u2028', '\u2029', '\u200b', '\u200b\u200d\u2060', '\ufeff', '\u00ad', '\u3164', '\u2800', '\ufe0f', '\u{e0020}\u{e007f}', '\t\u000b\u0001', '\u0085 \u202f']) {
+      expect(whyIsBlank(why), JSON.stringify(why)).toBe(true)
+      expect(whyProblem(why), JSON.stringify(why)).toBe('empty')
+    }
+    for (const why of ['x', '\u200bSick\u200b', '\u3000Flu', '🤒', '❤️', '👨‍👩‍👧', '病気', 'é', '\u0301', '.']) {
+      expect(whyIsBlank(why), JSON.stringify(why)).toBe(false)
+      expect(whyProblem(why), JSON.stringify(why)).toBeNull()
+    }
+    // Every range, at both edges and just outside them.
+    const blank = (cp: number) => WHY_BLANK.some(([lo, hi]) => lo <= cp && cp <= hi)
+    for (const [lo, hi] of WHY_BLANK) {
+      for (const cp of [lo, hi]) expect(whyIsBlank(String.fromCodePoint(cp)), cp.toString(16)).toBe(true)
+      for (const cp of [lo - 1, hi + 1]) if (cp >= 0 && !blank(cp)) expect(whyIsBlank(String.fromCodePoint(cp)), cp.toString(16)).toBe(false)
+    }
+    // Every character JavaScript trims is blank too, so cleanWhy never turns a reason blank or a blank one into one.
+    for (let cp = 0; cp <= 0xffff; cp++) {
+      const c = String.fromCharCode(cp)
+      if (c.trim() === '') expect(blank(cp), cp.toString(16)).toBe(true)
+    }
+  })
+
+  it('whyVisibleRe2: the same class in RE2’s syntax, for the rules', () => {
+    expect(whyVisibleRe2()).toMatch(/^\[\^(\\x\{[0-9a-f]+\}(-\\x\{[0-9a-f]+\})?)+\]$/)
+    expect(whyVisibleRe2().startsWith('[^\\x{0}-\\x{20}\\x{7f}-\\x{a0}')).toBe(true)
+    expect(whyVisibleRe2().endsWith('\\x{e0000}-\\x{e0fff}]')).toBe(true)
   })
 
   it('whyProblemText: the messages, verbatim', () => {

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { computeMonth, computeWeek } from '../../domain/scoring.ts'
 import type { MemberMonthResult, MemberWeekResult, WeekResult } from '../../domain/scoring.ts'
 import { monthCompleteAt, weekBounds } from '../../domain/time.ts'
-import type { Space, WeekData } from '../../domain/types.ts'
+import type { Review, Space, WeekData } from '../../domain/types.ts'
 import { formatScore, monthName, wholePercent } from './format.ts'
 import { addedLabel, stepCount, summarizeMarks, weekdayIn } from './marks.ts'
-import { canSettle, defaultMonth, freshVerdictMonth, judgeOnly, monthSummary, monthlyDetail, playsMonth, settleHint, skippedCount, verdictStatus, verdictText, weekDetail } from './month.ts'
+import { canSettle, defaultMonth, freshVerdictMonth, judgeOnly, monthSummary, monthlyDetail, noScoreLine, playsMonth, settleHint, skippedCount, verdictStatus, verdictText, weekDetail } from './month.ts'
 import { personOf } from './people.ts'
 import { spaceStatus } from './status.ts'
 import type { StatusContext } from './status.ts'
@@ -294,9 +294,53 @@ describe('skipped periods in the month (SPEC §10.4)', () => {
   it('doesn’t make a member whose only week was skipped a player', () => {
     const onlySkipped = monthResult('a', { weeks: [{ weekId: '2026-09-28', score: null, closed: true, skipped: true }], judged: ['2026-10-05'], finalScore: null, average: null })
     expect(playsMonth(onlySkipped)).toBe(false)
-    expect(judgeOnly(onlySkipped)).toBe(true)
+    // They judged a week but played one too, which friends skipped: not "only a judge" (review finding).
+    expect(judgeOnly(onlySkipped)).toBe(false)
+    expect(monthSummary(onlySkipped, closed)).toBe('No scored weeks yet · 1 skipped')
+    expect(noScoreLine(onlySkipped)).toBe('No scored weeks yet · 1 skipped')
+    // A skipped monthly list beside a judged week reads the same.
+    const listSkipped = monthResult('a', { weeks: [], judged: ['2026-10-05'], monthly: { score: null, closed: true, taskCount: 1, skipped: true }, finalScore: null, average: null })
+    expect(judgeOnly(listSkipped)).toBe(false)
+    expect(monthSummary(listSkipped, closed)).toBe('No scored weeks yet · 1 skipped')
+    // Only judging, nothing skipped: still the judge's line.
+    const judging = monthResult('a', { judged: ['2026-10-05'], skippedAsJudge: 1, finalScore: null, average: null })
+    expect(judgeOnly(judging)).toBe(true)
+    expect(monthSummary(judging, closed)).toBe('Judge · no score this month · didn’t review 1')
+    expect(noScoreLine(judging)).toBe('Judge · no score this month')
+    expect(noScoreLine(monthResult('a', { finalScore: null, average: null }))).toBe('No finished weeks yet')
     expect(playsMonth(monthResult('a', { weeks: [{ weekId: '2026-09-28', score: 80, closed: true }] }))).toBe(true)
     expect(playsMonth(monthResult('a', { weeks: [], monthly: { score: null, closed: true, taskCount: 1, skipped: true } }))).toBe(false)
+  })
+})
+
+describe('a member who judged one week and played one that friends skipped', () => {
+  it('reads as skipped, not as a judge, from the month’s own scores', () => {
+    const space: Space = {
+      id: 's', name: 'S', reward: 'r', penalty: 'p', ownerId: 'a', memberIds: ['a', 'b'], joinedAt: { a: 0, b: 0 },
+      timezone: ROME, inviteCode: 'X', threshold: 90, latePenalty: 5, createdAt: 0,
+    }
+    const cancel = { cancelled: true, changes: 1, at: 1, why: 'Pool closed' }
+    const review = (reviewerId: string, revieweeId: string, marks: Review['marks']): Review => ({ id: `${reviewerId}_${revieweeId}`, reviewerId, revieweeId, marks, submittedAt: 0 })
+    // September 2026: a judges the week of Aug 31 and plays the week of Sep 7, where b says fair to a's only task.
+    const judged: WeekData = {
+      spaceId: 's', weekId: '2026-08-31', week: { id: '2026-08-31', spaceId: 's', ...weekBounds('2026-08-31', ROME), members: ['a', 'b'], submittedBy: ['a', 'b'], judges: ['a'] },
+      plans: { b: { uid: 'b', tasks: [{ id: 'b1', title: 'B' }], updatedAt: 0 } }, progress: {}, reviews: [review('a', 'b', { b1: 1 })],
+    }
+    const played: WeekData = {
+      spaceId: 's', weekId: '2026-09-07', week: { id: '2026-09-07', spaceId: 's', ...weekBounds('2026-09-07', ROME), members: ['a', 'b'], submittedBy: ['a', 'b'], judges: [] },
+      plans: { a: { uid: 'a', tasks: [{ id: 'a1', title: 'A', cancel }], updatedAt: 0 }, b: { uid: 'b', tasks: [{ id: 'b1', title: 'B' }], updatedAt: 0 } },
+      progress: {}, reviews: [review('b', 'a', { a1: 'fair' }), review('a', 'b', { b1: 1 })],
+    }
+    const now = monthCompleteAt('2026-09', ROME) + HOUR
+    const a = computeMonth(space, '2026-09', [judged, played], now).a
+    expect(a.finalScore).toBeNull()
+    expect(playsMonth(a)).toBe(false)
+    expect(skippedCount(a)).toBe(1)
+    expect(judgeOnly(a)).toBe(false)
+    expect(monthSummary(a, () => true)).toBe('No scored weeks yet · 1 skipped')
+    expect(noScoreLine(a)).toBe('No scored weeks yet · 1 skipped')
+    expect(weekDetail(a, '2026-08-31', weekBounds('2026-08-31', ROME), now)).toBe('Judge')
+    expect(weekDetail(a, '2026-09-07', weekBounds('2026-09-07', ROME), now)).toBe('Skipped')
   })
 })
 

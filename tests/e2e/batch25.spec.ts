@@ -120,10 +120,14 @@ async function openList(page: Page, month: string): Promise<void> {
   await expect(page.getByRole('heading', { name: `${month} List`, exact: true })).toBeVisible()
 }
 
-/** A visible grouped section holding `text`. */
-const section = (scope: Page | Locator, text: string | RegExp) => scope.locator('.ui-section').filter({ visible: true }).filter({ hasText: text }).first()
-/** A member's card: the visible section whose header row names them. */
-const card = (page: Page, name: string) => section(page, new RegExp(`^${esc(name)}`))
+/** A member's card: the visible section whose header row is titled with their name (after the avatar's initials),
+ *  on the screen on top (a pushed screen leaves the one below it in the page, hidden from VoiceOver). */
+const card = (page: Page, name: string) =>
+  page
+    .locator('.ui-nav__page:not([aria-hidden="true"]) .ui-section')
+    .filter({ visible: true })
+    .filter({ has: page.locator('.ui-row__title').filter({ hasText: new RegExp(`^${esc(name)}$`) }) })
+    .first()
 /** A task's row (its title starts the row's text), anywhere visible in `scope`. */
 const taskRow = (scope: Page | Locator, title: string) => scope.locator('.tk-row').filter({ visible: true }).filter({ hasText: new RegExp(`^${esc(title)}`) }).first()
 /** The row's button that opens your own task. */
@@ -179,7 +183,12 @@ test('a locked monthly list grows by one task at a time, with the date it was ad
   // Lena and Sam had lists at the lock; Kim didn't.
   await setMonthlyPlan(SPACE_ID, month, lenaUid, [FILM, READ], bounds(weeks[0]).startAt)
   await setMonthlyPlan(SPACE_ID, month, samUid, [BIKE], bounds(weeks[0]).startAt)
+  // Mid-month: everyone plays this week too (so the Space screen opens on it, with the monthly card).
   const midMonth = on(weeks[2], 2, 11)
+  await setWeek(SPACE_ID, weeks[2], { ...bounds(weeks[2]), members, submittedBy: [] })
+  await setPlan(SPACE_ID, weeks[2], lenaUid, [SWIM], bounds(weeks[2]).startAt)
+  await setPlan(SPACE_ID, weeks[2], samUid, [RUN], bounds(weeks[2]).startAt)
+  await setPlan(SPACE_ID, weeks[2], kimUid, [EDIT], bounds(weeks[2]).startAt)
   const NEW = { title: 'Mail the festival submission', step: 'Export the screener' }
 
   const l = await phone(browser)
@@ -657,6 +666,8 @@ test('a monthly task: crossed out in a paused last week, then voted on with the 
   })
 
   await test.step('The list’s results: the crossed-out task is skipped', async () => {
+    await sheet(sam).getByRole('button', { name: 'Done', exact: true }).click()
+    await expect(sam.getByRole('dialog')).toHaveCount(0)
     await openList(sam, M)
     const hers = card(sam, LENA.name)
     await expect(taskRow(hers, FILM.title)).toContainText('1 of 1 said fair')

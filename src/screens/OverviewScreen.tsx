@@ -29,6 +29,8 @@ interface WeekTally {
   tasks: number
   done: number
   fraction: number
+  /** Your tasks crossed out now (not in a paused week): left out of `tasks`. */
+  crossed: number
   crossedOut: string[]
 }
 
@@ -55,7 +57,13 @@ export function OverviewScreen() {
         const { [spaceId]: _gone, ...rest } = all
         return rest
       }
-      const same = old && old.tasks === tally.tasks && old.done === tally.done && old.fraction === tally.fraction && old.crossedOut.join() === tally.crossedOut.join()
+      const same =
+        old &&
+        old.tasks === tally.tasks &&
+        old.done === tally.done &&
+        old.fraction === tally.fraction &&
+        old.crossed === tally.crossed &&
+        old.crossedOut.join() === tally.crossedOut.join()
       return same ? all : { ...all, [spaceId]: tally }
     })
   }, [])
@@ -115,14 +123,17 @@ export function OverviewScreen() {
 
 function WeekHero({ tallies, spaces }: { tallies: (WeekTally | undefined)[]; spaces: number }) {
   const loaded = tallies.every((t) => t !== undefined)
-  const sum: WeekTally = { tasks: 0, done: 0, fraction: 0, crossedOut: [] }
+  const sum: WeekTally = { tasks: 0, done: 0, fraction: 0, crossed: 0, crossedOut: [] }
   for (const t of tallies) {
     sum.tasks += t?.tasks ?? 0
     sum.done += t?.done ?? 0
     sum.fraction += t?.fraction ?? 0
+    sum.crossed += t?.crossed ?? 0
   }
   const value = loaded && sum.tasks > 0 ? (100 * sum.fraction) / sum.tasks : null
-  const caption = !loaded ? 'Loading…' : sum.tasks === 0 ? 'No tasks this week' : `${sum.done} of ${sum.tasks} ${sum.tasks === 1 ? 'task' : 'tasks'} done`
+  // Every task you have this week is crossed out: they don't count yet, so there's no number (SPEC §10.5).
+  const none = sum.crossed > 0 ? 'Tasks crossed out' : 'No tasks this week'
+  const caption = !loaded ? 'Loading…' : sum.tasks === 0 ? none : `${sum.done} of ${sum.tasks} ${sum.tasks === 1 ? 'task' : 'tasks'} done`
   const note = spaces === 1 ? 'Ticked steps count toward their task.' : `Across ${spaces} spaces. Ticked steps count toward their task.`
   return (
     <div className="m-week-hero">
@@ -157,6 +168,7 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
   // tasks, as from the provisional score.
   const mine = me?.participating && !paused ? me.tasks : []
   const tasks = mine.filter((t) => !crossedOut(t))
+  const crossed = mine.length - tasks.length
   const done = tasks.filter((t) => t.selfDone).length
   const fraction = tasks.reduce((total, t) => total + t.selfFraction, 0)
   // Their earning ids (even in a paused week: no money is pending on a task that can't be ticked).
@@ -164,8 +176,8 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
   const crossedKey = crossedIds.join(',')
   const ready = result !== null
   useEffect(() => {
-    if (ready) report(space.id, { tasks: tasks.length, done, fraction, crossedOut: crossedKey ? crossedKey.split(',') : [] })
-  }, [ready, report, space.id, tasks.length, done, fraction, crossedKey])
+    if (ready) report(space.id, { tasks: tasks.length, done, fraction, crossed, crossedOut: crossedKey ? crossedKey.split(',') : [] })
+  }, [ready, report, space.id, tasks.length, done, fraction, crossed, crossedKey])
   useEffect(() => () => report(space.id, null), [report, space.id])
 
   const status: StatusLine | null = !result

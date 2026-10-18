@@ -1,5 +1,6 @@
 // One month's lists (SPEC §9.5): yours to plan until it locks with the month's second week, then to tick off
-// until it's reviewed in the month's last week; friends' lists beside it, and who judges them.
+// until it's reviewed in the month's last week; friends' lists beside it, and who judges them. Batch 2.5 (SPEC
+// §10.2): a list that had tasks at its lock can still be added to until its reviews open.
 import { useState } from 'react'
 import { setMonthlyTaskDone, useAuth, useMonthly, useProfiles, useSpace } from '../../data/api.ts'
 import { isWeekPaused } from '../../domain/pause.ts'
@@ -18,7 +19,19 @@ import type { Profiles } from '../components/people.ts'
 import { TaskSheet } from '../components/TaskSheet.tsx'
 import { cityOf, deadlineText, zoneNote } from '../components/zone.ts'
 import { ReviewSheet } from '../ReviewSheet.tsx'
-import { MONTHLY_LEAD_MS, judgeDetail, listHolders, listWhen, monthlyBoundsOf, monthlyPill, monthlyReviewStatus, noListNote, planningFooter } from './copy.ts'
+import {
+  MONTHLY_LEAD_MS,
+  addWindowFooter,
+  canAddToList,
+  judgeDetail,
+  listHolders,
+  listWhen,
+  monthlyBoundsOf,
+  monthlyPill,
+  monthlyReviewStatus,
+  noListNote,
+  planningFooter,
+} from './copy.ts'
 import { reviewParts } from './review.ts'
 import './monthly.css'
 
@@ -117,6 +130,12 @@ function MonthlyLists({ space, data, profiles }: { space: Space; data: MonthlyDa
       'aria-label': 'Task details',
     })
   }
+  // After the lock and until reviews open, a list that had tasks at its lock grows by one task at a time (final).
+  const canAdd = canAddToList(data, me, space.memberIds, nowMs)
+  const openAdd = () =>
+    sheet.present((close) => <TaskSheet space={space} period={{ kind: 'month', id: monthId }} mode={{ kind: 'add' }} close={close} />, {
+      'aria-label': `Add a task to your ${month} list`,
+    })
 
   // Before a list exists it can only be planned from 8 days before the month's first week.
   if (!list && (phase !== 'planning' || nowMs < bounds.startAt - MONTHLY_LEAD_MS || space.utcOffsetMin === undefined)) {
@@ -220,11 +239,15 @@ function MonthlyLists({ space, data, profiles }: { space: Space; data: MonthlyDa
           onToggleDone={toggleDone}
           shimmer={shimmer}
           onOpenTask={openTask}
+          onAddTask={canAdd ? openAdd : undefined}
           penaltyFree={penaltyFree}
+          kind="month"
           footer={
-            phase === 'active'
-              ? `Counts as one extra week in your ${month} score. Friends review it in ${month}’s last week.`
-              : `Counts as one extra week in your ${month} score.`
+            canAdd
+              ? addWindowFooter(when(bounds.reviewOpenAt))
+              : phase === 'active'
+                ? `Counts as one extra week in your ${month} score. Friends review it in ${month}’s last week.`
+                : `Counts as one extra week in your ${month} score.`
           }
         />
       ) : isMember ? (
@@ -256,6 +279,7 @@ function MonthlyLists({ space, data, profiles }: { space: Space; data: MonthlyDa
           numbered={!started}
           former={!space.memberIds.includes(id)}
           penaltyFree={penaltyFree}
+          kind="month"
         />
       ))}
 

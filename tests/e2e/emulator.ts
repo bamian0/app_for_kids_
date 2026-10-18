@@ -134,18 +134,54 @@ export async function setWeek(spaceId: string, weekId: string, w: SeedWeek): Pro
   await weekDoc(spaceId, weekId).set(periodFields(w))
 }
 
-/** `added`: tasks appended after the lock, with their add times. */
-export async function setPlan(spaceId: string, weekId: string, uid: string, tasks: SeedTask[], at: number, added?: Record<string, number>): Promise<void> {
+/** One change of a task's cross-out log (SPEC §10.3): crossed out with a reason (odd changes), or restored. */
+export interface SeedChange {
+  at: number
+  /** Given on a cross-out; left out on an undo. */
+  why?: string
+}
+
+/**
+ * A plan's `cancels` log as crossOutTask / undoCrossOut leave it: for each task id, its changes in order, written as
+ * `${n}:${taskId}` → { at, why } (n odd) or { at } (n even).
+ */
+export function cancelsLog(changes: Record<string, SeedChange[]>): Record<string, { at: Timestamp; why?: string }> {
+  const log: Record<string, { at: Timestamp; why?: string }> = {}
+  for (const [taskId, list] of Object.entries(changes)) {
+    list.forEach((c, i) => {
+      const n = i + 1
+      log[`${n}:${taskId}`] = n % 2 === 1 ? { at: ts(c.at), why: c.why ?? 'Something came up' } : { at: ts(c.at) }
+    })
+  }
+  return log
+}
+
+function planFields(tasks: SeedTask[], at: number, added?: Record<string, number>, cancels?: Record<string, SeedChange[]>): Record<string, unknown> {
   const plan: Record<string, unknown> = { tasks, updatedAt: ts(at) }
   if (added) plan.added = Object.fromEntries(Object.entries(added).map(([id, ms]) => [id, ts(ms)]))
-  await weekDoc(spaceId, weekId).collection('plans').doc(uid).set(plan)
+  if (cancels) plan.cancels = cancelsLog(cancels)
+  return plan
+}
+
+/** `added`: tasks appended after the lock, with their add times. `cancels` (batch 2.5): each task's cross-out changes. */
+export async function setPlan(
+  spaceId: string,
+  weekId: string,
+  uid: string,
+  tasks: SeedTask[],
+  at: number,
+  added?: Record<string, number>,
+  cancels?: Record<string, SeedChange[]>,
+): Promise<void> {
+  await weekDoc(spaceId, weekId).collection('plans').doc(uid).set(planFields(tasks, at, added, cancels))
 }
 
 export async function setProgress(spaceId: string, weekId: string, uid: string, done: Record<string, boolean>, at: number): Promise<void> {
   await weekDoc(spaceId, weekId).collection('progress').doc(uid).set({ done, updatedAt: ts(at) })
 }
 
-export async function setReview(spaceId: string, weekId: string, reviewerId: string, revieweeId: string, marks: Record<string, number>, at: number): Promise<void> {
+/** `marks`: 0, 0.5 or 1 per task, or (batch 2.5) 'fair' on a crossed-out task. */
+export async function setReview(spaceId: string, weekId: string, reviewerId: string, revieweeId: string, marks: Record<string, number | 'fair'>, at: number): Promise<void> {
   await weekDoc(spaceId, weekId)
     .collection('reviews')
     .doc(`${reviewerId}_${revieweeId}`)
@@ -164,8 +200,24 @@ export async function setMonthly(spaceId: string, monthId: string, w: Omit<SeedW
   await monthlyDoc(spaceId, monthId).set({ ...periodFields(period), judges: judges ?? [] })
 }
 
-export async function setMonthlyPlan(spaceId: string, monthId: string, uid: string, tasks: SeedTask[], at: number): Promise<void> {
-  await monthlyDoc(spaceId, monthId).collection('plans').doc(uid).set({ tasks, updatedAt: ts(at) })
+/** Batch 2.5: a list's plan may hold `added` (tasks added after its lock) and a `cancels` log, like a week's. */
+export async function setMonthlyPlan(
+  spaceId: string,
+  monthId: string,
+  uid: string,
+  tasks: SeedTask[],
+  at: number,
+  added?: Record<string, number>,
+  cancels?: Record<string, SeedChange[]>,
+): Promise<void> {
+  await monthlyDoc(spaceId, monthId).collection('plans').doc(uid).set(planFields(tasks, at, added, cancels))
+}
+
+export async function setMonthlyReview(spaceId: string, monthId: string, reviewerId: string, revieweeId: string, marks: Record<string, number | 'fair'>, at: number): Promise<void> {
+  await monthlyDoc(spaceId, monthId)
+    .collection('reviews')
+    .doc(`${reviewerId}_${revieweeId}`)
+    .set({ reviewerId, revieweeId, marks, submittedAt: ts(at) })
 }
 
 export async function setMonthlyProgress(spaceId: string, monthId: string, uid: string, done: Record<string, boolean>, at: number): Promise<void> {

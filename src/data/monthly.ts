@@ -377,6 +377,8 @@ export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, in
   const noList = `You had no ${month} list when it locked, so there’s nothing to add to.`
   const ref = planRef(space.id, monthId, uid)
   try {
+    // First, so offline it fails at once and the checks below never decide from a list it couldn't read.
+    await requireServer(uid)
     let list = await storedList(space, monthId)
     const bounds = list ?? monthlyBounds(monthId, (w) => boundsFor(space, w))
     if (now() < bounds.lockAt) throw new Error(`Your ${month} list hasn’t locked yet. Add the task to it instead.`)
@@ -391,7 +393,6 @@ export async function addMonthlyTaskAfterLock(space: Space, monthId: MonthId, in
       if (!list.members.includes(uid)) throw new Error(NOT_IN_LIST)
     }
     if (judgesOf(list).includes(uid)) throw new Error(JUDGING_MONTH)
-    await requireServer(uid)
     await runTransaction(getFirebase().db, async (tx) => {
       const snap = await tx.get(ref)
       const stored: unknown = snap.get('tasks')

@@ -1,14 +1,15 @@
 // Overview: your week across every space, what your tasks earned, and where each month stands.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth, useCurrency, useEarnings, useMonthData, useMySpaces } from '../data/api.ts'
-import { earnedByWeek, earnedInMonth, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
+import { earnedByWeek, earnedInMonth, earningId, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
 import { isWeekPaused } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
-import { computeMonth, computeWeek, joinedAfterLock, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { computeMonth, computeWeek, isMonthPlayer, joinedAfterLock, membersAt, spaceJudges } from '../domain/scoring.ts'
 import { addWeeks, formatWeekRange, monthIdForWeek, weekIdFor } from '../domain/time.ts'
 import type { CurrencyCode, Earning, Space, UID } from '../domain/types.ts'
 import { EmptyState, Icon, Row, ScoreRing, Screen, Section, cx, useNav, useTabBar } from '../ui/index.ts'
 import { Loading, MiniScore } from './components/Bits.tsx'
+import { crossedOut } from './components/cancel.ts'
 import { useNow } from './components/clock.ts'
 import { formatScore, monthName, wholePercent } from './components/format.ts'
 import { currentMonth } from './components/month.ts'
@@ -21,11 +22,14 @@ import { moneyWeekId, weekLabel } from './money/format.ts'
 import { SpaceScreen } from './SpaceScreen.tsx'
 import './money.css'
 
-/** Your tasks in one space this week: how many, how many done, and the done share with steps as fractions. */
+/** Your tasks in one space this week: how many, how many done, and the done share with steps as fractions. Crossed-out
+ *  tasks are left out, as from the provisional score (SPEC §10.5); `crossedOut` holds their earning ids, so the
+ *  pending money leaves them out too. */
 interface WeekTally {
   tasks: number
   done: number
   fraction: number
+  crossedOut: string[]
 }
 
 const CHART_WEEKS = 8
@@ -51,7 +55,8 @@ export function OverviewScreen() {
         const { [spaceId]: _gone, ...rest } = all
         return rest
       }
-      return old && old.tasks === tally.tasks && old.done === tally.done && old.fraction === tally.fraction ? all : { ...all, [spaceId]: tally }
+      const same = old && old.tasks === tally.tasks && old.done === tally.done && old.fraction === tally.fraction && old.crossedOut.join() === tally.crossedOut.join()
+      return same ? all : { ...all, [spaceId]: tally }
     })
   }, [])
 
@@ -59,6 +64,12 @@ export function OverviewScreen() {
     nav.push(<SpaceScreen spaceId={space.id} initialTab={month ? 'month' : undefined} />, { title: space.name })
 
   const names = useMemo(() => Object.fromEntries((list ?? []).map((s) => [s.id, s.name])), [list])
+  // Your revenue tasks crossed out now: left out of the pending money while they are (an undo brings them back).
+  const skipKey = Object.values(tallies)
+    .flatMap((t) => t.crossedOut)
+    .sort()
+    .join(',')
+  const skip = useMemo(() => new Set(skipKey ? skipKey.split(',') : []), [skipKey])
 
   return (
     <Screen title="Overview" subtitle={`Week of ${formatWeekRange(moneyWeekId(nowMs))}`} leading={<HelpButton />}>
@@ -87,7 +98,7 @@ export function OverviewScreen() {
         </Section>
       )}
 
-      <MoneySection names={names} />
+      <MoneySection names={names} skip={skip} />
 
       {list && list.length > 0 && (
         <Section header="This Month" headerStyle="prominent" footer={`Scores for ${monthName(currentMonth(list[0], nowMs))} so far, from finished weeks minus missed reviews. The bar is 90%.`}>
@@ -104,7 +115,7 @@ export function OverviewScreen() {
 
 function WeekHero({ tallies, spaces }: { tallies: (WeekTally | undefined)[]; spaces: number }) {
   const loaded = tallies.every((t) => t !== undefined)
-  const sum: WeekTally = { tasks: 0, done: 0, fraction: 0 }
+  const sum: WeekTally = { tasks: 0, done: 0, fraction: 0, crossedOut: [] }
   for (const t of tallies) {
     sum.tasks += t?.tasks ?? 0
     sum.done += t?.done ?? 0
@@ -142,14 +153,19 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
   const me = result?.members[uid]
   const paused = result?.paused === true
 
-  // A paused week's tasks are just for you: left out of the ring, like a judge's (who has none).
-  const tasks = me?.participating && !paused ? me.tasks : []
+  // A paused week's tasks are just for you: left out of the ring, like a judge's (who has none). So are crossed-out
+  // tasks, as from the provisional score.
+  const mine = me?.participating && !paused ? me.tasks : []
+  const tasks = mine.filter((t) => !crossedOut(t))
   const done = tasks.filter((t) => t.selfDone).length
   const fraction = tasks.reduce((total, t) => total + t.selfFraction, 0)
+  // Their earning ids (even in a paused week: no money is pending on a task that can't be ticked).
+  const crossedIds = (me?.participating ? me.tasks : []).filter(crossedOut).map((t) => earningId(space.id, weekId, t.taskId))
+  const crossedKey = crossedIds.join(',')
   const ready = result !== null
   useEffect(() => {
-    if (ready) report(space.id, { tasks: tasks.length, done, fraction })
-  }, [ready, report, space.id, tasks.length, done, fraction])
+    if (ready) report(space.id, { tasks: tasks.length, done, fraction, crossedOut: crossedKey ? crossedKey.split(',') : [] })
+  }, [ready, report, space.id, tasks.length, done, fraction, crossedKey])
   useEffect(() => () => report(space.id, null), [report, space.id])
 
   const status: StatusLine | null = !result
@@ -169,6 +185,10 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
   const showsScore = !!me?.participating && !paused && !me.judge && (me.score != null || me.taskCount > 0)
   const score = showsScore ? (me.score ?? me.provisionalScore) : null
   const revealed = me?.score != null
+  // No number to show: friends excused the whole week, or every task is crossed out (SPEC §10.5).
+  let caption: string | undefined = score == null ? undefined : revealed ? 'Score' : 'Provisional'
+  if (showsScore && result?.revealed && me.skipped) caption = 'Skipped'
+  else if (showsScore && score == null && (me.cancelledCount ?? 0) > 0) caption = 'Crossed out'
 
   return (
     <Row
@@ -183,7 +203,7 @@ function SpaceWeekRow({ space, uid, report, onOpen }: { space: Space; uid: UID; 
           'Loading…'
         )
       }
-      accessory={<MiniScore value={score} threshold={space.threshold} caption={score == null ? undefined : revealed ? 'Score' : 'Provisional'} iridescent={revealed} />}
+      accessory={<MiniScore value={score} threshold={space.threshold} caption={caption} iridescent={revealed} />}
       chevron
       onPress={onOpen}
     />
@@ -204,7 +224,7 @@ function SpaceMonthRow({ space, uid, onOpen }: { space: Space; uid: UID; onOpen:
     const score = mine.finalScore
     if (score === null) {
       // Judged every week so far (and played none): nothing at stake this month.
-      const judgeOnly = ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && mine.weeks.every((w) => w.paused) && !mine.monthly
+      const judgeOnly = ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && !isMonthPlayer(mine)
       line = judgeOnly ? 'Judge · no score this month' : 'No finished weeks yet'
     } else {
       const short = space.threshold - wholePercent(score)
@@ -229,7 +249,7 @@ function SpaceMonthRow({ space, uid, onOpen }: { space: Space; uid: UID; onOpen:
 
 // ---------- Money ----------
 
-function MoneySection({ names }: { names: Record<string, string> }) {
+function MoneySection({ names, skip }: { names: Record<string, string>; skip: ReadonlySet<string> }) {
   const tabs = useTabBar()
   const nowMs = useNow()
   const currency = useCurrency()
@@ -274,7 +294,7 @@ function MoneySection({ names }: { names: Record<string, string> }) {
         <div className="m-earned__value t-tabular">{formatMoney(earnedInMonth(all, monthId), currency)}</div>
         <div className="m-stats">
           <Stat label="This week" amount={byWeek[thisWeek] ?? 0} currency={currency} />
-          <Stat label="Pending" amount={pendingIn(all, [thisWeek, addWeeks(thisWeek, 1)])} currency={currency} />
+          <Stat label="Pending" amount={pendingIn(all, [thisWeek, addWeeks(thisWeek, 1)], skip)} currency={currency} />
           <Stat label="All time" amount={totalEarned(all)} currency={currency} />
         </div>
       </div>

@@ -5,7 +5,7 @@ import { useAuth, useMonthData, useMySpaces, useProfiles, useWeek } from '../dat
 import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, pushSupport } from '../push/index.ts'
 import { isWeekPaused, pauseView } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
-import { computeMonth, computeWeek, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { computeMonth, computeWeek, isMonthPlayer, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
 import { addWeeks, isMonthlyReviewWeek, monthIdForWeek, weekIdFor, weekPhase } from '../domain/time.ts'
 import type { Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useTabBar, useToast } from '../ui/index.ts'
@@ -181,8 +181,7 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
   const profiles = useProfiles([...space.memberIds, ...(verdict?.others ?? [])])
   const name = (id: UID) => firstName(nameOf(profiles, id))
   const meWeek = week?.members[uid]
-  const judgeOnlyMonth =
-    !!mine && mine.finalScore === null && ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && mine.weeks.every((w) => w.paused) && !mine.monthly
+  const judgeOnlyMonth = !!mine && mine.finalScore === null && ((mine.judged?.length ?? 0) > 0 || mine.monthlyJudge === true) && !isMonthPlayer(mine)
 
   let ring: number | null = null
   let caption = ''
@@ -197,10 +196,16 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
     // Judging: nothing at stake, so no score to show.
     caption = 'Judge'
   } else if (week && !week.paused && phase !== 'planning' && meWeek?.participating) {
-    ring = meWeek.score ?? meWeek.provisionalScore
-    // Your own check-offs until friends' reviews are in: labelled, and never the prism.
-    caption = meWeek.score != null ? 'This week' : 'Provisional'
-    iridescent = meWeek.score != null
+    if (week.revealed && meWeek.skipped) {
+      // Friends excused every task (SPEC §10.5): no score, and the week doesn't count.
+      caption = 'Skipped'
+    } else {
+      ring = meWeek.score ?? meWeek.provisionalScore
+      // Your own check-offs until friends' reviews are in: labelled, and never the prism. Every task crossed out:
+      // there is no provisional score, and the caption says why.
+      caption = meWeek.score != null ? 'This week' : ring == null && (meWeek.cancelledCount ?? 0) > 0 ? 'Crossed out' : 'Provisional'
+      iridescent = meWeek.score != null
+    }
   }
 
   const verdictLine = fresh && verdict ? verdictStatus(fresh, verdict, uid, name) : null
@@ -262,7 +267,7 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
             iridescent={iridescent}
             size={68}
             stroke={7}
-            aria-label={ring == null ? (caption === 'Judge' ? 'Judge, no score' : 'No score yet') : `${caption}: ${wholePercent(ring)} percent`}
+            aria-label={ring == null ? (caption === 'Judge' ? 'Judge, no score' : caption === 'Skipped' || caption === 'Crossed out' ? `${caption}, no score` : 'No score yet') : `${caption}: ${wholePercent(ring)} percent`}
           >
             <span className={cx('s-space-card__ring-value t-tabular', ring == null && 'c-tertiary')}>{ring == null ? '—' : wholePercent(ring)}</span>
           </ScoreRing>

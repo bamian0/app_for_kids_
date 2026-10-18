@@ -357,6 +357,8 @@ const ICONS = {
   },
   /** Pause (SF pause): two rounded bars. A paused week, asking to pause one. */
   pause: { weight: 2.6, body: <path d="M8.75 5.75v12.5M15.25 5.75v12.5" /> },
+  /** Undo (arrow.uturn.backward): brings a crossed-out task back. */
+  undo: { weight: 2, body: <path d="M8.75 4.75 4.5 9l4.25 4.25M4.75 9h9.5a5.25 5.25 0 0 1 0 10.5H10.5" /> },
   /** Help (questionmark). */
   questionmark: {
     weight: 2,

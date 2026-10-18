@@ -22,10 +22,10 @@ import {
   type FieldValue,
   type Transaction,
 } from 'firebase/firestore'
-import { now } from '../domain/clock.ts'
-import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
 import { isCancelled } from '../domain/cancel.ts'
+import { now } from '../domain/clock.ts'
 import { isReviewMark } from '../domain/decode.ts'
+import { MAX_SUBTASKS, newTaskId, reviewDocId } from '../domain/ids.ts'
 import { earningId } from '../domain/money.ts'
 import { boundsFor, isUsualSchedule, needsRetime, RETIME_NOTICE_MS, sameSchedule, scheduleOf } from '../domain/schedule.ts'
 import { isRevealed, isTaskDone, joinedAfterLock, judgesOf } from '../domain/scoring.ts'

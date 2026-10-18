@@ -234,10 +234,11 @@ test('steps, a task added after the lock, money and goals, and the tab bar', asy
     await expect(shown(marco, '$450', true)).toBeVisible()
     // Steps of the added task can be ticked like any other.
     await expect(marco.getByRole('checkbox', { name: GRADE.steps[0], exact: true })).toBeVisible()
-    // A tap on a locked task opens it read-only, except for its revenue.
+    // A tap on a locked task opens it read-only, except for its revenue and (batch 2.5) its cross-out.
     await marco.getByRole('button', { name: new RegExp(`^${SHOOT.title}`) }).click()
     const details = sheet(marco)
-    await expect(shown(details, 'Your list is locked, so only the revenue can change.')).toBeVisible()
+    await expect(shown(details, 'Your list is locked.', true)).toBeVisible()
+    await expect(details.getByRole('button', { name: 'Cross Out Task', exact: true })).toBeVisible()
     await expect(details.getByLabel('Title', { exact: true })).toHaveCount(0)
     await expect(shown(details, '3 of 3 done', true)).toBeVisible()
     await snap(marco, 'f07-task-sheet-locked')

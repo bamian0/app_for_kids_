@@ -913,7 +913,7 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await snap(lena, 'b2-30-monthly-planning')
   })
 
-  await test.step('After the list locks she can’t add to it', async () => {
+  await test.step('After the list locks she can’t change it, only add to it (batch 2.5)', async () => {
     await travel(lena, on(weeks[1], 2, 12))
     await openSpace(lena)
     await expect(lena.getByRole('button', { name: new RegExp(`^Your ${M} list`) })).toContainText('0 of 2 done')
@@ -923,8 +923,10 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
     await expect(lena.getByRole('heading', { name: `${M} List`, exact: true })).toBeVisible()
     await expect(shown(lena, RUN, true)).toBeVisible()
     await expect(lena.getByLabel('New task')).toHaveCount(0)
-    await expect(lena.getByRole('button', { name: /^Add Task/ })).toHaveCount(0)
-    await expect(shown(lena, `Counts as one extra week in your ${M} score. Friends review it in ${M}’s last week.`)).toBeVisible()
+    // Since batch 2.5 (SPEC §10.2) a locked list grows one final task at a time until its reviews open.
+    await expect(lena.getByRole('button', { name: 'Add Task with Steps' })).toHaveCount(0)
+    await expect(lena.getByRole('button', { name: 'Add Task', exact: true })).toBeVisible()
+    await expect(shown(lena, /^Locked\. You can still add tasks until .+\. Friends see the date you added them\.$/)).toBeVisible()
     await snap(lena, 'b2-31-monthly-locked')
   })
 

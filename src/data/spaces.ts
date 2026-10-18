@@ -484,9 +484,12 @@ interface FreezeDecision {
 /**
  * The owner's house-stakes change (SPEC §9.7): one transaction that re-reads the space and, for each month the
  * rules check, its freeze, its last week and its list; freezes each complete month without a binding freeze with
- * the space's current (old) stakes; then writes the new stakes, `stakesNote` and the invite's copy. The server's
- * clock decides when a month is complete: if refused, it tries once more with the opposite decision for each
- * month whose freeze time is within 10 minutes of this device's clock.
+ * the space's current (old) stakes; then writes the new stakes, `stakesNote` and the invite's copy. If refused, it
+ * first tries again as it is, with fresh reads: a month can be frozen by someone's upkeep (ensureMonthStakes, this
+ * phone's own included) between this transaction's reads and its write, and the emulator refuses that stale freeze
+ * instead of retrying the transaction. The server's clock decides when a month is complete: if refused again, it
+ * tries once more with the opposite decision for each month whose freeze time is within 10 minutes of this device's
+ * clock.
  */
 async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record<'name' | 'reward' | 'penalty', string>>): Promise<void> {
   await requireServer(me)
@@ -530,11 +533,13 @@ async function changeHouseStakes(spaceId: string, me: UID, clean: Partial<Record
       tx.update(spaceRef(spaceId), { ...next, stakesNote: { by: me, at: serverTimestamp() } })
       if (invite?.exists()) tx.update(invite.ref, { spaceName: next.name, reward: next.reward, penalty: next.penalty })
     })
-  try {
-    await attempt(new Set())
-    return
-  } catch (e) {
-    if (!isDenied(e)) throw humanError(e, STAKES_FAILED)
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      await attempt(new Set())
+      return
+    } catch (e) {
+      if (!isDenied(e)) throw humanError(e, STAKES_FAILED)
+    }
   }
   const edge = new Set(decided.filter((d) => Math.abs(d.freezeAt - now()) <= FREEZE_EDGE_MS).map((d) => d.monthId))
   if (edge.size === 0) throw new Error(STAKES_FAILED)

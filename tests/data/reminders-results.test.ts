@@ -169,6 +169,35 @@ describe('results writer', () => {
     ])
   })
 
+  it('leaves out a week friends excused (SPEC §10.4); a fully skipped month has no score and the streak carries', async () => {
+    await seedSpace(db, 's1', ['a', 'b'])
+    for (const [uid, name] of [['a', 'Anna'], ['b', 'Ben']]) {
+      await device(db, uid)
+      await profile(db, uid, name)
+    }
+    // October: both pass the week of Oct 5. The week of Oct 12, Anna crossed out her only task and Ben said fair, so
+    // it doesn't count for her (not 0%); Ben scored 0 that week.
+    await seedWeek(db, 's1', '2026-10-05', { members: ['a', 'b'], plans: { a: 1, b: 1 }, submittedBy: ['a', 'b'], reviews: allReviews(['a', 'b']) })
+    await seedWeek(db, 's1', '2026-10-12', {
+      members: ['a', 'b'], plans: { a: 1, b: 1 }, cancels: { a1: 1 }, submittedBy: ['a', 'b'],
+      reviews: [['b', 'a', { a1: 'fair' }], ['a', 'b', { b1: 0 }]],
+    })
+    // November: Anna crossed out (twice, after one undo) her only task again and Ben said fair: her whole month is
+    // skipped. Ben played alone, so nothing is owed either way.
+    await seedWeek(db, 's1', '2026-11-02', {
+      members: ['a', 'b'], plans: { a: 1, b: 1 }, cancels: { a1: 3 }, submittedBy: ['a', 'b'],
+      reviews: [['b', 'a', { a1: 'fair' }], ['a', 'b', { b1: 1 }]],
+    })
+    const push = fakePush()
+    expect(await runReminders({ db, send: push.send, nowMs: at('2026-12-01T10:17:00Z'), log: quiet })).toMatchObject({ results: 2, errors: 0 })
+    expect((await results('s1', '2026-10'))!.members).toEqual({ a: { score: 100, passed: true, streak: 1 }, b: { score: 50, passed: false, streak: 0 } })
+    const november = (await results('s1', '2026-11'))!.members
+    expect(november.a).toMatchObject({ score: null, streak: 1 })
+    expect(november.b).toMatchObject({ score: 100, streak: 0 })
+    // November's verdict: nobody else played, so neither of them hears one.
+    expect(push.lines().filter((l) => l.includes('November'))).toEqual([])
+  })
+
   it('costs a steady-state run one read per space for the newest results doc', async () => {
     await seedSpace(db, 's1', ['a'])
     await db.doc('spaces/s1/results/2026-10').set({ monthId: '2026-10', completeAt: ts(at('2026-10-31T00:00:00Z')), createdAt: ts(at('2026-11-02T00:17:00Z')), members: {} })

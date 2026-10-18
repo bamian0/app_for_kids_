@@ -557,7 +557,10 @@ test('results: a crossed-out task that counts as not done, and a week skipped in
     await expect(hero).toContainText('1 week scored · 1 skipped')
     await expect(lena.locator('.s-hero-score').filter({ visible: true })).toHaveText('50%')
     const label = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(Date.parse(`${w2}T00:00:00Z`))
-    await expect(lena.getByRole('button', { name: new RegExp(`^${esc(label)}`) }).filter({ visible: true }).first()).toContainText('Skipped')
+    const skippedRow = lena.getByRole('button', { name: new RegExp(`^${esc(label)}`) }).filter({ visible: true }).first()
+    await expect(skippedRow).toContainText('Skipped')
+    // The summary and the skipped week's row in one shot.
+    await centerOn(skippedRow, 'end')
     await snap(lena, 'b25-16-month-skipped')
   })
 

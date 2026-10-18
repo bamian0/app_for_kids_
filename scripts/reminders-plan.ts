@@ -6,6 +6,7 @@
 // wall-clock minutes from its Monday) and close at its stored bounds; on the usual times they are
 // exactly the windows from before batch 2 (scripts/reminders-legacy-oracle.ts is the test oracle).
 import { DateTime } from 'luxon'
+import { isCancelled } from '../src/domain/cancel.ts'
 import { isWeekPaused, pauseNeeded } from '../src/domain/pause.ts'
 import { boundsFor, momentText, scheduleOf } from '../src/domain/schedule.ts'
 import {
@@ -522,10 +523,11 @@ interface Context {
 const final = (uid: UID, key: string): Outcome => ({ uid, key, skip: 'final' })
 const notYet = (uid: UID, key: string): Outcome => ({ uid, key, skip: 'not-yet' })
 
-/** A part of a review-day push (the week, or the month's list) for one member. */
+/** A part of a review-day push (the week, or the month's list) for one member. `skipped`: a results part whose
+ *  period friends excused (every task said fair, SPEC §10.4): due, with no score. */
 type Part =
   | { key: string; skip: 'final' | 'not-yet' }
-  | { key: string; due: true; targets: UID[]; judge: boolean; points: number; deadlineAt: number; score?: number }
+  | { key: string; due: true; targets: UID[]; judge: boolean; points: number; deadlineAt: number; score?: number; skipped?: true }
 
 function weeklyKey(ctx: Context, window: DueWindow, uid: UID): string | null {
   return window.period === null ? null : reminderKey(ctx.space.id, window.period, window.kind, uid)
@@ -576,6 +578,8 @@ function weekResultsPart(ctx: Context, weekId: WeekId, key: string, uid: UID): P
   const member = result?.members[uid]
   if (!result || !member?.participating) return { key, skip: 'final' }
   if (member.judge) return result.revealed ? { key, due: true, targets: [], judge: true, points: 0, deadlineAt: 0 } : { key, skip: 'not-yet' }
+  // Every task excused (only set once revealed): due, saying the week doesn't count (SPEC §10.8).
+  if (member.skipped) return { key, due: true, targets: [], judge: false, points: 0, deadlineAt: 0, skipped: true }
   if (member.score === null) return { key, skip: 'not-yet' }
   return { key, due: true, targets: [], judge: false, points: 0, deadlineAt: 0, score: member.score }
 }
@@ -587,6 +591,7 @@ function listResultsPart(ctx: Context, monthId: MonthId, key: string, uid: UID):
   const member = computeMonthly(data, ctx.space, ctx.nowMs).members[uid]
   // Judges and players without a list have nothing to hear about it.
   if (!member?.participating || member.judge || member.taskCount === 0) return { key, skip: 'final' }
+  if (member.skipped) return { key, due: true, targets: [], judge: false, points: 0, deadlineAt: 0, skipped: true }
   if (member.score === null) return { key, skip: 'not-yet' }
   return { key, due: true, targets: [], judge: false, points: 0, deadlineAt: 0, score: member.score }
 }
@@ -637,15 +642,28 @@ function decideReviewDay(ctx: Context, window: DueWindow): Outcome[] {
         break
       }
       default: {
-        const weekScore = weekly?.score
-        const listScore = list?.score
-        const own = weekScore !== undefined ? `You scored ${formatPercent(weekScore)}${listScore !== undefined ? `, and ${formatPercent(listScore)} on your ${label} list` : ''}. ` : listScore !== undefined ? `You scored ${formatPercent(listScore)} on your ${label} list. ` : ''
-        copy = { title: 'Results are in', body: `${own}See how ${space.name} did this ${weekly ? 'week' : 'month'}.` }
+        copy = { title: 'Results are in', body: `${resultsOwn(weekly, list, label)}See how ${space.name} did this ${weekly ? 'week' : 'month'}.` }
       }
     }
     if (!copy) return [...skips, ...due.map((p) => final(uid, p.key))]
     return [...skips, { uid, keys: due.map((p) => p.key), ...copy }]
   })
+}
+
+/**
+ * The results push's own part, before "See how …": the week's score and the list's, or that friends said fair and
+ * a period doesn't count for you (SPEC §10.8). Without a skipped part, exactly the batch-2 text.
+ */
+function resultsOwn(weekly: Due | undefined, list: Due | undefined, label: string): string {
+  const weekScore = weekly?.score
+  const listScore = list?.score
+  const weekSkipped = weekly?.skipped === true
+  const listSkipped = list?.skipped === true
+  if (weekSkipped && listSkipped) return `Your friends said fair, so this week and your ${label} list don’t count for you. `
+  if (weekSkipped) return `Your friends said fair, so this week doesn’t count for you. ${listScore !== undefined ? `You scored ${formatPercent(listScore)} on your ${label} list. ` : ''}`
+  if (listSkipped) return `${weekScore !== undefined ? `You scored ${formatPercent(weekScore)}. ` : ''}Your ${label} list doesn’t count: your friends said fair. `
+  if (weekScore !== undefined) return `You scored ${formatPercent(weekScore)}${listScore !== undefined ? `, and ${formatPercent(listScore)} on your ${label} list` : ''}. `
+  return listScore !== undefined ? `You scored ${formatPercent(listScore)} on your ${label} list. ` : ''
 }
 
 function decidePlan(ctx: Context, window: DueWindow): Outcome[] {
@@ -672,7 +690,9 @@ function decidePlan(ctx: Context, window: DueWindow): Outcome[] {
 function decideNudge(ctx: Context, window: DueWindow): Outcome[] {
   // After lock nobody joins the week, so someone outside it stays out. Tasks can still be added until reviews
   // open and ticks undone until the deadline, so nothing else is final. A member whose plan wasn't loaded (the
-  // job loads only those still waiting) reads as having no tasks, which isn't final either.
+  // job loads only those still waiting) reads as having no tasks, which isn't final either. Crossed-out tasks
+  // don't count (SPEC §10.8); with every task crossed out there's nothing to nudge about, but an undo is still
+  // possible until reviews open, so that isn't final either.
   const { space, nowMs } = ctx
   const weekId = window.period as WeekId
   const data = ctx.weeks[weekId]
@@ -684,7 +704,7 @@ function decideNudge(ctx: Context, window: DueWindow): Outcome[] {
     if (!week || !week.members.includes(uid) || judges.includes(uid)) return final(uid, key(uid))
     // The stored timeline rules: no nudge once reviews have opened.
     if (nowMs >= week.reviewOpenAt) return final(uid, key(uid))
-    const tasks = data.plans[uid]?.tasks ?? []
+    const tasks = (data.plans[uid]?.tasks ?? []).filter((task) => !isCancelled(task))
     const done = data.progress[uid]?.done ?? {}
     if (tasks.length === 0) return notYet(uid, key(uid))
     if (window.kind === 'no-progress') {

@@ -729,6 +729,8 @@ Budgets, as built: measured in the emulator (firebase-tools 15.33, on 2026-10-14
 | `setJudge`: the space op of space + 4 periods | 283 | 0 |
 | Settlement, one of a group line of 7 in one batch | 241 | 1 each, 7 of 20 |
 
+Batch 2.5 changes the plan rules and `validReview`; their budgets are in §10.7 (the 25 × 8 saves still 895).
+
 ### 9.10 Data layer (`src/data/api.ts`) additions
 
 - Hooks: `useMonthData(space, monthId): Live<MonthData>`, `useMonthly(space, monthId | null): Live<MonthlyData>`, `useStakes(space): Live<Record<UID, MemberStakes>>`, `useResults(space, monthId)`, `useLatestResults(space)`, `useSettlements(spaceId, monthId)`.
@@ -873,7 +875,7 @@ Not in batch 2, for later if the group asks: lists that lock before Monday (e.g.
 
 ## 10. Monthly adds and cancelled tasks (batch 2.5)
 
-The owner decided two features after batch 2 went live, then an undo for the second one. This section is the contract for them. Where it and §1–§9 disagree, this one wins; §10.1 lists every such change. Batches 1 and 2 are live with real users, so nothing here may break data written before: every new field is optional and reads as "as before" when missing, and the rules keep accepting what the live app writes (§10.11).
+The owner decided two features after batch 2 went live, then an undo for the second one. This section is the contract for them, with "As built" notes where the code refines it (built on `claude/task-rating-app-feasibility-abixvp`, October 2026, every check green; it ships when the owner publishes the rules and deploys, §10.11). Where it and §1–§9 disagree, this one wins; §10.1 lists every such change. Batches 1 and 2 are live with real users, so nothing here may break data written before: every new field is optional and reads as "as before" when missing, and the rules keep accepting what the live app writes (§10.11).
 
 Owner's decisions (verbatim in substance):
 1. **Monthly adds.** After a monthly list locks, its owner can add tasks to it exactly like the weekly add (§6.2): one task per write (with steps), until that list's reviews open, at most 25 tasks, never edited or removed afterwards, shown to everyone with an "Added Oct 24" badge (a date, since a month spans weeks). No revenue on monthly tasks (unchanged).
@@ -919,6 +921,8 @@ Words: **cross out** (verb), **cross-out** (noun), **crossed out** (state); "can
 **Data layer**: `addMonthlyTaskAfterLock(space, monthId, { id?, title, subtasks })` in `src/data/monthly.ts` (stubbed in `api.ts`), as `addTaskAfterLock`: validates the title and steps with the same messages; checks the window on the stored list, membership, the list (in it, not its judge) and the cap with its own messages (§10.6); then one transaction that re-reads the plan and `update`s `{ tasks: [...stored, task], added: {...stored, [id]: serverTimestamp()}, updatedAt }` (never a set, so `cancels` stays); an id already on the list resolves without writing; resolves with the task (`addedAt` the device's estimate). Fails at once offline.
 
 **Screens and copy**: §10.5 (the Add Task row on your locked list, the sheet, the "Added Oct 24" badge).
+
+As built: the rules check "had a task at its lock" as `n >= 1` on the stored list, which is the same thing, since a monthly plan can only be created before its lock and never shrinks after it. A paused last week doesn't stop adds (a rules test and an e2e step say so).
 
 ### 10.3 Crossing out a task, and undo
 
@@ -979,6 +983,8 @@ spaces/{id}/monthly/{m}/plans/{uid}      + cancels?: (the same)
 - `MemberWeekResult`: `cancelledCount?: number` (crossed out now); `excusedCount?: number`; `skipped?: boolean` (every task excused: score null, not 0%).
 - `MonthWeekEntry.skipped?: true`; `MonthlyEntry.skipped?: boolean`.
 
+As built (`src/domain/scoring.ts`): `isMonthPlayer(result)` is exported, and the screens (`playsMonth`, the Spaces and Overview month lines) decide "plays this month" with it, as `computeMonth` does. Three refinements where §10.4 says nothing: a judge's week result carries none of the new fields (they read as 0 / false; an existing batch-2 test pins the judge result exactly); in a paused week `excused` and `excusedCount` still show once revealed, while the score stays null and `skipped` false (the screens check the pause first); `MonthWeekEntry.skipped` is set only on skipped weeks, like `paused`. With no cross-out, 600 random weeks and monthly lists and 200 random months score exactly as a frozen copy of the live batch-2 scoring (`src/domain/scoring-legacy-oracle.ts`, kept for that test).
+
 **`computeMonth`**: a closed week where M is `skipped` is listed `{ score: null, closed, skipped: true }`, never averaged, and its missed reviews still count (M still had to review others); a skipped monthly list is a `monthly` entry with `skipped: true`, never averaged. Neither makes M a **player** (`others`, and the judged-weeks-at-0% rule): a player has a week that is neither paused nor skipped, or a monthly entry that isn't skipped. A month with nothing averaged has no score: nothing owed, the streak carries (§9.8, unchanged).
 
 ### 10.5 Screens and copy
@@ -1011,9 +1017,11 @@ Copy is plain, warm, short, second person, curly apostrophes, sentence case for 
 
 **Elsewhere**: Overview's **Pending** money leaves out the earnings of tasks crossed out now (`pendingIn(earnings, weekIds, skip)` with `skip` = their earning ids `${spaceId}_${weekId}_${taskId}`, built from the week data Overview already loads; no new reads; an undo brings them back). The Spaces card and Overview count only tasks that aren't crossed out ("2 of 3 done"; every task crossed out: "Tasks crossed out", icon `xmark`, default tone); their ring shows the provisional score (caption "Provisional", or "Crossed out" when it is null for that reason) and, for a skipped week, no ring with the caption "Skipped". Month view: a skipped week's row reads **Skipped**, the monthly row likewise, and the summary adds "1 skipped" ("3 weeks scored · 1 skipped").
 
+As built, refinements where §10.5 says nothing: when the cross-out section shows, a locked weekly task's sheet says "Your list is locked." (not "… so only the revenue can change.", no longer true there), a monthly one "Your October list is locked."; on Spaces and Overview a skipped week shows the empty "—" ring with the caption "Skipped" (the judge's no-score look); Overview's week summary says "Tasks crossed out" whenever every task you have that week is crossed out, also in a week friends skipped. The gating is the pure `crossOutGate(period, kind, space, me)` in `components/cancel.ts` (unit-tested with every case of the build plan).
+
 ### 10.6 Data layer API (`src/data/api.ts`) and messages
 
-- New: `addMonthlyTaskAfterLock(space, monthId, input) → Task`, `crossOutTask(space, period, taskId, why)`, `undoCrossOut(space, period, taskId)` (stubs marked `// batch2.5: TODO` until built).
+- New: `addMonthlyTaskAfterLock(space, monthId, input) → Task`, `crossOutTask(space, period, taskId, why)`, `undoCrossOut(space, period, taskId)` (built: `monthly.ts` and `cancel.ts`, re-exported by `api.ts`).
 - Changed (additive): `submitReviews` / `submitMonthlyReviews` take `marks: Record<string, ReviewMark>` and accept `'fair'` (`isReviewMark`); `toReview` keeps `'fair'`; `decodeTasks(…, cancels?)`; `addTaskAfterLock` keeps `cancels`; `setTaskDone` / `setMonthlyTaskDone` refuse crossed-out tasks.
 - Offline: the three new writes are transactions and fail at once with `MSG.offline`; reviews and ticks queue as today.
 - Messages (thrown as given; tests assert them; `October` is the list's month):
@@ -1025,6 +1033,14 @@ Copy is plain, warm, short, second person, curly apostrophes, sentence case for 
   - refused writes: "Couldn’t cross it out. Try again." · "Couldn’t undo it. Try again."
   - monthly add: before the lock "Your October list hasn’t locked yet. Add the task to it instead." · from reviews opening "Adding tasks closed when reviews opened." · no list at its lock "You had no October list when it locked, so there’s nothing to add to." · cap "Your October list can have up to 25 tasks." · not in it "This month’s list started without you. You’re in from next month." · judge "You’re judging this month’s lists, so there’s no list to plan."
   - not a member (all): "You’re no longer in this space."; a weekly judge: "You’re judging this week, so there’s no list to plan."; a task that isn't on your list: `MSG.generic`.
+
+As built (`src/data/cancel.ts`, `monthly.ts`, `weeks.ts`):
+1. The three new writes first make one quick server read (`requireServer`, as pause and stakes do), so they fail at once offline; the monthly add does it before anything else, so it never judges from a list it couldn't load.
+2. After the server refuses a cross-out or undo, the space and the list are re-read once from the server: a list whose reviews open within 60 s counts as open ("Reviews have opened, so this can’t change anymore.": the phone's clock may be a little behind the server's), you no longer in the space reads "You’re no longer in this space.", anything else "Couldn’t cross it out. Try again." / "Couldn’t undo it. Try again.".
+3. The monthly add with no monthly doc at all says "You had no October list when it locked, so there’s nothing to add to."; someone else's task, or a list you're not in, gets `MSG.generic`.
+4. `CROSSED_OUT_TICK` lives in `errors.ts` (no import cycle) and is re-exported by `cancel.ts` and `api.ts`.
+5. A task id that appears twice in a plan: the cross-out goes on the first copy, the one that is kept (an `added` time goes on neither, as before).
+Against the live batch-2 rules (checked once against `d3d65e4`'s file), the new week append, ticks and normal reviews pass; a cross-out is refused with "Couldn’t cross it out. Try again." and a monthly add with "You can’t change this anymore.". Ticks are refused only when the device has a copy of your plan (§10.12); the week append still has no up-front offline check, as in batch 2.
 
 ### 10.7 Security rules: changes and budgets
 
@@ -1067,12 +1083,26 @@ Budgets (each the whole request, measured in the emulator and recorded in `tests
 
 The append and cross-out values were measured by the contract's critique on the sketch above (week and monthly appends 325; both cross-outs 476; both 25 × 8 plans still 895). A cross-out costs that much because the request first evaluates `canPlan` and then `appendsTask`'s lets and checks up to the `cancels` comparison before `togglesCancel` runs. That is the price of keeping the full plan and the append cheap: **the branch order (full plan, then append, then cross-out) must not change** to make cross-outs cheaper; 476 leaves 524 of headroom. Every case also keeps ≥ 7 spare reads, as today.
 
+As built: both plan rules are written `A || (B || C)` (the whole list, then `(appendsTask(…) || togglesCancel(…))`), the same meaning and order as above. A finer measurement (steps of about 3 expressions instead of 5.24) showed that the flat `A || B || C` made every 25 × 8 save cost 1 expression more for a week and 2 more for a monthly list than in batch 2; bracketed, a week's save costs exactly what it did and a monthly list's 1 more (the one `||` its batch-2 rule didn't have), the same as a week's. `budget.test.ts` guards both saves at the finer step too. `appendsTask`'s `d.tasks[n]` past the end on a cross-out needed no guard (`error || true`, proven in `cancels.test.ts`). Measured (emulator of firebase-tools 15.33, 1000-expression limit), each the whole request:
+
+| Request (worst case) | Expressions | Spare reads |
+|---|---|---|
+| Week plan, 25 × 8, batched with the week fill | 895 (headroom 105, as in batch 2) | 9–10 |
+| Monthly plan, 25 × 8, batched with `syncsPeriod` | 895 | 9–10 |
+| Week or monthly append, the 25th full task, 120-entry log | 325 each (the live app's whole-doc set: also 325, was 304) | 8 |
+| Cross-out, the 5th change of the 25th task, 25 × 8 list, 124 entries, a 120-character reason (week and monthly) | 482 each (headroom 518) | 8 |
+| Weekly or monthly review batch, 7 reviewees, 25 marks with one `'fair'` | 487 each (`'fair'` adds about 2) | 9 |
+
+The spare reads of the plan batches came out 9 or 10 in different runs of the same rules; both are above the 7 asked for. After an emulator upgrade, re-measure before trusting the finer guard.
+
 ### 10.8 Reminders
 
 - `toPlan` in `scripts/reminders.ts` passes the plan's `cancels` to `decodeTasks`; `toReview` already passes marks raw (so `'fair'` reaches the domain). The results writer, the verdict and every score come from the domain, so they follow §10.4 with no other change.
 - `no-progress` and `open-tasks` count only tasks that aren't crossed out ("K of N tasks still open", "N tasks to go"); a participant whose every task is crossed out gets neither (not final: an undo is possible until reviews open). Nothing else in the windows changes, so the legacy oracle still holds.
 - `results`: a part whose period was skipped is due (not `not-yet`) with `skipped`. Bodies: weekly skipped "Your friends said fair, so this week doesn’t count for you. See how Film Club did this week."; weekly skipped, list scored "Your friends said fair, so this week doesn’t count for you. You scored 92% on your October list. See how Film Club did this week."; week scored, list skipped "You scored 85%. Your October list doesn’t count: your friends said fair. See how Film Club did this week."; both "Your friends said fair, so this week and your October list don’t count for you. See how Film Club did this week."; list only (a paused last week) "Your October list doesn’t count: your friends said fair. See how Film Club did this month."
 - No new kinds, keys or reads.
+
+As built (`scripts/reminders-plan.ts`, `scripts/reminders.ts`): the results push composes its own part from the two parts, so a combination §10.8 doesn't list follows the same words: judging the last week while playing a skipped list reads "Your October list doesn’t count: your friends said fair. See how Film Club did this week."; without a skipped part the text is exactly batch 2's. A skipped part is due only once revealed (`skipped` is false before). Tests: `scripts/reminders-batch25.test.ts` (nudges, every results combination, the verdict of a skipped month, and an hourly sweep of a whole week where restored tasks and a `'fair'` on a task that isn't crossed out send exactly what plain data sends) and an emulator case in `tests/data/reminders-results.test.ts` (a week friends excused is left out of the month's score; a fully skipped month has `score: null` and the streak carries).
 
 ### 10.9 Help
 
@@ -1100,6 +1130,8 @@ The tests change accordingly (the word count, the owner-times sentence; new chec
 | `tests/rules/cancels.test.ts` | rules | Plus `midweek`, `monthly`, `reviews` and `budget` updates. |
 | `tests/data/cancel.test.ts` | data | Plus monthly adds, ticks, reviews and the reminders job. |
 | `tests/e2e/batch25.spec.ts` | screens | The flows of §10.5. |
+| `src/domain/scoring-legacy-oracle.ts` | domain | As built: a frozen copy of the live batch-2 scoring; `scoring.test.ts` checks that without cross-outs every result is the same. |
+| `scripts/reminders-batch25.test.ts` | integration | As built: the §10.8 nudges and results copy, and nothing changing without cross-outs. |
 
 ### 10.11 Deploy order and old clients
 

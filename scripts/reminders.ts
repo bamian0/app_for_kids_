@@ -24,7 +24,6 @@ import { buildMonthResults, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type H
 import { addMonths, addWeeks, firstMonthOf, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
 import type {
   LineInForce,
-  Mark,
   MemberStakes,
   MonthId,
   MonthlyData,
@@ -32,6 +31,7 @@ import type {
   Plan,
   Progress,
   Review,
+  ReviewMark,
   Space,
   UID,
   Week,
@@ -222,8 +222,9 @@ function toPeriod(spaceId: string, id: string, d: Record<string, unknown>): Week
 }
 
 function toPlan(snap: DocumentSnapshot): Plan {
-  // Steps and mid-week additions decode as in the app, so a task with steps scores by its steps.
-  const tasks = decodeTasks(snap.get('tasks'), snap.get('added'), (v) => (v instanceof Timestamp ? v.toMillis() : null))
+  // Steps, mid-week additions and cross-outs decode as in the app, so a task with steps scores by its steps and a
+  // crossed-out task is voted on (SPEC §10.4).
+  const tasks = decodeTasks(snap.get('tasks'), snap.get('added'), (v) => (v instanceof Timestamp ? v.toMillis() : null), snap.get('cancels'))
   return { uid: snap.id, tasks, updatedAt: ms(snap.get('updatedAt')) }
 }
 
@@ -236,7 +237,7 @@ function toReview(snap: DocumentSnapshot): Review {
     id: snap.id,
     reviewerId: str(snap.get('reviewerId')),
     revieweeId: str(snap.get('revieweeId')),
-    marks: (snap.get('marks') ?? {}) as Record<string, Mark>,
+    marks: (snap.get('marks') ?? {}) as Record<string, ReviewMark>,
     submittedAt: ms(snap.get('submittedAt')),
   }
 }

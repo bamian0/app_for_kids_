@@ -1,12 +1,21 @@
-// Batch-2 fields of stored docs → domain types (SPEC §9.10), and batch 2.5's cross-outs and fair votes (§10.3,
-// §10.4). Pure and defensive: a malformed value decodes as absent (or a safe default), never throws. Shared by the
+// Batch-2 fields of stored docs → domain types (SPEC §9.10), batch 2.5's cross-outs and fair votes (§10.3,
+// §10.4), and batch 3's new collections (§11.3). Pure and defensive: a malformed value decodes as absent (or a safe default), never throws. Shared by the
 // data layer and the reminders job (like decodeTasks). `toMs` turns a stored time (a Firestore Timestamp, as the
 // caller's SDK gives it) into epoch ms, or null.
+import { IANAZone } from 'luxon'
 import { CANCEL_MAX_CHANGES, cleanWhy, whyIsBlank } from './cancel.ts'
+import { pairUsers } from './friends.ts'
+import { isUid } from './ids.ts'
 import { scheduleProblem } from './schedule.ts'
+import { checkinId, fromHundredths, isGoalId } from './shared.ts'
+import { DEFAULT_SHOW, SHOWCASE_MAX_ACHIEVED, SHOWCASE_MAX_GOALS, SHOWCASE_NAME_MAX } from './showcase.ts'
 import type {
+  AchievedGoal,
   Agreement,
   AgreedTerms,
+  Checkin,
+  FriendState,
+  Friendship,
   LineInForce,
   MemberStakes,
   MonthId,
@@ -15,13 +24,22 @@ import type {
   PairTerms,
   PauseRequest,
   ReviewMark,
+  Ring,
   ScheduleNote,
+  ScoreEntry,
+  ScoreMonths,
+  SharedGoal,
+  Showcase,
+  ShownEarnings,
+  ShownGoal,
+  ShowSwitches,
   StakesMode,
   StakesNote,
   StreakTier,
   TaskCancel,
   TermsInForce,
   UID,
+  UserStats,
   WeekId,
   WeekSchedule,
 } from './types.ts'
@@ -365,4 +383,231 @@ export function decodeCancels(v: unknown, toMs: ToMs): Record<string, TaskCancel
   }
   // fromEntries makes every id an own property (even one like "__proto__").
   return Object.fromEntries(out)
+}
+
+// ---------- Batch 3 (SPEC §11.3): friends, showcases, rings, stats, scores, shared goals and check-ins ----------
+// Each decoder drops what the rules would never have written: a malformed doc decodes to null (or, for a ring, the
+// empty ring), a malformed item or map entry is left out. Never throws.
+
+const FRIEND_STATES: readonly FriendState[] = ['asked', 'declined', 'withdrawn', 'friends']
+const CURRENCY = /^[A-Z]{3}$/
+/** 10¹¹ hundredths: a target or check-in of 1,000,000,000. */
+const MAX_HUNDREDTHS = 1e11
+
+function isInt(v: unknown, min: number, max: number): v is number {
+  return Number.isInteger(v) && (v as number) >= min && (v as number) <= max
+}
+
+/** Text the rules' text(v, max) accepts: 1..max UTF-16 units, not blank. */
+function shownText(v: unknown, max: number): string | null {
+  return typeof v === 'string' && v.length >= 1 && v.length <= max && v.trim() !== '' ? v : null
+}
+
+/**
+ * friends/{pairId} as seen by `me` (SPEC §11.3): null unless the id is a sorted pair of uids that includes `me`, `users`
+ * (when present) names the same two, `by` is one of them, the state is known and `at` is a time.
+ */
+export function decodeFriendship(id: string, d: unknown, me: UID, toMs: ToMs): Friendship | null {
+  const users = pairUsers(id)
+  const o = obj(d)
+  if (!users || !o || !users.includes(me)) return null
+  if (o.users !== undefined && !(Array.isArray(o.users) && o.users.length === 2 && o.users[0] === users[0] && o.users[1] === users[1])) return null
+  const state = FRIEND_STATES.find((s) => s === o.state)
+  const by = typeof o.by === 'string' && users.includes(o.by) ? o.by : null
+  const at = time(o.at, toMs)
+  if (!state || !by || at === null) return null
+  return { id, uid: users[0] === me ? users[1] : users[0], by, state, at }
+}
+
+function achievedList(v: unknown, toMs: ToMs): AchievedGoal[] | null {
+  if (!Array.isArray(v)) return null
+  const out: AchievedGoal[] = []
+  for (const item of v) {
+    const o = obj(item)
+    const name = o ? shownText(o.name, SHOWCASE_NAME_MAX) : null
+    const at = o ? time(o.at, toMs) : null
+    if (name !== null && at !== null) out.push({ name, at })
+  }
+  return out.slice(0, SHOWCASE_MAX_ACHIEVED)
+}
+
+function shownGoals(v: unknown): ShownGoal[] | null {
+  if (!Array.isArray(v)) return null
+  const out: ShownGoal[] = []
+  for (const item of v) {
+    const o = obj(item)
+    const name = o ? shownText(o.name, SHOWCASE_NAME_MAX) : null
+    if (o && name !== null && isInt(o.pct, 0, 100)) out.push({ name, pct: o.pct })
+  }
+  return out.slice(0, SHOWCASE_MAX_GOALS)
+}
+
+function shownEarnings(v: unknown): ShownEarnings | null {
+  const o = obj(v)
+  if (!o || !isMonthId(o.monthId) || typeof o.amount !== 'number' || !(o.amount >= 0 && o.amount <= 1e9)) return null
+  return typeof o.currency === 'string' && CURRENCY.test(o.currency) ? { monthId: o.monthId, amount: o.amount, currency: o.currency } : null
+}
+
+/**
+ * showcases/{uid} (anyone signed in reads it): null when there is no doc. A switch that isn't a boolean reads as its
+ * DEFAULT_SHOW value; an item is kept only while its switch is on, and its malformed entries (a bad name, `pct` or
+ * time) are dropped.
+ */
+export function decodeShowcase(owner: UID, d: unknown, toMs: ToMs): Showcase | null {
+  const o = obj(d)
+  if (!o) return null
+  const s = obj(o.show) ?? {}
+  const flag = (k: keyof ShowSwitches) => (typeof s[k] === 'boolean' ? (s[k] as boolean) : DEFAULT_SHOW[k])
+  const show: ShowSwitches = { stats: flag('stats'), achieved: flag('achieved'), goals: flag('goals'), earnings: flag('earnings') }
+  const out: Showcase = { uid: owner, show, updatedAt: time(o.updatedAt, toMs) ?? 0 }
+  const achieved = show.achieved ? achievedList(o.achieved, toMs) : null
+  if (achieved) out.achieved = achieved
+  const goals = show.goals ? shownGoals(o.goals) : null
+  if (goals) out.goals = goals
+  const earnings = show.earnings ? shownEarnings(o.earnings) : null
+  if (earnings) out.earnings = earnings
+  return out
+}
+
+/** A space score as the job stores it: a finite number, kept within 0–100; anything else is none. */
+function score(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : null
+}
+
+/** rings/{uid} (the owner and their friends read it): null without a doc; a bad month reads as the empty ring. */
+export function decodeRing(owner: UID, d: unknown, toMs: ToMs): Ring | null {
+  const o = obj(d)
+  if (!o) return null
+  const updatedAt = time(o.updatedAt, toMs) ?? 0
+  if (!isMonthId(o.monthId)) return { uid: owner, monthId: null, score: null, final: false, spaces: 0, updatedAt }
+  const value = score(o.score)
+  const spaces = isInt(o.spaces, 0, 1e6) ? o.spaces : value === null ? 0 : 1
+  return { uid: owner, monthId: o.monthId, score: value, final: o.final === true, spaces: value === null ? 0 : spaces, updatedAt }
+}
+
+function count(v: unknown): number {
+  return isInt(v, 0, 1e6) ? v : 0
+}
+
+/** stats/{uid} (readable per the showcase switch): null without a doc; a malformed count reads 0, a bad `since` null. */
+export function decodeStats(owner: UID, d: unknown, toMs: ToMs): UserStats | null {
+  const o = obj(d)
+  if (!o) return null
+  return {
+    uid: owner,
+    monthsCleared: count(o.monthsCleared),
+    currentStreak: count(o.currentStreak),
+    bestStreak: count(o.bestStreak),
+    weeksPlayed: count(o.weeksPlayed),
+    finishedMonths: count(o.finishedMonths),
+    since: isMonthId(o.since) ? o.since : null,
+    updatedAt: time(o.updatedAt, toMs) ?? 0,
+  }
+}
+
+/**
+ * scores/{uid}.months (the reminders job's own copy; no client reads it): malformed months, space entries and week
+ * ids are dropped; `weeks` deduplicated; a score that isn't a finite number is none; `final` only when true.
+ */
+export function decodeScores(d: unknown, _toMs: ToMs): ScoreMonths {
+  const out: ScoreMonths = {}
+  for (const [monthId, spaces] of Object.entries(obj(obj(d)?.months) ?? {})) {
+    if (!isMonthId(monthId)) continue
+    const entries: Record<string, ScoreEntry> = {}
+    for (const [spaceId, value] of Object.entries(obj(spaces) ?? {})) {
+      const e = obj(value)
+      if (!e || spaceId === '' || !Array.isArray(e.weeks)) continue
+      entries[spaceId] = { score: score(e.score), weeks: [...new Set(e.weeks.filter(isWeekId))].sort(), final: e.final === true }
+    }
+    if (Object.keys(entries).length > 0) out[monthId] = entries
+  }
+  return out
+}
+
+/** A valid IANA zone in the shape the rules accept for a space's or goal's timezone. */
+function zone(v: unknown): string | null {
+  return typeof v === 'string' && v.length <= 64 && /^[A-Za-z0-9_+/-]+$/.test(v) && IANAZone.isValidZone(v) ? v : null
+}
+
+/** A fixed zone for an offset in minutes ("UTC+5:30"): the rules' own anchor, used when a goal's zone is unusable. */
+function fixedZone(offsetMin: number): string {
+  if (offsetMin === 0) return 'UTC'
+  const abs = Math.abs(offsetMin)
+  return `UTC${offsetMin < 0 ? '-' : '+'}${Math.floor(abs / 60)}:${String(abs % 60).padStart(2, '0')}`
+}
+
+/** A real calendar date 'YYYY-MM-DD'. */
+function isDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !WEEK_ID.test(v)) return false
+  const [y, m, day] = v.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, day))
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === day
+}
+
+/** uid → a value `ok` accepts (uids as the rules check them); others dropped. */
+function uidMap<T>(v: unknown, ok: (x: unknown) => T | null): Record<UID, T> {
+  const out: [UID, T][] = []
+  for (const [key, value] of Object.entries(obj(v) ?? {})) {
+    const x = isUid(key) ? ok(value) : null
+    if (x !== null) out.push([key, x])
+  }
+  return Object.fromEntries(out)
+}
+
+function strictUids(v: unknown): UID[] {
+  return Array.isArray(v) ? [...new Set(v.filter(isUid))] : []
+}
+
+/**
+ * sharedGoals/{goalId} in real units (hundredths ÷ 100). null when the id fails isGoalId, or the name, unit, target100,
+ * utcOffsetMin, ownerId or memberIds is malformed. A zone that isn't a valid IANA zone becomes the fixed zone of
+ * utcOffsetMin (the rules' anchor); a bad `zones` entry, a non-int part, a bad `last` or `endsOn` is left out (null);
+ * invitees who are members are dropped; `total` falls back to the sum of the parts when `total100` is malformed.
+ */
+export function decodeSharedGoal(id: string, d: unknown, toMs: ToMs): SharedGoal | null {
+  const o = obj(d)
+  if (!o || !isGoalId(id)) return null
+  const name = typeof o.name === 'string' && o.name.trim() !== '' ? o.name : null
+  const unit = typeof o.unit === 'string' && o.unit.trim() !== '' ? o.unit : null
+  const ownerId = isUid(o.ownerId) ? o.ownerId : null
+  if (name === null || unit === null || ownerId === null || !Array.isArray(o.memberIds)) return null
+  if (!isInt(o.target100, 1, MAX_HUNDREDTHS) || !isInt(o.utcOffsetMin, -720, 840)) return null
+  const memberIds = strictUids(o.memberIds)
+  const totals100 = uidMap(o.totals100, (v) => (isInt(v, -MAX_HUNDREDTHS * 8, MAX_HUNDREDTHS * 8) ? v : null))
+  const sum100 = Object.values(totals100).reduce((a, b) => a + b, 0)
+  const total100 = isInt(o.total100, -MAX_HUNDREDTHS * 8, MAX_HUNDREDTHS * 8) ? o.total100 : sum100
+  const last = obj(o.last)
+  const lastAt = last ? time(last.at, toMs) : null
+  return {
+    id,
+    name,
+    unit,
+    target: fromHundredths(o.target100),
+    endsOn: isDate(o.endsOn) ? o.endsOn : null,
+    timezone: zone(o.timezone) ?? fixedZone(o.utcOffsetMin),
+    utcOffsetMin: o.utcOffsetMin,
+    zones: uidMap(o.zones, zone),
+    ownerId,
+    createdBy: isUid(o.createdBy) ? o.createdBy : ownerId,
+    memberIds,
+    invited: strictUids(o.invited).filter((u) => !memberIds.includes(u)),
+    joinedAt: uidMap(o.joinedAt, (v) => time(v, toMs)),
+    leftAt: uidMap(o.leftAt, (v) => time(v, toMs)),
+    totals: Object.fromEntries(Object.entries(totals100).map(([u, n]) => [u, fromHundredths(n)])),
+    total: fromHundredths(total100),
+    last: last && isUid(last.by) && isWeekId(last.weekId) && lastAt !== null ? { by: last.by, weekId: last.weekId, at: lastAt } : null,
+    reachedAt: time(o.reachedAt, toMs),
+    archivedAt: time(o.archivedAt, toMs),
+    createdAt: time(o.createdAt, toMs) ?? 0,
+  }
+}
+
+/**
+ * sharedGoals/{goalId}/checkins/{weekId}_{uid}: null unless the id matches its `weekId` and `uid` and `amount100` is an
+ * int 0…10¹¹. A note that isn't text reads as ''; a bad time as 0.
+ */
+export function decodeCheckin(id: string, d: unknown, toMs: ToMs): Checkin | null {
+  const o = obj(d)
+  if (!o || !isUid(o.uid) || !isWeekId(o.weekId) || id !== checkinId(o.weekId, o.uid) || !isInt(o.amount100, 0, MAX_HUNDREDTHS)) return null
+  return { id, uid: o.uid, weekId: o.weekId, amount: fromHundredths(o.amount100), note: typeof o.note === 'string' ? o.note : '', at: time(o.at, toMs) ?? 0 }
 }

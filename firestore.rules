@@ -1237,5 +1237,380 @@ service cloud.firestore {
     match /_private/{path=**} {
       allow read, write: if false;
     }
+
+    // ==================== batch 3: friends, showcase, shared goals (SPEC §11) ====================
+    // New top-level collections only, after every existing block: nothing above changed, and a function
+    // that isn't called costs nothing, so every existing request costs what it did (budget.test.ts).
+    // As above, cheap checks that are plainly false for other writes come first, and reads sit in the
+    // arguments of a second function behind them (rules evaluate every `let` of a function they call).
+
+    // ---------- batch 3 helpers ----------
+
+    // Pair ids join two uids in string order: one doc per pair, found from either side with one read.
+    // Uids have no '_' (isUid), so the id splits back unambiguously.
+    function pairId(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+    function friendPath(a, b) { return /databases/$(database)/documents/friends/$(pairId(a, b)); }
+    // Missing pair: get() is null and null.data is an error, so the caller is denied (never true).
+    // 1 read.
+    function areFriends(a, b) { return get(friendPath(a, b)).data.state == 'friends'; }
+    function isUid(u) { return u is string && u.matches('^[A-Za-z0-9]{1,128}$'); }
+    // An IANA zone name, checked as a space's timezone.
+    function isZone(z) { return str(z, 1, 64) && z.matches('^[A-Za-z0-9_+/-]+$'); }
+    // 00:00 of a 'YYYY-MM-DD' day on a zone's wall clock, from the offset stored with it (±1h of DST).
+    // timestamp.date() errors (= deny) on impossible dates.
+    function dayAnchor(id, off) {
+      return timestamp.date(int(id[0:4]), int(id[5:7]), int(id[8:10])) - duration.value(off, 'm');
+    }
+
+    // ---------- friends (SPEC §11.3, §11.5) ----------
+
+    // A friend request: {users: [a, b] sorted, by: the asker, state: 'asked', at: now}, only to
+    // someone with a profile (1 read, last). A request to yourself can't be sorted (a < a is false).
+    function asksFriend(pid) {
+      let d = incoming();
+      let me = request.auth.uid;
+      return d.size() == 4
+        && d.users is list && d.users.size() == 2
+        && isUid(d.users[0]) && isUid(d.users[1]) && d.users[0] < d.users[1]
+        && pid == d.users[0] + '_' + d.users[1]
+        && d.by == me && me in d.users
+        && d.state == 'asked' && d.at == request.time
+        && exists(/databases/$(database)/documents/users/$(me == d.users[0] ? d.users[1] : d.users[0]));
+    }
+    // The asked person accepts. A declined request can still be accepted: that is how someone who
+    // declined adds the asker later (the asker's request still stands, so it is mutual).
+    function acceptsFriend(me, e, d) {
+      return me != e.by && e.state in ['asked', 'declined']
+        && changedOnly(['state', 'at']) && d.state == 'friends' && d.at == request.time;
+    }
+    // The asked person declines, silently: `at` stays, so the asker's copy shows nothing new.
+    function declinesFriend(me, e, d) {
+      return me != e.by && e.state == 'asked'
+        && changedOnly(['state']) && d.state == 'declined';
+    }
+    // The asker cancels a pending (or silently declined) request: a tombstone dated now.
+    function withdrawsFriend(me, e, d) {
+      return me == e.by && e.state in ['asked', 'declined']
+        && changedOnly(['state', 'at']) && d.state == 'withdrawn' && d.at == request.time;
+    }
+    // The asker asks again, 30 days after canceling.
+    function reasksFriend(me, e, d) {
+      return me == e.by && e.state == 'withdrawn'
+        && request.time > e.at + duration.value(30, 'd')
+        && changedOnly(['state', 'at']) && d.state == 'asked' && d.at == request.time;
+    }
+    // The other person asks after the asker canceled: any time, and the request becomes theirs.
+    function takesOverFriend(me, e, d) {
+      return me != e.by && e.state == 'withdrawn'
+        && changedOnly(['by', 'state', 'at']) && d.by == me && d.state == 'asked' && d.at == request.time;
+    }
+
+    // Exactly one of the five transitions, by one of the pair. `users` never changes.
+    function updatesFriend(me, e, d) {
+      return me in e.users
+        && (acceptsFriend(me, e, d) || declinesFriend(me, e, d) || withdrawsFriend(me, e, d)
+            || reasksFriend(me, e, d) || takesOverFriend(me, e, d));
+    }
+
+    // The two people in a pair read it, even before it exists (the app reads a pair before asking),
+    // and list theirs with where('users', 'array-contains', me). Nobody else sees who is friends.
+    // The asker can't clear their own pending request or tombstone within 30 days while they have a
+    // profile, so a canceled request can't be sent again sooner; account deletion (after the profile)
+    // can (1 read, last).
+    match /friends/{pid} {
+      allow get: if signedIn() && request.auth.uid in pid.split('_');
+      allow list: if signedIn() && request.auth.uid in resource.data.users;
+      allow create: if signedIn() && asksFriend(pid);
+      allow update: if signedIn() && updatesFriend(request.auth.uid, existing(), incoming());
+      allow delete: if signedIn() && request.auth.uid in existing().users
+        && (request.auth.uid != existing().by || existing().state == 'friends'
+            || request.time > existing().at + duration.value(30, 'd')
+            || !exists(/databases/$(database)/documents/users/$(request.auth.uid)));
+    }
+
+    // ---------- friend codes (SPEC §11.6) ----------
+
+    // Anyone signed in looks a code up; its owner lists their own. No update: a create on a code that
+    // exists is an update, refused, so nobody can take over someone's code.
+    match /friendCodes/{code} {
+      allow get: if signedIn();
+      allow list: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && isInviteCode(code)
+        && exactKeys(incoming(), ['uid', 'createdAt'])
+        && incoming().uid == request.auth.uid && incoming().createdAt == request.time;
+      allow delete: if signedIn() && existing().uid == request.auth.uid;
+    }
+
+    // ---------- showcases (SPEC §11.3, §11.5) ----------
+
+    // Items are checked by size and by reading every key (no room for others), unrolled by index
+    // (rules have no loops). Names are 1-60 characters, not blank.
+    function validAchievedItem(a) {
+      return a.size() == 2 && text(a.name, 60) && a.at is timestamp && a.at <= request.time;
+    }
+    function validAchieved(l) {
+      let n = l.size();
+      return l is list && n <= 12
+        && (n <= 0 || validAchievedItem(l[0])) && (n <= 1 || validAchievedItem(l[1])) && (n <= 2 || validAchievedItem(l[2]))
+        && (n <= 3 || validAchievedItem(l[3])) && (n <= 4 || validAchievedItem(l[4])) && (n <= 5 || validAchievedItem(l[5]))
+        && (n <= 6 || validAchievedItem(l[6])) && (n <= 7 || validAchievedItem(l[7])) && (n <= 8 || validAchievedItem(l[8]))
+        && (n <= 9 || validAchievedItem(l[9])) && (n <= 10 || validAchievedItem(l[10])) && (n <= 11 || validAchievedItem(l[11]));
+    }
+    // A goal's name and whole percent funded: never its amount.
+    function validShownGoal(g) {
+      return g.size() == 2 && text(g.name, 60) && g.pct is int && g.pct >= 0 && g.pct <= 100;
+    }
+    function validShownGoals(l) {
+      let n = l.size();
+      return l is list && n <= 8
+        && (n <= 0 || validShownGoal(l[0])) && (n <= 1 || validShownGoal(l[1])) && (n <= 2 || validShownGoal(l[2]))
+        && (n <= 3 || validShownGoal(l[3])) && (n <= 4 || validShownGoal(l[4])) && (n <= 5 || validShownGoal(l[5]))
+        && (n <= 6 || validShownGoal(l[6])) && (n <= 7 || validShownGoal(l[7]));
+    }
+    function validShownEarnings(e) {
+      return e.size() == 3
+        && e.monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && num(e.amount, 0, 1000000000)
+        && e.currency.matches('^[A-Z]{3}$');
+    }
+    // The whole doc after the write: an update of item fields alone is checked against the stored
+    // switches, so a stale device's item for a switch now off is refused. Only copies of what is
+    // switched on, and every switched-on item present.
+    function validShowcase(d) {
+      return d.keys().hasAll(['show', 'updatedAt'])
+        && d.keys().hasOnly(['show', 'achieved', 'goals', 'earnings', 'updatedAt'])
+        && d.show.size() == 4
+        && d.show.stats is bool && d.show.achieved is bool && d.show.goals is bool && d.show.earnings is bool
+        && ('achieved' in d) == d.show.achieved
+        && ('goals' in d) == d.show.goals
+        && ('earnings' in d) == d.show.earnings
+        && (!d.show.achieved || validAchieved(d.achieved))
+        && (!d.show.goals || validShownGoals(d.goals))
+        && (!d.show.earnings || validShownEarnings(d.earnings))
+        && d.updatedAt == request.time;
+    }
+
+    // Readable by anyone signed in who knows the uid (the owner's choice, SPEC §11.4); no list.
+    match /showcases/{uid} {
+      allow get: if signedIn();
+      allow create, update: if isUser(uid) && validShowcase(incoming());
+      allow delete: if isUser(uid);
+    }
+
+    // ---------- scores, rings, stats (written by the reminders job with admin rights, SPEC §11.10) ----------
+
+    // Per-space detail: nobody reads it. Its owner deletes it with their account.
+    match /scores/{uid} {
+      allow delete: if isUser(uid);
+    }
+
+    // One number: its owner and their friends (pair state 'friends') read it. 1 read.
+    match /rings/{uid} {
+      allow get: if isUser(uid) || (signedIn() && areFriends(uid, request.auth.uid));
+      allow delete: if isUser(uid);
+    }
+
+    // Four totals: anyone signed in while the owner's showcase shows stats (no showcase doc counts as
+    // shown, SPEC §11.16). 1 read.
+    function statsShown(uid) {
+      let s = get(/databases/$(database)/documents/showcases/$(uid));
+      return s == null || s.data.show.stats == true;
+    }
+    match /stats/{uid} {
+      allow get: if isUser(uid) || (signedIn() && statsShown(uid));
+      allow delete: if isUser(uid);
+    }
+
+    // ---------- shared goals (SPEC §11.3, §11.5) ----------
+    // Amounts are ints in hundredths (target100, total100, totals100[uid], amount100), so the running
+    // total is checked with == and can't drift. 100000000000 = 1e9 × 100 (rules have no 1e9 literals).
+
+    function goalPath(goalId) { return /databases/$(database)/documents/sharedGoals/$(goalId); }
+
+    function validGoalText(d) {
+      return text(d.name, 60) && text(d.unit, 16)
+        && d.target100 is int && d.target100 >= 1 && d.target100 <= 100000000000
+        && (d.endsOn == null
+            || (d.endsOn is string && d.endsOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && dayAnchor(d.endsOn, 0) is timestamp));
+    }
+    // Reached iff the total is at least the target: set to now by the write that gets there, kept
+    // while it stays there, cleared when it falls below (an edit down, or a raised target).
+    function reachesRule(e, d) {
+      return d.total100 >= d.target100
+        ? (e.reachedAt != null ? d.reachedAt == e.reachedAt : d.reachedAt == request.time)
+        : d.reachedAt == null;
+    }
+    // Every uid of `l` (at most 7, distinct) is a friend of `me`: 1 read each (rules have no loops).
+    function invitesFriends(me, l) {
+      let n = l.size();
+      return n <= 7 && l.toSet().size() == n
+        && (n <= 0 || areFriends(me, l[0])) && (n <= 1 || areFriends(me, l[1])) && (n <= 2 || areFriends(me, l[2]))
+        && (n <= 3 || areFriends(me, l[3])) && (n <= 4 || areFriends(me, l[4])) && (n <= 5 || areFriends(me, l[5]))
+        && (n <= 6 || areFriends(me, l[6]));
+    }
+
+    // A new goal: exactly the 19 keys (size 19, and every one is read below), the creator its only
+    // member and owner, nothing counted yet, and invitations only to the creator's friends (≤ 7 reads).
+    function createsShared(goalId) {
+      let d = incoming();
+      let me = request.auth.uid;
+      return goalId.matches('^[A-Za-z0-9]{1,40}$')
+        && d.size() == 19
+        && validGoalText(d)
+        && isZone(d.timezone)
+        && d.utcOffsetMin is int && d.utcOffsetMin >= -720 && d.utcOffsetMin <= 840
+        && d.zones == {me: d.timezone}
+        && d.ownerId == me && d.createdBy == me
+        && d.memberIds == [me]
+        && d.joinedAt == {me: request.time}
+        && d.leftAt == {} && d.totals100 == {} && d.total100 == 0
+        && d.last == null && d.reachedAt == null && d.archivedAt == null
+        && d.createdAt == request.time
+        && d.invited is list && !(me in d.invited)
+        && invitesFriends(me, d.invited);
+    }
+
+    // 1. A member checks in: the goal's side of the check-in batch. `last` names the check-in doc
+    // ({weekId}_{me}), written in the same batch (its `at` is this request's time); its amount minus
+    // the stored one (0 for a new one) is added to my total and to the team's. The check-in's own rule
+    // checks the week, the amount and that this update is in the batch. 2 reads.
+    function checksIn(goalId, me, e, d, ch) {
+      return me in e.memberIds && e.archivedAt == null
+        && ch.hasOnly(['totals100', 'total100', 'last', 'reachedAt'])
+        && exactKeys(d.last, ['by', 'weekId', 'at']) && d.last.by == me && d.last.at == request.time
+        && d.last.weekId is string
+        && checksInWith(me, e, d,
+                        get(/databases/$(database)/documents/sharedGoals/$(goalId)/checkins/$(d.last.weekId + '_' + me)),
+                        getAfter(/databases/$(database)/documents/sharedGoals/$(goalId)/checkins/$(d.last.weekId + '_' + me)));
+    }
+    function checksInWith(me, e, d, before, after) {
+      let delta = after.data.amount100 - (before == null ? 0 : before.data.amount100);
+      return after.data.at == request.time
+        && d.totals100.diff(e.totals100).affectedKeys().hasOnly([me])
+        && d.totals100[me] == e.totals100.get(me, 0) + delta
+        && d.total100 == e.total100 + delta
+        && reachesRule(e, d);
+    }
+    // 2. An invitee joins (a former member re-joins the same way; their part and leftAt stay), with
+    // their device's zone for the check-in push.
+    function joinsShared(me, e, d, ch) {
+      return me in e.invited && !(me in e.memberIds) && e.archivedAt == null
+        && ch.hasOnly(['invited', 'memberIds', 'joinedAt', 'zones'])
+        && d.invited == e.invited.removeAll([me])
+        && d.memberIds == e.memberIds.concat([me]) && d.memberIds.size() <= 8
+        && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([me]) && d.joinedAt[me] == request.time
+        && d.zones.diff(e.zones).affectedKeys().hasOnly([me]) && isZone(d.zones[me]);
+    }
+    // 3. Invitations only go: the owner cancels some, or an invitee declines their own.
+    function dropsInvite(me, e, d, ch) {
+      return ch.hasOnly(['invited'])
+        && dropsInviteOf(me, e, d, e.invited.removeAll(d.invited));
+    }
+    function dropsInviteOf(me, e, d, gone) {
+      return gone.size() >= 1 && d.invited == e.invited.removeAll(gone)
+        && ((me == e.ownerId && me in e.memberIds) || gone == [me]);
+    }
+    // 4. The owner invites 1-7 more of their friends (≤ 7 reads); everyone invited stays invited, and
+    // members and invitations together stay at most 8.
+    function invitesToShared(me, e, d, ch) {
+      return me == e.ownerId && me in e.memberIds && e.archivedAt == null
+        && ch.hasOnly(['invited'])
+        && invitesMore(me, e, d, d.invited.removeAll(e.invited));
+    }
+    function invitesMore(me, e, d, added) {
+      return added.size() >= 1
+        && d.invited.hasAll(e.invited)
+        && d.invited.toSet().size() == d.invited.size()
+        && e.memberIds.size() + d.invited.size() <= 8
+        && !added.hasAny(e.memberIds)
+        && invitesFriends(me, added);
+    }
+    // 5. A member leaves; their part stays in the totals. The last one out finishes the goal (and
+    // clears the invitations); an owner who leaves others behind hands the goal to the earliest-joined
+    // of them (earliestJoined, as for spaces).
+    function leavesShared(me, e, d, ch) {
+      return me in e.memberIds
+        && ch.hasOnly(['memberIds', 'joinedAt', 'leftAt', 'ownerId', 'archivedAt', 'invited'])
+        && d.memberIds == e.memberIds.removeAll([me])
+        && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([me]) && !(me in d.joinedAt)
+        && d.leftAt.diff(e.leftAt).affectedKeys().hasOnly([me]) && d.leftAt[me] == request.time
+        && (d.memberIds.size() == 0
+            ? d.archivedAt == (e.archivedAt == null ? request.time : e.archivedAt) && d.invited == [] && d.ownerId == e.ownerId
+            : d.archivedAt == e.archivedAt && d.invited == e.invited
+              && (me == e.ownerId ? earliestJoined(d) : d.ownerId == e.ownerId));
+    }
+    // 6. The owner edits the text, the target or the end date; reachedAt follows the new target.
+    function editsShared(me, e, d, ch) {
+      return me == e.ownerId && me in e.memberIds && e.archivedAt == null
+        && ch.hasOnly(['name', 'unit', 'target100', 'endsOn', 'reachedAt'])
+        && validGoalText(d) && reachesRule(e, d);
+    }
+    // 7. The owner finishes it: check-ins stop for good (nothing un-finishes), invitations go.
+    function finishesShared(me, e, d, ch) {
+      return me == e.ownerId && me in e.memberIds && e.archivedAt == null
+        && ch.hasOnly(['archivedAt', 'invited'])
+        && d.archivedAt == request.time && d.invited == [];
+    }
+
+    // A check-in's week is the goal's current one: a Monday on the goal's clock (its stored offset,
+    // ±1h of DST), from an hour before it starts until an hour after it ends (the app's
+    // checkinClosesAt, SPEC §11.7, is the upper bound), and only until the goal's end date ends.
+    function inGoalWeek(weekId, g) {
+      let monday = timestamp.date(int(weekId[0:4]), int(weekId[5:7]), int(weekId[8:10]));
+      let anchor = monday - duration.value(g.utcOffsetMin, 'm');
+      return monday.dayOfWeek() == 1
+        && request.time >= anchor - duration.value(1, 'h')
+        && request.time < anchor + duration.value(10140, 'm')
+        && (g.endsOn == null || request.time < dayAnchor(g.endsOn, g.utcOffsetMin) + duration.value(1500, 'm'));
+    }
+    // A member's part this week, 0…1e9 (in hundredths, an int) with a one-line note of 0-80
+    // characters, written with the goal's checksIn update in one batch (`last` names this doc; that
+    // branch checks the totals). The note's class is the app's cleanNote's (CR, LF, U+2028, U+2029).
+    // 1 read (getAfter of the goal).
+    function checkinFits(goalId, cid) {
+      let d = incoming();
+      let me = request.auth.uid;
+      return d.size() == 5
+        && d.uid == me
+        && d.weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && cid == d.weekId + '_' + me
+        && d.amount100 is int && d.amount100 >= 0 && d.amount100 <= 100000000000
+        && str(d.note, 0, 80) && d.note.matches('[^\\n\\r\\x{2028}\\x{2029}]*')
+        && d.at == request.time
+        && checkinFor(me, d, getAfter(goalPath(goalId)).data);
+    }
+    function checkinFor(me, d, g) {
+      return me in g.memberIds && g.archivedAt == null
+        && g.last == {'by': me, 'weekId': d.weekId, 'at': request.time}
+        && inGoalWeek(d.weekId, g);
+    }
+
+    // The update branches, from the most frequent to the rarest; each starts with checks that are
+    // plainly false for the others. `ch` is the keys the write changes.
+    function updatesShared(goalId, me, e, d, ch) {
+      return checksIn(goalId, me, e, d, ch) || joinsShared(me, e, d, ch) || dropsInvite(me, e, d, ch)
+        || invitesToShared(me, e, d, ch) || leavesShared(me, e, d, ch) || editsShared(me, e, d, ch)
+        || finishesShared(me, e, d, ch);
+    }
+
+    // Members and invitees read a goal, and list theirs with where('memberIds', 'array-contains', me)
+    // or where('invited', 'array-contains', me). Never deleted: the last member leaving archives it.
+    match /sharedGoals/{goalId} {
+      allow get, list: if signedIn()
+        && (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.invited);
+      allow create: if signedIn() && createsShared(goalId);
+      allow update: if signedIn() && updatesShared(goalId, request.auth.uid, existing(), incoming(), incoming().diff(existing()).affectedKeys());
+
+      // The goal's current members read check-ins (a week's is one query). Only the author writes
+      // theirs, in the check-in batch, and deletes them only once they have left (every leave does),
+      // so nobody can delete and re-create a week to count it twice.
+      match /checkins/{cid} {
+        allow read: if signedIn() && request.auth.uid in get(goalPath(goalId)).data.memberIds;
+        allow create: if signedIn() && checkinFits(goalId, cid);
+        allow update: if signedIn() && existing().weekId == incoming().weekId && checkinFits(goalId, cid);
+        allow delete: if signedIn() && existing().uid == request.auth.uid
+          && !(request.auth.uid in get(goalPath(goalId)).data.memberIds);
+      }
+    }
   }
 }

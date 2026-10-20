@@ -8,7 +8,7 @@ import {
   type Firestore,
 } from 'firebase/firestore'
 import {
-  allDenied, allowed, CUSTOM, DAY, denied, HOUR, mondayOf, spaceDoc, ts, useRulesEnv, USUAL, weekOn, type Schedule,
+  allDenied, allowed, CUSTOM, DAY, denied, HOUR, mondayOf, offsetOn, spaceDoc, ts, useRulesEnv, USUAL, weekOn, type Schedule,
 } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
@@ -119,12 +119,12 @@ describe('weeks on the space\'s times', () => {
   const ZONES = ['Europe/Berlin', 'America/Los_Angeles', 'Australia/Sydney', 'Asia/Kolkata', 'Pacific/Kiritimati', 'Pacific/Pago_Pago']
 
   test.each(ZONES)('next week follows the space\'s schedule in %s', async (zone) => {
+    const next = mondayOf(zone, 1)
     await seed({
-      'spaces/s1': spaceDoc(ABC, { timezone: zone, schedule: CUSTOM }),
-      'spaces/s2': spaceDoc(ABC, { timezone: zone, schedule: CUSTOM }),
+      'spaces/s1': spaceDoc(ABC, { timezone: zone, schedule: CUSTOM, utcOffsetMin: offsetOn(zone, next) }),
+      'spaces/s2': spaceDoc(ABC, { timezone: zone, schedule: CUSTOM, utcOffsetMin: offsetOn(zone, next) }),
     })
     const alice = db('alice')
-    const next = mondayOf(zone, 1)
     const week = weekOn(ABC, next, zone, CUSTOM)
     const { schedule: _, ...sixKeys } = week
     const shift = (key: string, ms: number) => ({ ...week, [key]: ts((week[key] as Timestamp).toMillis() + ms) })

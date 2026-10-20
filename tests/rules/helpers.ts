@@ -115,6 +115,9 @@ export const OTHER_CODE = 'WXYZ6789'
 
 /** The zone's UTC offset in minutes right now, as createSpace stores it. */
 export const offsetNow = (zone: string): number => DateTime.now().setZone(zone).offset
+/** The zone's UTC offset at 00:00 of the day `id` ('YYYY-MM-DD'): a space created in that week's season.
+ *  Tests about next week seed it, so they hold in a week before a DST change too. */
+export const offsetOn = (zone: string, id: string): number => DateTime.fromISO(id, { zone }).offset
 
 /** A space as stored after creation (seeded with rules disabled). utcOffsetMin follows the timezone
  *  unless given; use legacySpaceDoc for a space from before it existed. */

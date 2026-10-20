@@ -179,6 +179,18 @@ function groupedDigits(text: string, separators: RegExp): string | null {
  * not a number, negative or over MAX_AMOUNT.
  */
 export function parseAmount(text: string): number | null {
+  const read = readAmount(text)
+  if (!read) return null
+  const value = roundMoney(read.value)
+  return value > MAX_AMOUNT ? null : value
+}
+
+/**
+ * The number in `text`, read exactly as parseAmount reads it but before its rounding to cents and its cap:
+ * `value` ≥ 0 and how many digits followed the decimal point (`decimals`). null when it isn't a number at all.
+ * Batch 3's goal amounts (parseGoalAmount, shared.ts) use it to tell "too many decimals" and "too big" apart.
+ */
+export function readAmount(text: string): { value: number; decimals: number } | null {
   const s = text.trim().replace(/^\+/, '').replace(AFFIX, '').trim()
   if (!/^[\d.,\s'\u2019]+$/.test(s) || !/\d/.test(s)) return null
 
@@ -203,9 +215,7 @@ export function parseAmount(text: string): number | null {
   const group = decimal === '.' ? /[,\s'\u2019]/ : decimal === ',' ? /[.\s'\u2019]/ : /[.,\s'\u2019]/
   const digits = groupedDigits(whole, group)
   if (digits === null || (digits === '' && fraction === '')) return null
-
-  const value = roundMoney(Number(`${digits || '0'}.${fraction || '0'}`))
-  return value > MAX_AMOUNT ? null : value
+  return { value: Number(`${digits || '0'}.${fraction || '0'}`), decimals: fraction.length }
 }
 
 /**

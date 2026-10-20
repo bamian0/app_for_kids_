@@ -27,15 +27,35 @@ export function newInviteCode(): string {
   return randomString(INVITE_ALPHABET, INVITE_CODE_LENGTH)
 }
 
-const JOIN_PARAM = /(?:^|[?&#\s])join=([^&#\s]*)/i
 // Spaces, hyphens and the dashes iOS smart punctuation or copy/paste may produce.
 const SEPARATORS = /[\s\-_‐-―−]/g
+
+/** `name=value` as a query parameter anywhere in pasted text (a link, or a sentence around one). */
+function paramPattern(name: string): RegExp {
+  return new RegExp(`(?:^|[?&#\\s])${name}=([^&#\\s]*)`, 'i')
+}
+
+const JOIN_PARAM = paramPattern('join')
 
 /** Accepts a raw code or a full invite link (`…?join=XXXXXXXX`). Uppercases, strips spaces and dashes.
  *  Returns the 8-char code, or null if it is not 8 chars from INVITE_ALPHABET. */
 export function normalizeInviteCode(input: string): string | null {
+  return normalizeCode(input, JOIN_PARAM)
+}
+
+/** Batch 3 (SPEC §11.6): like normalizeInviteCode, for a link whose code sits in `?{param}=` (friend links). */
+export function normalizeCodeParam(input: string, param: string): string | null {
+  return /^[a-z]+$/i.test(param) ? normalizeCode(input, paramPattern(param)) : null
+}
+
+/** True when the text carries `{param}=` as a query parameter (e.g. a space invite link: `join=`). */
+export function hasCodeParam(input: string, param: string): boolean {
+  return /^[a-z]+$/i.test(param) && paramPattern(param).test(input)
+}
+
+function normalizeCode(input: string, pattern: RegExp): string | null {
   let raw = input
-  const match = JOIN_PARAM.exec(input)
+  const match = pattern.exec(input)
   if (match) {
     try {
       raw = decodeURIComponent(match[1].replace(/\+/g, ' '))
@@ -56,6 +76,11 @@ export function formatInviteCode(code: string): string {
 /** Short random id for tasks. Starts with a letter and stays alphanumeric, so it is safe as a Firestore map key and field path. */
 export function newTaskId(): string {
   return randomString(LOWER, 1) + randomString(LOWER_ALNUM, 9)
+}
+
+/** A Firebase uid as the rules' isUid checks it (SPEC §11.5): 1–128 letters and digits, so `_` joins uids safely. */
+export function isUid(v: unknown): v is UID {
+  return typeof v === 'string' && /^[A-Za-z0-9]{1,128}$/.test(v)
 }
 
 export function reviewDocId(reviewerId: UID, revieweeId: UID): string {

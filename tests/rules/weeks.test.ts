@@ -6,7 +6,7 @@ import {
   arrayRemove, arrayUnion, deleteDoc, deleteField, doc, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc,
   writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
-import { allDenied, allowed, DAY, denied, HOUR, legacySpaceDoc, offsetNow, spaceDoc, ts, useRulesEnv, weekDoc } from './helpers.ts'
+import { allDenied, allowed, DAY, denied, HOUR, legacySpaceDoc, offsetOn, spaceDoc, ts, useRulesEnv, weekDoc } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
 
@@ -65,36 +65,36 @@ describe('weeks: create', () => {
   })
 
   test.each(ZONES)('DST: a space created in the other season (offset ±1h) still creates real weeks in %s', async (zone) => {
-    const now = offsetNow(zone)
-    await seed({
-      'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: now - 60 }),
-      'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: now + 60 }),
-    })
     const next = mondayId(zone, 1)
+    const real = offsetOn(zone, next)
+    await seed({
+      'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: real - 60 }),
+      'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: real + 60 }),
+    })
     await allowed(setDoc(weekRef(db('alice'), next, 's1'), newWeek(AB, next, zone)))
     await allowed(setDoc(weekRef(db('alice'), next, 's2'), newWeek(AB, next, zone)))
   })
 
   test.each(ZONES)('a space from the other season can move a week by 2h at most in %s', async (zone) => {
     // Its anchor is an hour early, so its hour of slack reaches 2h early; the bounds' own hour can't add a third.
-    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetNow(zone) + 60 }), 'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetNow(zone) + 60 }) })
     const next = mondayId(zone, 1)
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetOn(zone, next) + 60 }), 'spaces/s2': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetOn(zone, next) + 60 }) })
     await allowed(setDoc(weekRef(db('alice'), next, 's1'), shifted(AB, next, zone, everyBound(-2 * HOUR))))
     await denied(setDoc(weekRef(db('alice'), next, 's2'), shifted(AB, next, zone, { startAt: -2 * HOUR, lockAt: -3 * HOUR, reviewOpenAt: -3 * HOUR, deadlineAt: -3 * HOUR })))
   })
 
   test('DST inside the week: later bounds may be 1h off whole days', async () => {
     const zone = 'Europe/Berlin'
-    await seed({ 'spaces/s1': spaceDoc(AB), 'spaces/s2': spaceDoc(AB) })
     const next = mondayId(zone, 1)
+    await seed({ 'spaces/s1': spaceDoc(AB, { utcOffsetMin: offsetOn(zone, next) }), 'spaces/s2': spaceDoc(AB, { utcOffsetMin: offsetOn(zone, next) }) })
     await allowed(setDoc(weekRef(db('alice'), next, 's1'), shifted(AB, next, zone, { reviewOpenAt: HOUR, deadlineAt: HOUR })))
     await allowed(setDoc(weekRef(db('alice'), next, 's2'), shifted(AB, next, zone, { reviewOpenAt: -HOUR, deadlineAt: -HOUR })))
   })
 
   test.each(ZONES)('skewed timelines are refused in %s', async (zone) => {
-    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone }) })
-    const alice = db('alice')
     const next = mondayId(zone, 1)
+    await seed({ 'spaces/s1': spaceDoc(AB, { timezone: zone, utcOffsetMin: offsetOn(zone, next) }) })
+    const alice = db('alice')
     const utcMidnight = Date.parse(`${next}T00:00:00Z`)
     const create = (data: DocumentData) => () => setDoc(weekRef(alice, next), data)
     const cases: Record<string, () => Promise<unknown>> = {
@@ -116,7 +116,7 @@ describe('weeks: create', () => {
       }),
     }
     // A UTC-midnight timeline is a skew wherever local midnight is more than an hour away from it.
-    if (Math.abs(offsetNow(zone)) > 60) cases['UTC midnight'] = create(fromStart(AB, utcMidnight))
+    if (Math.abs(offsetOn(zone, next)) > 60) cases['UTC midnight'] = create(fromStart(AB, utcMidnight))
     await allDenied(cases)
   })
 

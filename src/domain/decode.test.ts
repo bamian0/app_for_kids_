@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { decodeCancels, decodeMemberStakes, decodeMonthResults, decodeSchedule, decodeSpaceExtras, decodeWeekExtras, isReviewMark, type ToMs } from './decode.ts'
+import {
+  decodeCancels,
+  decodeCheckin,
+  decodeFriendship,
+  decodeMemberStakes,
+  decodeMonthResults,
+  decodeRing,
+  decodeSchedule,
+  decodeScores,
+  decodeSharedGoal,
+  decodeShowcase,
+  decodeSpaceExtras,
+  decodeStats,
+  decodeWeekExtras,
+  isReviewMark,
+  type ToMs,
+} from './decode.ts'
+import { goalEndsAt, goalWeek } from './shared.ts'
 
 /** A stand-in for a Firestore Timestamp, as the data layer and the job get them. */
 const ts = (ms: number) => ({ toMillis: () => ms })
@@ -321,5 +338,348 @@ describe('isReviewMark', () => {
   it('Done, Half, Not done or Fair, Skip It', () => {
     for (const v of [0, 0.5, 1, 'fair', 1.0, 0.0]) expect(isReviewMark(v)).toBe(true)
     for (const v of ['Fair', 'skip', 'FAIR', ' fair', -1, 2, 0.25, '1', '0', NaN, null, undefined, true, {}, []]) expect(isReviewMark(v)).toBe(false)
+  })
+})
+
+// ---------- Batch 3 (SPEC §11.3) ----------
+
+describe('decodeFriendship', () => {
+  const good = { users: ['ana', 'ben'], by: 'ana', state: 'asked', at: ts(T) }
+
+  it('a pair, as either side sees it', () => {
+    expect(decodeFriendship('ana_ben', good, 'ana', toMs)).toEqual({ id: 'ana_ben', uid: 'ben', by: 'ana', state: 'asked', at: T })
+    expect(decodeFriendship('ana_ben', good, 'ben', toMs)).toEqual({ id: 'ana_ben', uid: 'ana', by: 'ana', state: 'asked', at: T })
+    for (const state of ['declined', 'withdrawn', 'friends']) expect(decodeFriendship('ana_ben', { ...good, state }, 'ben', toMs)?.state).toBe(state)
+  })
+  it('null for a pair that isn’t mine, an unsorted or malformed id, or users naming others', () => {
+    expect(decodeFriendship('ana_ben', good, 'cleo', toMs)).toBeNull()
+    expect(decodeFriendship('ben_ana', { ...good, users: ['ben', 'ana'] }, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana', good, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ana', good, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ben_cleo', good, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ben', { ...good, users: ['ana', 'cleo'] }, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ben', { ...good, users: 'ana_ben' }, 'ana', toMs)).toBeNull()
+  })
+  it('null for a bad state, asker or time', () => {
+    expect(decodeFriendship('ana_ben', { ...good, state: 'blocked' }, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ben', { ...good, by: 'cleo' }, 'ana', toMs)).toBeNull()
+    expect(decodeFriendship('ana_ben', { ...good, at: null }, 'ana', toMs)).toBeNull()
+    for (const v of JUNK) {
+      expect(() => decodeFriendship('ana_ben', v, 'ana', toMs)).not.toThrow()
+      expect(decodeFriendship('ana_ben', v, 'ana', toMs)).toBeNull()
+      expect(decodeFriendship('ana_ben', { ...good, by: v }, 'ana', toMs)).toBeNull()
+      expect(decodeFriendship('ana_ben', { ...good, state: v }, 'ana', toMs)).toBeNull()
+      expect(() => decodeFriendship(v as string, good, 'ana', toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeShowcase', () => {
+  const good = {
+    show: { stats: false, achieved: true, goals: true, earnings: true },
+    achieved: [{ name: 'Sony FX3', at: ts(T) }],
+    goals: [{ name: 'Bike', pct: 64 }],
+    earnings: { monthId: '2026-09', amount: 420.5, currency: 'USD' },
+    updatedAt: ts(T + 1),
+  }
+
+  it('every switch and item', () => {
+    expect(decodeShowcase('ana', good, toMs)).toEqual({
+      uid: 'ana',
+      show: { stats: false, achieved: true, goals: true, earnings: true },
+      achieved: [{ name: 'Sony FX3', at: T }],
+      goals: [{ name: 'Bike', pct: 64 }],
+      earnings: { monthId: '2026-09', amount: 420.5, currency: 'USD' },
+      updatedAt: T + 1,
+    })
+  })
+  it('no doc: null (DEFAULT_SHOW, no items)', () => {
+    expect(decodeShowcase('ana', undefined, toMs)).toBeNull()
+    expect(decodeShowcase('ana', null, toMs)).toBeNull()
+  })
+  it('an item shows only while its switch is on', () => {
+    const off = decodeShowcase('ana', { ...good, show: { stats: true, achieved: false, goals: false, earnings: false } }, toMs)
+    expect(off).toEqual({ uid: 'ana', show: { stats: true, achieved: false, goals: false, earnings: false }, updatedAt: T + 1 })
+  })
+  it('a switch that isn’t a boolean reads as its default (stats on, money off)', () => {
+    const odd = decodeShowcase('ana', { ...good, show: { stats: 'no', achieved: 1, goals: null } }, toMs)
+    expect(odd?.show).toEqual({ stats: true, achieved: false, goals: false, earnings: false })
+    expect(odd && 'achieved' in odd).toBe(false)
+    expect(decodeShowcase('ana', { updatedAt: ts(T) }, toMs)?.show).toEqual({ stats: true, achieved: false, goals: false, earnings: false })
+  })
+  it('malformed items are dropped: a bad name, pct or time; lists cut to their caps', () => {
+    const d = decodeShowcase(
+      'ana',
+      {
+        ...good,
+        achieved: [
+          { name: 'Ok', at: ts(T) },
+          { name: '', at: ts(T) },
+          { name: '   ', at: ts(T) },
+          { name: 'x'.repeat(61), at: ts(T) },
+          { name: 'No time', at: null },
+          { name: 7, at: ts(T) },
+          'Sony',
+          null,
+          ...Array.from({ length: 14 }, (_, i) => ({ name: `G${i}`, at: ts(T - i) })),
+        ],
+        goals: [
+          { name: 'Bike', pct: 101 },
+          { name: 'Lens', pct: 1.5 },
+          { name: 'Camera', pct: -1 },
+          { name: 'Trip', pct: '50' },
+          { name: 'x'.repeat(60), pct: 100 },
+          ...Array.from({ length: 9 }, (_, i) => ({ name: `Later ${i}`, pct: i })),
+        ],
+      },
+      toMs,
+    )
+    expect(d?.achieved?.[0]).toEqual({ name: 'Ok', at: T })
+    expect(d?.achieved).toHaveLength(12)
+    expect(d?.achieved?.[1]).toEqual({ name: 'G0', at: T })
+    expect(d?.goals?.[0]).toEqual({ name: 'x'.repeat(60), pct: 100 })
+    expect(d?.goals).toHaveLength(8)
+  })
+  it('malformed earnings are dropped: a lowercase currency, a bad month, an amount out of range', () => {
+    for (const earnings of [
+      { ...good.earnings, currency: 'usd' },
+      { ...good.earnings, currency: 'US' },
+      { ...good.earnings, monthId: '2026-13' },
+      { ...good.earnings, monthId: '2026-09-01' },
+      { ...good.earnings, amount: -1 },
+      { ...good.earnings, amount: 1e9 + 1 },
+      { ...good.earnings, amount: Number.NaN },
+      { ...good.earnings, amount: '5' },
+      'lots',
+    ]) {
+      const d = decodeShowcase('ana', { ...good, earnings }, toMs)
+      expect(d && 'earnings' in d).toBe(false)
+    }
+    expect(decodeShowcase('ana', { ...good, earnings: { ...good.earnings, amount: 0 } }, toMs)?.earnings?.amount).toBe(0)
+  })
+  it('never throws', () => {
+    for (const v of JUNK) {
+      expect(() => decodeShowcase('ana', v, toMs)).not.toThrow()
+      expect(() => decodeShowcase('ana', { show: v, achieved: v, goals: v, earnings: v, updatedAt: v }, toMs)).not.toThrow()
+      expect(() => decodeShowcase('ana', { ...good, achieved: [v], goals: [v] }, toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeRing', () => {
+  it('a ring', () => {
+    expect(decodeRing('ana', { monthId: '2026-10', score: 92.5, final: false, spaces: 2, updatedAt: ts(T) }, toMs)).toEqual({
+      uid: 'ana',
+      monthId: '2026-10',
+      score: 92.5,
+      final: false,
+      spaces: 2,
+      updatedAt: T,
+    })
+  })
+  it('no doc: null; a bad month: the empty ring', () => {
+    expect(decodeRing('ana', undefined, toMs)).toBeNull()
+    const empty = { uid: 'ana', monthId: null, score: null, final: false, spaces: 0, updatedAt: T }
+    expect(decodeRing('ana', { monthId: '2026-13', score: 92, final: true, spaces: 1, updatedAt: ts(T) }, toMs)).toEqual(empty)
+    expect(decodeRing('ana', { monthId: null, score: null, final: false, spaces: 0, updatedAt: ts(T) }, toMs)).toEqual(empty)
+  })
+  it('a score is a finite number kept within 0–100; spaces an int (0 without a score)', () => {
+    const ring = (patch: object) => decodeRing('ana', { monthId: '2026-10', score: 80, final: true, spaces: 1, updatedAt: ts(T), ...patch }, toMs)
+    expect(ring({ score: 120 })?.score).toBe(100)
+    expect(ring({ score: -3 })?.score).toBe(0)
+    expect(ring({ score: '80' })).toMatchObject({ score: null, spaces: 0 })
+    expect(ring({ score: Number.NaN })?.score).toBeNull()
+    expect(ring({ spaces: 1.5 })?.spaces).toBe(1)
+    expect(ring({ spaces: -1 })?.spaces).toBe(1)
+    expect(ring({ final: 'yes' })?.final).toBe(false)
+  })
+  it('never throws', () => {
+    for (const v of JUNK) {
+      expect(() => decodeRing('ana', v, toMs)).not.toThrow()
+      expect(() => decodeRing('ana', { monthId: v, score: v, final: v, spaces: v, updatedAt: v }, toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeStats', () => {
+  const good = { monthsCleared: 3, currentStreak: 2, bestStreak: 3, weeksPlayed: 14, finishedMonths: 4, since: '2026-10', updatedAt: ts(T) }
+  it('the facts', () => {
+    expect(decodeStats('ana', good, toMs)).toEqual({ uid: 'ana', monthsCleared: 3, currentStreak: 2, bestStreak: 3, weeksPlayed: 14, finishedMonths: 4, since: '2026-10', updatedAt: T })
+    expect(decodeStats('ana', undefined, toMs)).toBeNull()
+  })
+  it('a malformed count reads 0, a bad since null', () => {
+    const d = decodeStats('ana', { ...good, monthsCleared: -1, currentStreak: 1.5, bestStreak: '3', weeksPlayed: Number.NaN, since: 'October' }, toMs)
+    expect(d).toMatchObject({ monthsCleared: 0, currentStreak: 0, bestStreak: 0, weeksPlayed: 0, finishedMonths: 4, since: null })
+    for (const v of JUNK) expect(() => decodeStats('ana', { ...good, since: v, finishedMonths: v, updatedAt: v }, toMs)).not.toThrow()
+  })
+})
+
+describe('decodeScores', () => {
+  it('the months, with each space’s entry; weeks deduplicated and sorted', () => {
+    const d = decodeScores(
+      { months: { '2026-10': { s1: { score: 95, weeks: ['2026-10-12', '2026-10-05', '2026-10-12'], final: true }, s2: { score: null, weeks: [], final: false } } }, updatedAt: ts(T) },
+      toMs,
+    )
+    expect(d).toEqual({ '2026-10': { s1: { score: 95, weeks: ['2026-10-05', '2026-10-12'], final: true }, s2: { score: null, weeks: [], final: false } } })
+  })
+  it('malformed months, entries and weeks are dropped', () => {
+    const d = decodeScores(
+      {
+        months: {
+          '2026-13': { s1: { score: 95, weeks: [], final: true } },
+          '2026-11': { s1: 'x', s2: { score: 50 }, s3: { score: 'x', weeks: ['2026-11-02', 'soon', 4], final: 'yes' } },
+          '2026-12': {},
+          '2026-09': [],
+        },
+      },
+      toMs,
+    )
+    expect(d).toEqual({ '2026-11': { s3: { score: null, weeks: ['2026-11-02'], final: false } } })
+  })
+  it('nothing usable: no months; never throws', () => {
+    for (const v of JUNK) {
+      expect(decodeScores(v, toMs)).toEqual({})
+      expect(decodeScores({ months: v }, toMs)).toEqual({})
+      expect(() => decodeScores({ months: { '2026-10': v } }, toMs)).not.toThrow()
+      expect(() => decodeScores({ months: { '2026-10': { s1: v } } }, toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeSharedGoal', () => {
+  const good = {
+    name: 'Run 100 km',
+    unit: 'km',
+    target100: 10000,
+    endsOn: '2026-12-31',
+    timezone: 'Europe/Berlin',
+    utcOffsetMin: 120,
+    zones: { ana: 'Europe/Berlin', ben: 'Asia/Tokyo' },
+    ownerId: 'ana',
+    createdBy: 'ana',
+    memberIds: ['ana', 'ben'],
+    invited: ['cleo'],
+    joinedAt: { ana: ts(T - 2), ben: ts(T - 1) },
+    leftAt: { dan: ts(T - 3) },
+    totals100: { ana: 3010, ben: 2500, dan: 1250 },
+    total100: 6760,
+    last: { by: 'ben', weekId: '2026-10-12', at: ts(T) },
+    reachedAt: null,
+    archivedAt: null,
+    createdAt: ts(T - 5),
+  }
+  const id = 'Xy12AbCdEfGhIjKlMn34'
+
+  it('in real units', () => {
+    expect(decodeSharedGoal(id, good, toMs)).toEqual({
+      id,
+      name: 'Run 100 km',
+      unit: 'km',
+      target: 100,
+      endsOn: '2026-12-31',
+      timezone: 'Europe/Berlin',
+      utcOffsetMin: 120,
+      zones: { ana: 'Europe/Berlin', ben: 'Asia/Tokyo' },
+      ownerId: 'ana',
+      createdBy: 'ana',
+      memberIds: ['ana', 'ben'],
+      invited: ['cleo'],
+      joinedAt: { ana: T - 2, ben: T - 1 },
+      leftAt: { dan: T - 3 },
+      totals: { ana: 30.1, ben: 25, dan: 12.5 },
+      total: 67.6,
+      last: { by: 'ben', weekId: '2026-10-12', at: T },
+      reachedAt: null,
+      archivedAt: null,
+      createdAt: T - 5,
+    })
+  })
+  it('reached and finished times', () => {
+    const d = decodeSharedGoal(id, { ...good, reachedAt: ts(T + 1), archivedAt: ts(T + 2) }, toMs)
+    expect([d?.reachedAt, d?.archivedAt]).toEqual([T + 1, T + 2])
+  })
+  it('null for an id that fails isGoalId', () => {
+    for (const bad of ['', 'a_b', 'a#b', 'a'.repeat(41), 'g/1']) expect(decodeSharedGoal(bad, good, toMs)).toBeNull()
+  })
+  it('null for a bad target100, name, unit, owner, members or offset', () => {
+    for (const target100 of [0, -100, 12.5, 1e11 + 1, '10000', null, Number.NaN]) expect(decodeSharedGoal(id, { ...good, target100 }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, target100: 1e11 }, toMs)?.target).toBe(1e9)
+    expect(decodeSharedGoal(id, { ...good, name: '  ' }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, unit: 5 }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, ownerId: 'a_b' }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, memberIds: 'ana' }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, utcOffsetMin: 900 }, toMs)).toBeNull()
+    expect(decodeSharedGoal(id, { ...good, utcOffsetMin: 60.5 }, toMs)).toBeNull()
+  })
+  it('a bad zone entry is dropped; a bad goal zone falls back to the creation offset (the rules’ anchor)', () => {
+    const d = decodeSharedGoal(id, { ...good, timezone: 'Mars/Olympus', utcOffsetMin: 330, zones: { ana: 'Nowhere/City', ben: 'Asia/Tokyo', 'c_d': 'UTC', eve: 7 } }, toMs)
+    expect(d?.zones).toEqual({ ben: 'Asia/Tokyo' })
+    expect(d?.timezone).toBe('UTC+5:30')
+    // The fallback is a zone the week helpers accept.
+    expect(goalWeek(d!, Date.parse('2026-10-25T19:00:00Z'))).toBe('2026-10-26')
+    expect(goalWeek(d!, Date.parse('2026-10-25T18:29:59Z'))).toBe('2026-10-19')
+    expect(goalEndsAt(d!)).toBe(Date.parse('2026-12-31T18:30:00Z'))
+    expect(decodeSharedGoal(id, { ...good, timezone: 'x', utcOffsetMin: -30 }, toMs)?.timezone).toBe('UTC-0:30')
+    expect(decodeSharedGoal(id, { ...good, timezone: null, utcOffsetMin: 0 }, toMs)?.timezone).toBe('UTC')
+    expect(goalWeek(decodeSharedGoal(id, { ...good, timezone: 'x', utcOffsetMin: -30 }, toMs)!, Date.parse('2026-10-26T00:29:59Z'))).toBe('2026-10-19')
+  })
+  it('malformed parts, times and lists are left out', () => {
+    const d = decodeSharedGoal(
+      id,
+      {
+        ...good,
+        memberIds: ['ana', 'ben', 'ana', 'x_y', 7],
+        invited: ['cleo', 'ben', '', 'cleo'],
+        joinedAt: { ana: ts(T - 2), ben: 'yesterday', 'x_y': ts(T) },
+        totals100: { ana: 3010, ben: 25.5, cleo: '3', 'x_y': 5 },
+        total100: 3010,
+        endsOn: '2026-02-30',
+        last: { by: 'ben', weekId: 'last week', at: ts(T) },
+        reachedAt: 'soon',
+        createdBy: 7,
+      },
+      toMs,
+    )
+    expect(d).toMatchObject({
+      memberIds: ['ana', 'ben'],
+      invited: ['cleo'],
+      joinedAt: { ana: T - 2 },
+      totals: { ana: 30.1 },
+      total: 30.1,
+      endsOn: null,
+      last: null,
+      reachedAt: null,
+      createdBy: 'ana',
+    })
+  })
+  it('a malformed total falls back to the sum of the parts', () => {
+    expect(decodeSharedGoal(id, { ...good, total100: 67.6 }, toMs)?.total).toBe(67.6)
+    expect(decodeSharedGoal(id, { ...good, total100: null }, toMs)?.total).toBe(67.6)
+  })
+  it('never throws', () => {
+    for (const v of JUNK) {
+      expect(() => decodeSharedGoal(id, v, toMs)).not.toThrow()
+      const all = Object.fromEntries(Object.keys(good).map((k) => [k, v]))
+      expect(() => decodeSharedGoal(id, all, toMs)).not.toThrow()
+      expect(() => decodeSharedGoal(id, { ...good, zones: { ana: v }, joinedAt: { ana: v }, totals100: { ana: v }, last: v }, toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeCheckin', () => {
+  const good = { uid: 'ben', weekId: '2026-10-19', amount100: 1250, note: 'Long run', at: ts(T) }
+  it('in real units', () => {
+    expect(decodeCheckin('2026-10-19_ben', good, toMs)).toEqual({ id: '2026-10-19_ben', uid: 'ben', weekId: '2026-10-19', amount: 12.5, note: 'Long run', at: T })
+    expect(decodeCheckin('2026-10-19_ben', { ...good, amount100: 0, note: 5 }, toMs)).toMatchObject({ amount: 0, note: '' })
+  })
+  it('null unless the id matches its week and uid and the amount is an int 0…10¹¹', () => {
+    expect(decodeCheckin('2026-10-12_ben', good, toMs)).toBeNull()
+    expect(decodeCheckin('2026-10-19_ana', good, toMs)).toBeNull()
+    expect(decodeCheckin('2026-10-19_ben', { ...good, uid: 'b_en' }, toMs)).toBeNull()
+    for (const amount100 of [-1, 12.5, 1e11 + 1, '1250', null]) expect(decodeCheckin('2026-10-19_ben', { ...good, amount100 }, toMs)).toBeNull()
+    for (const v of JUNK) {
+      expect(decodeCheckin('2026-10-19_ben', v, toMs)).toBeNull()
+      expect(() => decodeCheckin('2026-10-19_ben', { ...good, note: v, at: v }, toMs)).not.toThrow()
+    }
   })
 })

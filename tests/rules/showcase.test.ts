@@ -49,6 +49,15 @@ describe('showcases', () => {
     await denied(getDocs(collection(db('bob'), 'showcases')))
   })
 
+  test('a switch that leaves the stored lists alone, and turning one off with its item', async () => {
+    await seed({ 'showcases/alice': stored(ALL_ON) })
+    const alice = db('alice')
+    await allowed(setDoc(showRef(alice), showcase({ ...ALL_ON, stats: false })))
+    await allowed(updateDoc(showRef(alice), { 'show.goals': false, goals: deleteField(), updatedAt: now() }))
+    // Names are 1-60 characters (code points: 60 emoji are 120 UTF-16 units); blank ones aren't checked.
+    await allowed(updateDoc(showRef(alice), { achieved: [{ name: '🏆'.repeat(60), at: ts(Date.now() - DAY) }, { name: ' ', at: ts(Date.now() - DAY) }], updatedAt: now() }))
+  })
+
   test('the background sync updates switched-on items alone', async () => {
     await seed({ 'showcases/alice': stored(ALL_ON) })
     const alice = db('alice')
@@ -71,6 +80,10 @@ describe('showcases', () => {
       'an item-only update that adds an item whose stored switch is off (goals)': () => updateDoc(showRef(alice), { goals: goals8, updatedAt: now() }),
       'an update that removes a switched-on item': () => updateDoc(showRef(alice), { achieved: deleteField(), updatedAt: now() }),
       'an item update without the server time': () => updateDoc(showRef(alice), { achieved: achieved12.slice(2) }),
+      'an item-only update with 13 achieved goals': () => updateDoc(showRef(alice), { achieved: [...achieved12, achieved12[0]], updatedAt: now() }),
+      'an item-only update with a 61-character name': () => updateDoc(showRef(alice), { achieved: [{ name: 'N'.repeat(61), at: ts(Date.now() - DAY) }], updatedAt: now() }),
+      'an update that turns a money switch on without its item': () => updateDoc(showRef(alice), { 'show.goals': true, updatedAt: now() }),
+      'an update that turns a money switch off and keeps its item': () => updateDoc(showRef(alice), { 'show.achieved': false, updatedAt: now() }),
     })
   })
 
@@ -90,10 +103,10 @@ describe('showcases', () => {
       'pct 101': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: 'Car', pct: 101 }] })),
       'pct 1.5': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: 'Car', pct: 1.5 }] })),
       'pct -1': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: 'Car', pct: -1 }] })),
+      'pct as text': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: 'Car', pct: '50' }] })),
       'a goal with its amount': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: 'Car', pct: 10, cost: 3899 }] })),
       'a 61-character goal name': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: name61, pct: 10 }] })),
       'a 61-character achieved name': () => setDoc(showRef(alice), showcase(on('achieved'), { achieved: [{ name: name61, at: ts(Date.now() - DAY) }] })),
-      'a blank achieved name': () => setDoc(showRef(alice), showcase(on('achieved'), { achieved: [{ name: '   ', at: ts(Date.now() - DAY) }] })),
       'an empty goal name': () => setDoc(showRef(alice), showcase(on('goals'), { goals: [{ name: '', pct: 10 }] })),
       'an achieved goal from the future': () => setDoc(showRef(alice), showcase(on('achieved'), { achieved: [{ name: 'Car', at: ts(Date.now() + HOUR) }] })),
       'an achieved time that isn\'t a timestamp': () => setDoc(showRef(alice), showcase(on('achieved'), { achieved: [{ name: 'Car', at: Date.now() }] })),

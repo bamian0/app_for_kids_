@@ -33,6 +33,7 @@ import {
   progressText,
   toHundredths,
   waitingFor,
+  weekProgress,
   type GoalProblem,
 } from './shared.ts'
 import { addWeeks, momentAt, utcOffsetMinutes } from './time.ts'
@@ -196,7 +197,7 @@ describe('goalProblem', () => {
     expect(goalProblem({ ...ok, target: 0.01 })).toBeNull()
   })
   it('first problem first', () => {
-    const cases: [Partial<typeof ok> & { target?: number | null }, GoalProblem][] = [
+    const cases: [Partial<Omit<typeof ok, 'target'>> & { target?: number | null }, GoalProblem][] = [
       [{ name: '   ' }, 'name'],
       [{ name: 'x'.repeat(61) }, 'name-long'],
       [{ unit: '' }, 'unit'],
@@ -319,7 +320,8 @@ describe('checkinClosesAt: exactly the rules’ upper bound', () => {
           if (!(closes >= trueEnd && closes <= trueEnd + 2 * H)) bad.push(`${off} ${weekId} closes ${closes - trueEnd}`)
           weeks += 1
         }
-        expect(weeks).toBe(103)
+        // 2026-10-05 … 2028-09-25: 104 Mondays.
+        expect(weeks).toBe(104)
       }
       expect(bad).toEqual([])
     })
@@ -424,6 +426,46 @@ describe('waitingFor', () => {
     expect(waitingFor(goal(), list, '2026-10-19')).toEqual(['ben', 'cleo'])
     expect(waitingFor(goal(), list, '2026-10-12')).toEqual(['ana', 'cleo'])
     expect(waitingFor(goal(), [], '2026-10-19')).toEqual(['ana', 'ben', 'cleo'])
+  })
+})
+
+describe('weekProgress: the week’s check-ins and its total', () => {
+  it('a row per current member in member order, the week’s total exact, how many checked in', () => {
+    const list = [
+      checkin('ben', '2026-10-19', 0.1, 'Short one'),
+      checkin('ana', '2026-10-19', 0.2),
+      checkin('cleo', '2026-10-12', 9),
+      checkin('gone', '2026-10-19', 50),
+    ]
+    const w = weekProgress(goal(), list, '2026-10-19')
+    expect(w.rows.map((r) => [r.uid, r.checkin?.amount ?? null])).toEqual([
+      ['ana', 0.2],
+      ['ben', 0.1],
+      ['cleo', null],
+    ])
+    expect(w.rows[1].checkin?.note).toBe('Short one')
+    expect(w.total).toBe(0.3)
+    expect(w.done).toBe(2)
+    expect(w.weekId).toBe('2026-10-19')
+  })
+  it('nobody yet: every row open, total 0', () => {
+    expect(weekProgress(goal(), [], '2026-10-19')).toEqual({
+      weekId: '2026-10-19',
+      rows: [
+        { uid: 'ana', checkin: null },
+        { uid: 'ben', checkin: null },
+        { uid: 'cleo', checkin: null },
+      ],
+      total: 0,
+      done: 0,
+    })
+  })
+  it('the week’s totals add up to the goal’s running total over the weeks', () => {
+    const weeks = ['2026-10-05', '2026-10-12', '2026-10-19']
+    const list = [checkin('ana', weeks[0], 12.5), checkin('ben', weeks[0], 7.25), checkin('ana', weeks[1], 0.1), checkin('cleo', weeks[2], 30.15)]
+    const sum100 = weeks.reduce((s, w) => s + toHundredths(weekProgress(goal(), list, w).total), 0)
+    expect(sum100).toBe(5000)
+    expect(goalProgress(goal({ total: sum100 / 100 })).left).toBe(50)
   })
 })
 

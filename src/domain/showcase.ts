@@ -54,14 +54,22 @@ export function showOf(showcase: Showcase | null): ShowSwitches {
   return { stats: show.stats, achieved: show.achieved, goals: show.goals, earnings: show.earnings }
 }
 
-/** A name on one line, trimmed, at most SHOWCASE_NAME_MAX UTF-16 units without splitting a surrogate pair. */
+/** Whitespace, control and invisible format characters: a name made only of these is blank (the rules' text()
+ *  trims before checking it isn't empty, so a write holding one would be refused, and the whole showcase with it). */
+const INVISIBLE = /[\s\u0000-\u001f\u007f-\u009f\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]/g
+
+/** A name on one line, trimmed, at most SHOWCASE_NAME_MAX UTF-16 units without splitting a surrogate pair; '' when
+ *  nothing visible is left. */
 function itemName(text: string): string {
-  let name = text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()
+  let name = text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')
+    .trim()
   if (name.length > SHOWCASE_NAME_MAX) {
     const cut = /[\uD800-\uDBFF]/.test(name[SHOWCASE_NAME_MAX - 1]) ? SHOWCASE_NAME_MAX - 1 : SHOWCASE_NAME_MAX
     name = name.slice(0, cut).trimEnd()
   }
-  return name
+  return name.replace(INVISIBLE, '') === '' ? '' : name
 }
 
 /** The month before the month of this week's Friday on `tz`'s clock. */
@@ -179,10 +187,17 @@ function normalise(score: number): number {
   return Math.round(score * 1e9) / 1e9
 }
 
+/** A month's space entries that are entries at all (the job decodes them; this only guards against a null). */
+function entriesOf(months: ScoreMonths, monthId: MonthId): ScoreEntry[] {
+  const month = months[monthId]
+  if (month === null || typeof month !== 'object') return []
+  return Object.values(month).filter((e): e is ScoreEntry => e !== null && typeof e === 'object')
+}
+
 /** Valid month ids with at least one entry, ascending. */
 function monthsWithEntries(months: ScoreMonths): MonthId[] {
   return Object.keys(months)
-    .filter((m) => MONTH_ID.test(m) && months[m] !== null && typeof months[m] === 'object' && Object.keys(months[m]).length > 0)
+    .filter((m) => MONTH_ID.test(m) && entriesOf(months, m).length > 0)
     .sort()
 }
 
@@ -195,7 +210,7 @@ export function ringOf(months: ScoreMonths): RingFacts {
   const ids = monthsWithEntries(months)
   if (ids.length === 0) return { monthId: null, score: null, final: false, spaces: 0 }
   const monthId = ids[ids.length - 1]
-  const entries = Object.values(months[monthId])
+  const entries = entriesOf(months, monthId)
   const scores = entries.map(scoreOf).filter((s): s is number => s !== null)
   const score = scores.length > 0 ? normalise(scores.reduce((a, b) => a + b, 0) / scores.length) : null
   return { monthId, score, final: entries.every((e) => e.final === true), spaces: scores.length }
@@ -216,7 +231,7 @@ export function statsOf(months: ScoreMonths): StatsFacts {
   let bestStreak = 0
   let finishedMonths = 0
   for (const id of ids) {
-    const entries = Object.values(months[id])
+    const entries = entriesOf(months, id)
     for (const e of entries) for (const w of Array.isArray(e.weeks) ? e.weeks : []) if (typeof w === 'string') weeks.add(w)
     if (!entries.every((e) => e.final === true)) continue
     const scores = entries.map(scoreOf).filter((s): s is number => s !== null)

@@ -260,6 +260,28 @@ export function waitingFor(goal: SharedGoal, checkins: Checkin[], weekId: WeekId
   return goal.memberIds.filter((uid) => !done.has(uid))
 }
 
+export interface WeekProgress {
+  weekId: WeekId
+  /** One row per current member, in `memberIds` order: their check-in for the week, or null ("Not yet"). */
+  rows: { uid: UID; checkin: Checkin | null }[]
+  /** What the current members checked in that week, summed exactly (in hundredths). */
+  total: number
+  /** How many current members have checked in. */
+  done: number
+}
+
+/**
+ * The "This week" section: each current member's check-in for `weekId` (a former member's leftover, or another
+ * week's, is ignored) and the week's total. The goal's running total (goalProgress) already includes it.
+ */
+export function weekProgress(goal: Pick<SharedGoal, 'memberIds'>, checkins: Checkin[], weekId: WeekId): WeekProgress {
+  const byUid = new Map<UID, Checkin>()
+  for (const c of checkins) if (c.weekId === weekId && !byUid.has(c.uid)) byUid.set(c.uid, c)
+  const rows = goal.memberIds.map((uid) => ({ uid, checkin: byUid.get(uid) ?? null }))
+  const total100 = rows.reduce((sum, r) => sum + (r.checkin ? toHundredths(r.checkin.amount) || 0 : 0), 0)
+  return { weekId, rows, total: fromHundredths(total100), done: rows.filter((r) => r.checkin !== null).length }
+}
+
 /**
  * The goal's side of a check-in (or an edit of one), on the stored ints, exactly as the rules' `checksIn` checks it:
  * delta = new100 − old100 (old100: that week's earlier check-in, 0 for none); `totals100[uid]` and `total100` move by

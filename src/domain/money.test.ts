@@ -17,6 +17,7 @@ import {
   nextGoalOrder,
   parseAmount,
   pendingIn,
+  readAmount,
   roundMoney,
   topEarnings,
   totalEarned,
@@ -556,5 +557,24 @@ describe('moneyActivity', () => {
   it('has no balance entry until one is set', () => {
     expect(moneyActivity(null, [], [])).toEqual([])
     expect(moneyActivity(state(null, null), [], [move('m', 'add', 5, NOW)]).map((a) => a.kind)).toEqual(['add'])
+  })
+})
+
+describe('readAmount (batch 3: goal amounts)', () => {
+  it('reads exactly as parseAmount, before its rounding and cap, with the decimals typed', () => {
+    expect(readAmount('1,250.5')).toEqual({ value: 1250.5, decimals: 1 })
+    expect(readAmount('12,5')).toEqual({ value: 12.5, decimals: 1 })
+    expect(readAmount('0.125')).toEqual({ value: 0.125, decimals: 3 })
+    expect(readAmount('1,500')).toEqual({ value: 1500, decimals: 0 })
+    expect(readAmount('$4,200.50')).toEqual({ value: 4200.5, decimals: 2 })
+    expect(readAmount('2000000000')).toEqual({ value: 2e9, decimals: 0 })
+    for (const bad of ['', 'abc', '1e3', '-5', '1.2.3']) expect(readAmount(bad)).toBeNull()
+  })
+  it('agrees with parseAmount wherever parseAmount reads a value', () => {
+    for (const text of ['500', '1.234,50', "12'345.50", '.5', '12.', '1,23,456.50', '£0.99', '1 234,56']) {
+      const read = readAmount(text)
+      expect(read).not.toBeNull()
+      expect(roundMoney(read!.value)).toBe(parseAmount(text))
+    }
   })
 })

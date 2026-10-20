@@ -5,8 +5,11 @@ import {
   MAX_SUBTASKS,
   colorForUid,
   formatInviteCode,
+  hasCodeParam,
+  isUid,
   newInviteCode,
   newTaskId,
+  normalizeCodeParam,
   normalizeInviteCode,
   reviewDocId,
   settlementDocId,
@@ -129,5 +132,39 @@ describe('colorForUid', () => {
       expect(contrast(color, '#F2F2F7')).toBeGreaterThanOrEqual(3)
       expect(contrast(color, '#1C1C1E')).toBeGreaterThanOrEqual(3)
     }
+  })
+})
+
+describe('normalizeCodeParam and hasCodeParam (batch 3: friend links)', () => {
+  it('reads the code from its own parameter, or a raw code', () => {
+    expect(normalizeCodeParam('https://x.io/?friend=abcd-2345', 'friend')).toBe('ABCD2345')
+    expect(normalizeCodeParam('Add me: https://x.io/?a=1&friend=WXYZ7899#top', 'friend')).toBe('WXYZ7899')
+    expect(normalizeCodeParam('ab cd 2345', 'friend')).toBe('ABCD2345')
+    expect(normalizeCodeParam('https://x.io/?befriend=ABCD2345', 'friend')).toBeNull()
+    expect(normalizeCodeParam('https://x.io/?friend=', 'friend')).toBeNull()
+  })
+  it('a parameter name is letters only (never a pattern)', () => {
+    expect(normalizeCodeParam('?a.b=ABCD2345', 'a.b')).toBeNull()
+    expect(normalizeCodeParam('ABCD2345', '.*')).toBeNull()
+    expect(hasCodeParam('?x=1', '.*')).toBe(false)
+  })
+  it('hasCodeParam: the text carries that parameter', () => {
+    expect(hasCodeParam('https://x.io/?join=ABCD2345', 'join')).toBe(true)
+    expect(hasCodeParam('Join my space ?JOIN=abcd', 'join')).toBe(true)
+    expect(hasCodeParam('https://x.io/?rejoin=ABCD2345', 'join')).toBe(false)
+    expect(hasCodeParam('ABCD2345', 'join')).toBe(false)
+  })
+  it('normalizeInviteCode is unchanged by the refactor', () => {
+    expect(normalizeInviteCode('https://x.io/?friend=ABCD2345')).toBe(null)
+    expect(normalizeInviteCode('https://x.io/?join=ABCD2345&friend=WXYZ7899')).toBe('ABCD2345')
+  })
+})
+
+describe('isUid', () => {
+  it('1–128 letters and digits, as the rules check it', () => {
+    expect(isUid('Xy12AbCdEfGhIjKlMn34Op56Qr78')).toBe(true)
+    expect(isUid('a')).toBe(true)
+    expect(isUid('a'.repeat(128))).toBe(true)
+    for (const bad of ['', 'a'.repeat(129), 'a_b', 'a-b', 'a b', 'é', 'a/b', null, undefined, 7, {}]) expect(isUid(bad)).toBe(false)
   })
 })

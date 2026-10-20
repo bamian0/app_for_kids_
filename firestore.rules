@@ -1254,8 +1254,8 @@ service cloud.firestore {
     // 1 read.
     function areFriends(a, b) { return get(friendPath(a, b)).data.state == 'friends'; }
     function isUid(u) { return u is string && u.matches('^[A-Za-z0-9]{1,128}$'); }
-    // An IANA zone name, checked as a space's timezone.
-    function isZone(z) { return str(z, 1, 64) && z.matches('^[A-Za-z0-9_+/-]+$'); }
+    // An IANA zone name, checked as a space's timezone is (1-64 of these characters), in one regex.
+    function isZone(z) { return z.matches('^[A-Za-z0-9_+/-]{1,64}$'); }
     // 00:00 of a 'YYYY-MM-DD' day on a zone's wall clock, from the offset stored with it (±1h of DST).
     // timestamp.date() errors (= deny) on impossible dates.
     function dayAnchor(id, off) {
@@ -1344,9 +1344,13 @@ service cloud.firestore {
     // ---------- showcases (SPEC §11.3, §11.5) ----------
 
     // Items are checked by size and by reading every key (no room for others), unrolled by index
-    // (rules have no loops). Names are 1-60 characters, not blank.
+    // (rules have no loops), as cheaply as the limit needs: 20 items checked the obvious way (text(),
+    // `is` before each comparison) cost over 1000 expressions. A name is 1-60 characters (a regex
+    // counts code points: the app's names, cut to 60 UTF-16 units, always fit); `at` is a time up to
+    // now (comparing anything else errors, which denies); `pct` is an int whose digits read 0-100
+    // (one regex, cheaper than two comparisons).
     function validAchievedItem(a) {
-      return a.size() == 2 && text(a.name, 60) && a.at is timestamp && a.at <= request.time;
+      return a.size() == 2 && a.name.matches('(?s)^.{1,60}$') && a.at <= request.time;
     }
     function validAchieved(l) {
       let n = l.size();
@@ -1358,7 +1362,7 @@ service cloud.firestore {
     }
     // A goal's name and whole percent funded: never its amount.
     function validShownGoal(g) {
-      return g.size() == 2 && text(g.name, 60) && g.pct is int && g.pct >= 0 && g.pct <= 100;
+      return g.size() == 2 && g.name.matches('(?s)^.{1,60}$') && g.pct is int && string(g.pct).matches('^([0-9]|[1-9][0-9]|100)$');
     }
     function validShownGoals(l) {
       let n = l.size();
@@ -1375,25 +1379,26 @@ service cloud.firestore {
     }
     // The whole doc after the write: an update of item fields alone is checked against the stored
     // switches, so a stale device's item for a switch now off is refused. Only copies of what is
-    // switched on, and every switched-on item present.
-    function validShowcase(d) {
-      return d.keys().hasAll(['show', 'updatedAt'])
-        && d.keys().hasOnly(['show', 'achieved', 'goals', 'earnings', 'updatedAt'])
-        && d.show.size() == 4
-        && d.show.stats is bool && d.show.achieved is bool && d.show.goals is bool && d.show.earnings is bool
+    // switched on, and every switched-on item present. ('x' in d) == d.show.x also requires a bool.
+    // Only the lists this write changes (`ch`) are checked item by item: the others were checked when
+    // they were written, so a switch that leaves the lists as stored stays cheap.
+    function validShowcase(d, ch) {
+      return d.keys().hasOnly(['show', 'achieved', 'goals', 'earnings', 'updatedAt'])
+        && d.updatedAt == request.time
+        && d.show.size() == 4 && d.show.stats is bool
         && ('achieved' in d) == d.show.achieved
         && ('goals' in d) == d.show.goals
         && ('earnings' in d) == d.show.earnings
-        && (!d.show.achieved || validAchieved(d.achieved))
-        && (!d.show.goals || validShownGoals(d.goals))
-        && (!d.show.earnings || validShownEarnings(d.earnings))
-        && d.updatedAt == request.time;
+        && (!d.show.achieved || !('achieved' in ch) || validAchieved(d.achieved))
+        && (!d.show.goals || !('goals' in ch) || validShownGoals(d.goals))
+        && (!d.show.earnings || !('earnings' in ch) || validShownEarnings(d.earnings));
     }
 
     // Readable by anyone signed in who knows the uid (the owner's choice, SPEC §11.4); no list.
     match /showcases/{uid} {
       allow get: if signedIn();
-      allow create, update: if isUser(uid) && validShowcase(incoming());
+      allow create: if isUser(uid) && validShowcase(incoming(), incoming().keys());
+      allow update: if isUser(uid) && validShowcase(incoming(), incoming().diff(existing()).affectedKeys());
       allow delete: if isUser(uid);
     }
 
@@ -1427,11 +1432,15 @@ service cloud.firestore {
 
     function goalPath(goalId) { return /databases/$(database)/documents/sharedGoals/$(goalId); }
 
+    // A name of 1-60 characters and a unit of 1-16, neither blank (a non-space somewhere: text()'s
+    // meaning, for fewer expressions); a target of 0.01…1e9 (hundredths); an end date that exists
+    // (timestamp.date() errors on 2027-02-30), or none. matches() errors on anything but a string.
     function validGoalText(d) {
-      return text(d.name, 60) && text(d.unit, 16)
+      return d.name.size() <= 60 && d.name.matches('(?s).*\\S.*')
+        && d.unit.size() <= 16 && d.unit.matches('(?s).*\\S.*')
         && d.target100 is int && d.target100 >= 1 && d.target100 <= 100000000000
         && (d.endsOn == null
-            || (d.endsOn is string && d.endsOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && dayAnchor(d.endsOn, 0) is timestamp));
+            || (d.endsOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && dayAnchor(d.endsOn, 0) is timestamp));
     }
     // Reached iff the total is at least the target: set to now by the write that gets there, kept
     // while it stays there, cleared when it falls below (an edit down, or a raised target).
@@ -1440,13 +1449,18 @@ service cloud.firestore {
         ? (e.reachedAt != null ? d.reachedAt == e.reachedAt : d.reachedAt == request.time)
         : d.reachedAt == null;
     }
-    // Every uid of `l` (at most 7, distinct) is a friend of `me`: 1 read each (rules have no loops).
+    // areFriends(me, u) in one function (the three nested calls cost a few expressions per invitee).
+    function friendOf(me, u) {
+      return get(/databases/$(database)/documents/friends/$(me < u ? me + '_' + u : u + '_' + me)).data.state == 'friends';
+    }
+    // Every uid of `l` (a list: toSet() errors on anything else; at most 7, distinct) is a friend of
+    // `me`: 1 read each (rules have no loops). Never `me` itself: no pair 'me_me' can exist.
     function invitesFriends(me, l) {
       let n = l.size();
       return n <= 7 && l.toSet().size() == n
-        && (n <= 0 || areFriends(me, l[0])) && (n <= 1 || areFriends(me, l[1])) && (n <= 2 || areFriends(me, l[2]))
-        && (n <= 3 || areFriends(me, l[3])) && (n <= 4 || areFriends(me, l[4])) && (n <= 5 || areFriends(me, l[5]))
-        && (n <= 6 || areFriends(me, l[6]));
+        && (n <= 0 || friendOf(me, l[0])) && (n <= 1 || friendOf(me, l[1])) && (n <= 2 || friendOf(me, l[2]))
+        && (n <= 3 || friendOf(me, l[3])) && (n <= 4 || friendOf(me, l[4])) && (n <= 5 || friendOf(me, l[5]))
+        && (n <= 6 || friendOf(me, l[6]));
     }
 
     // A new goal: exactly the 19 keys (size 19, and every one is read below), the creator its only
@@ -1466,7 +1480,6 @@ service cloud.firestore {
         && d.leftAt == {} && d.totals100 == {} && d.total100 == 0
         && d.last == null && d.reachedAt == null && d.archivedAt == null
         && d.createdAt == request.time
-        && d.invited is list && !(me in d.invited)
         && invitesFriends(me, d.invited);
     }
 
@@ -1575,7 +1588,7 @@ service cloud.firestore {
         && d.weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && cid == d.weekId + '_' + me
         && d.amount100 is int && d.amount100 >= 0 && d.amount100 <= 100000000000
-        && str(d.note, 0, 80) && d.note.matches('[^\\n\\r\\x{2028}\\x{2029}]*')
+        && d.note.size() <= 80 && d.note.matches('[^\\n\\r\\x{2028}\\x{2029}]*')
         && d.at == request.time
         && checkinFor(me, d, getAfter(goalPath(goalId)).data);
     }

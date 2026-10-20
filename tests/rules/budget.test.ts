@@ -26,7 +26,8 @@
 //   validNewWeek: own times, judges, a note, 8 members          450      550           9
 //   retimesWeek, 8 members (last in the week chain)             534      466           9
 //   syncsPeriod on a week, 8 members                            157      843           9
-//   setsSchedule (8th in the space chain)                       550      450          10
+//   setsSchedule (8th in the space chain)                       555      445          10   (2026-10-20: the
+//     live batch-2.5 rules measure 555 too; 550 was an earlier run)
 //   validNewMonthly, 8 members, judges (moved clock)            461      539           9
 //   retimesMonthly with both weeks stored                       513      487           7
 //   finalizesPause, 8 members (last in the space chain)         649      351           9   (2026-10-17)
@@ -45,6 +46,28 @@
 //   setJudge, the space op of space + 4 periods                 283      717          10
 //   settlement, one of a group line of 7                        241      759           9
 //
+// Batch 3 (SPEC §11.5), measured 2026-10-20; every row above re-measured the same that day (batch 3 only
+// adds match blocks and functions that existing requests never call). Each must stay under 500 and 8
+// reads (SPEC §11.5); the first showcase row is the exception (see its note):
+//   friend request (create, reads the other's profile)          147      853           9
+//   friend accept / decline / withdraw / re-ask / take over     79 / 110 / 105 / 136 / 152    10
+//   pair delete by the asker after deleting their profile        63      937           9
+//   showcase, 12 achieved + 8 goals + earnings, all three new   812      188          10   (a crafted write,
+//     or a sync that sends all three lists at once: allowed, but over 500)
+//   showcase sync: 12 achieved changed, the others as stored    482      518          10   (only changed
+//   showcase switch (stats off) with every list stored          131      869          10    lists are checked)
+//   ring get by a friend / stats get (shown)                   58 / 52                 9
+//   shared goal create, 7 invitees (26 each; none: 288)         471      529           3   (7 reads)
+//   check-in batch: the check-in op, an edit / a first one    236 / 225               10
+//   check-in batch: the goal op (checksIn, 1st branch)          230      770           9   (get and getAfter
+//     of the same check-in count as one read)
+//   join, the 8th member (2nd branch)                           157      843          10
+//   invite 7 friends (4th branch)                               440      560           3   (7 reads)
+//   the owner leaves a goal of 8 (5th branch)                   356      644          10
+//   the owner edits, reaching the target (6th branch)           304      696          10
+//   the owner finishes a goal (the last branch)                 246      754          10
+//   a week's check-ins query, 8 docs                             26      974          10
+//
 // The plan path keeps canPlan's judge check: its headroom (105) is above the 40 SPEC §9.4 asks for.
 // The plan rules try the whole list, then an append, then a cross-out (SPEC §10.7), so a cross-out
 // pays for both branches before it; that order keeps the whole-list save at 895 (guarded at the end
@@ -55,12 +78,12 @@
 import { describe, expect, test } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import {
-  arrayRemove, arrayUnion, deleteField, doc, FieldPath, getDoc, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch,
-  type DocumentData, type Firestore,
+  arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, FieldPath, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc,
+  updateDoc, where, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
-  addMonths, allowed, CUSTOM, DAY, fullTask, HOUR, mondayOf, monthlyDoc, monthlyOn, monthStr, monthWeeks, movedClock,
-  PUBLISHED_RULES, spaceDoc, ts, useRulesEnv, USUAL, weekDoc, weekOn, type Schedule,
+  addMonths, allowed, CUSTOM, DAY, fullTask, goalDoc, GOAL_ZONE, HOUR, mondayOf, monthlyDoc, monthlyOn, monthStr, monthWeeks, movedClock,
+  newGoalDoc, offsetNow, pairEntry, profileDoc, PUBLISHED_RULES, spaceDoc, ts, useRulesEnv, USUAL, weekDoc, weekOfClock, weekOn, type Schedule,
 } from './helpers.ts'
 
 const { db, seed, loadRules, clear } = useRulesEnv()
@@ -140,6 +163,28 @@ const STAKES_UPDATE = atEnd('(editsOwnStakes(spaceId, uid) || agreesToStakes(spa
 const MONTHS_CREATE = atEnd('allow create: if isMember(spaceId) && validMonthStakes(spaceId, monthId, false);')
 const MONTHS_UPDATE = atEnd('allow update: if isMember(spaceId) && validMonthStakes(spaceId, monthId, true);')
 const SETTLE = atEnd('allow create, update: if signedIn() && validSettlement(spaceId, sid);')
+// batch 3 (SPEC §11.5): the end of the condition, or of the branch, that allows each op.
+const FRIEND_ASK = atEnd('allow create: if signedIn() && asksFriend(pid);')
+const FRIEND_ACCEPT = atEnd("&& changedOnly(['state', 'at']) && d.state == 'friends' && d.at == request.time;")
+const FRIEND_DECLINE = atEnd("&& changedOnly(['state']) && d.state == 'declined';")
+const FRIEND_WITHDRAW = atEnd("&& changedOnly(['state', 'at']) && d.state == 'withdrawn' && d.at == request.time;")
+const FRIEND_REASK = atEnd("&& changedOnly(['state', 'at']) && d.state == 'asked' && d.at == request.time;")
+const FRIEND_TAKEOVER = atEnd("&& changedOnly(['by', 'state', 'at']) && d.by == me && d.state == 'asked' && d.at == request.time;")
+const FRIEND_DELETE = atEnd('|| !exists(/databases/$(database)/documents/users/$(request.auth.uid)));')
+const SHOWCASE = atEnd('allow create: if isUser(uid) && validShowcase(incoming(), incoming().keys());')
+const SHOWCASE_UPDATE = atEnd('allow update: if isUser(uid) && validShowcase(incoming(), incoming().diff(existing()).affectedKeys());')
+const RING = atEnd('allow get: if isUser(uid) || (signedIn() && areFriends(uid, request.auth.uid));')
+const STATS = atEnd('allow get: if isUser(uid) || (signedIn() && statsShown(uid));')
+const GOAL_CREATE = atEnd('allow create: if signedIn() && createsShared(goalId);')
+const CHECKIN_CREATE = atEnd('allow create: if signedIn() && checkinFits(goalId, cid);')
+const CHECKIN_UPDATE = atEnd('allow update: if signedIn() && existing().weekId == incoming().weekId && checkinFits(goalId, cid);')
+const CHECKS_IN = atEnd('&& d.total100 == e.total100 + delta\n        && reachesRule(e, d);')
+const JOIN = atEnd('&& d.zones.diff(e.zones).affectedKeys().hasOnly([me]) && isZone(d.zones[me]);')
+const INVITE = atEnd('&& invitesFriends(me, added);')
+const LEAVE = atEnd('&& (me == e.ownerId ? earliestJoined(d) : d.ownerId == e.ownerId));')
+const EDIT = atEnd('&& validGoalText(d) && reachesRule(e, d);')
+const FINISH = atEnd('&& d.archivedAt == request.time && d.invited == [];')
+const CHECKINS_READ = atEnd('allow read: if signedIn() && request.auth.uid in get(goalPath(goalId)).data.memberIds;')
 
 const space = (extra: DocumentData = {}) => spaceDoc(M8, { createdAt: ts(Date.now() - 90 * DAY), ...extra })
 const weekEnding = (deadlineMs: number): DocumentData => ({
@@ -166,6 +211,42 @@ const sixAgreements = (f: string): DocumentData => {
   const past = ['A', 'B', 'C', 'D', 'E'].map((t, i) => ({ ...termsOf(eachStakes(t), f), at: ts(T0 - (10 - i) * DAY) }))
   return { at: ts(T0 - 4 * DAY), terms: termsOf(eachStakes('F'), f), past }
 }
+
+// ---------- batch 3 fixtures ----------
+const B3W = weekOfClock(Date.now(), offsetNow(GOAL_ZONE))
+const profiles = (uids: string[]): Record<string, DocumentData> => Object.fromEntries(uids.map((u) => [`users/${u}`, profileDoc(u)]))
+const pairs = (...entries: Array<[string, DocumentData]>): Record<string, DocumentData> => Object.fromEntries(entries)
+const pairPath = 'friends/m1_m2'
+/** A goal of 8 (m1 owns it, joined in order), 99 of 100 km counted, m8's check-in of this week 1 km. */
+const goal8 = (extra: DocumentData = {}) => goalDoc({
+  name: 'Ж'.repeat(60), unit: 'U'.repeat(16), endsOn: '2099-12-31', ownerId: 'm1', createdBy: 'm1', memberIds: M8, invited: [],
+  joinedAt: Object.fromEntries(M8.map((u, i) => [u, ts(Date.now() - (30 - i) * DAY)])),
+  zones: Object.fromEntries(M8.map((u) => [u, 'America/Argentina/Buenos_Aires'])),
+  leftAt: { x1: ts(Date.now() - DAY) },
+  totals100: Object.fromEntries(M8.map((u) => [u, u === 'm8' ? 1300 : 1200])), total100: 9700, last: { by: 'm7', weekId: B3W, at: ts(Date.now() - HOUR) },
+  ...extra,
+})
+/** m8 edits this week's check-in from 1 km to 4 km (past the target) with an 80-character note: the app's transaction. */
+const editCheckin = (fs: Firestore) => runTransaction(fs, async (tx) => {
+  await tx.get(doc(fs, 'sharedGoals/g1'))
+  await tx.get(doc(fs, `sharedGoals/g1/checkins/${B3W}_m8`))
+  tx.set(doc(fs, `sharedGoals/g1/checkins/${B3W}_m8`), { uid: 'm8', weekId: B3W, amount100: 400, note: 'Ж'.repeat(80), at: serverTimestamp() })
+  tx.update(doc(fs, 'sharedGoals/g1'), { 'totals100.m8': 1600, total100: 10_000, reachedAt: serverTimestamp(), last: { by: 'm8', weekId: B3W, at: serverTimestamp() } })
+})
+const goal8WithCheckin = () => ({
+  'sharedGoals/g1': goal8(),
+  [`sharedGoals/g1/checkins/${B3W}_m8`]: { uid: 'm8', weekId: B3W, amount100: 100, note: 'N'.repeat(80), at: ts(Date.now() - HOUR) },
+})
+/** 12 achieved goals and 8 goals with 60-character names (fixed times, so a rewrite leaves them unchanged). */
+const SHOWN_ACHIEVED = Array.from({ length: 12 }, (_, i) => ({ name: `${'Ж'.repeat(57)}${String(i).padStart(3, '0')}`, at: ts(T0 - (i + 1) * DAY) }))
+const SHOWN_GOALS = Array.from({ length: 8 }, (_, i) => ({ name: `${'Ж'.repeat(59)}${i}`, pct: i * 14 }))
+const showAll = () => ({
+  show: { stats: true, achieved: true, goals: true, earnings: true },
+  achieved: SHOWN_ACHIEVED,
+  goals: SHOWN_GOALS,
+  earnings: { monthId: '2026-09', amount: 999_999_999.99, currency: 'USD' },
+  updatedAt: serverTimestamp(),
+})
 
 const CASES: Case[] = [
   {
@@ -487,6 +568,156 @@ const CASES: Case[] = [
       const b = writeBatch(fs)
       for (const o of M8.slice(1)) b.set(doc(fs, `spaces/s1/settlements/${C}_m1_${o}_s36`), { monthId: C, uid: 'm1', other: o, tier: 36, settled: true, settledBy: 'm1', settledAt: serverTimestamp() })
       return b.commit()
+    },
+  },
+  // ---------- batch 3 (SPEC §11.5) ----------
+  {
+    name: 'b3: friend request (create)',
+    ...FRIEND_ASK,
+    seed: () => profiles(['m1', 'm2']),
+    run: (db) => setDoc(doc(db('m2'), pairPath), { users: ['m1', 'm2'], by: 'm2', state: 'asked', at: serverTimestamp() }),
+  },
+  {
+    name: 'b3: friend accept (of a declined request)',
+    ...FRIEND_ACCEPT,
+    seed: () => ({ ...profiles(['m1', 'm2']), ...pairs(pairEntry('m1', 'm2', 'declined', 'm1', 1)) }),
+    run: (db) => updateDoc(doc(db('m2'), pairPath), { state: 'friends', at: serverTimestamp() }),
+  },
+  {
+    name: 'b3: friend decline',
+    ...FRIEND_DECLINE,
+    seed: () => ({ ...profiles(['m1', 'm2']), ...pairs(pairEntry('m1', 'm2', 'asked', 'm1', 1)) }),
+    run: (db) => updateDoc(doc(db('m2'), pairPath), { state: 'declined' }),
+  },
+  {
+    name: 'b3: friend withdraw (cancel)',
+    ...FRIEND_WITHDRAW,
+    seed: () => ({ ...profiles(['m1', 'm2']), ...pairs(pairEntry('m1', 'm2', 'declined', 'm1', 1)) }),
+    run: (db) => updateDoc(doc(db('m1'), pairPath), { state: 'withdrawn', at: serverTimestamp() }),
+  },
+  {
+    name: 'b3: friend re-ask after 31 days',
+    ...FRIEND_REASK,
+    seed: () => ({ ...profiles(['m1', 'm2']), ...pairs(pairEntry('m1', 'm2', 'withdrawn', 'm1', 31)) }),
+    run: (db) => updateDoc(doc(db('m1'), pairPath), { state: 'asked', at: serverTimestamp() }),
+  },
+  {
+    name: 'b3: friend take over (the last of five)',
+    ...FRIEND_TAKEOVER,
+    seed: () => ({ ...profiles(['m1', 'm2']), ...pairs(pairEntry('m1', 'm2', 'withdrawn', 'm1', 1)) }),
+    run: (db) => updateDoc(doc(db('m2'), pairPath), { by: 'm2', state: 'asked', at: serverTimestamp() }),
+  },
+  {
+    name: 'b3: pair delete by the asker after deleting their profile',
+    ...FRIEND_DELETE,
+    seed: () => ({ ...profiles(['m2']), ...pairs(pairEntry('m1', 'm2', 'withdrawn', 'm1', 1)) }),
+    run: (db) => deleteDoc(doc(db('m1'), pairPath)),
+  },
+  {
+    name: 'b3: showcase with 12 achieved, 8 goals, earnings (all three new)',
+    ...SHOWCASE,
+    seed: () => ({}),
+    run: (db) => setDoc(doc(db('m1'), 'showcases/m1'), showAll()),
+  },
+  {
+    name: 'b3: showcase sync, 12 achieved changed, 8 goals and earnings as stored',
+    ...SHOWCASE_UPDATE,
+    seed: () => ({ 'showcases/m1': { ...showAll(), achieved: [], updatedAt: ts(Date.now() - DAY) } }),
+    run: (db) => updateDoc(doc(db('m1'), 'showcases/m1'), { achieved: showAll().achieved, updatedAt: serverTimestamp() }),
+  },
+  {
+    name: 'b3: showcase switch (stats off) with every list stored',
+    ...SHOWCASE_UPDATE,
+    seed: () => ({ 'showcases/m1': { ...showAll(), updatedAt: ts(Date.now() - DAY) } }),
+    run: (db) => setDoc(doc(db('m1'), 'showcases/m1'), { ...showAll(), show: { stats: false, achieved: true, goals: true, earnings: true } }),
+  },
+  {
+    name: 'b3: ring get by a friend',
+    ...RING,
+    seed: () => ({ ...pairs(pairEntry('m1', 'm2')), 'rings/m1': { monthId: '2026-10', score: 92.5, final: false, spaces: 2, updatedAt: ts(Date.now() - HOUR) } }),
+    run: (db) => getDoc(doc(db('m2'), 'rings/m1')),
+  },
+  {
+    name: 'b3: stats get (shown)',
+    ...STATS,
+    seed: () => ({
+      'showcases/m1': { show: { stats: true, achieved: false, goals: false, earnings: false }, updatedAt: ts(Date.now() - HOUR) },
+      'stats/m1': { monthsCleared: 1, currentStreak: 1, bestStreak: 1, weeksPlayed: 7, finishedMonths: 1, since: '2026-10', updatedAt: ts(Date.now() - HOUR) },
+    }),
+    run: (db) => getDoc(doc(db('zz'), 'stats/m1')),
+  },
+  {
+    name: 'b3: shared goal create with 7 invitees',
+    ...GOAL_CREATE,
+    seed: () => pairs(...M8.slice(1).map((u) => pairEntry('m1', u))),
+    run: (db) => setDoc(doc(db('m1'), 'sharedGoals/Xk3p9QmZ2aBcD4eF5gH6aBcD4eF5gH6Xk3p9QmZA'), newGoalDoc('m1', M8.slice(1), {
+      name: 'Ж'.repeat(60), unit: 'U'.repeat(16), endsOn: '2099-12-31', timezone: 'America/Argentina/Buenos_Aires', zones: { m1: 'America/Argentina/Buenos_Aires' },
+    })),
+  },
+  {
+    name: 'b3: check-in batch, the check-in op (an edit that reaches the target)',
+    ...CHECKIN_UPDATE,
+    seed: goal8WithCheckin,
+    run: (db) => editCheckin(db('m8')),
+  },
+  {
+    name: 'b3: check-in batch, the check-in op (a first check-in)',
+    ...CHECKIN_CREATE,
+    seed: () => ({ 'sharedGoals/g1': goal8() }),
+    run: (db) => {
+      const fs = db('m8')
+      const b = writeBatch(fs)
+      b.set(doc(fs, `sharedGoals/g1/checkins/${B3W}_m8`), { uid: 'm8', weekId: B3W, amount100: 300, note: 'Ж'.repeat(80), at: serverTimestamp() })
+      b.update(doc(fs, 'sharedGoals/g1'), { 'totals100.m8': 1600, total100: 10_000, reachedAt: serverTimestamp(), last: { by: 'm8', weekId: B3W, at: serverTimestamp() } })
+      return b.commit()
+    },
+  },
+  {
+    name: 'b3: check-in batch, the goal op (checksIn, an edit that reaches the target)',
+    ...CHECKS_IN,
+    seed: goal8WithCheckin,
+    run: (db) => editCheckin(db('m8')),
+  },
+  {
+    name: 'b3: join, the 8th member (2nd branch)',
+    ...JOIN,
+    seed: () => ({ 'sharedGoals/g1': goal8({ memberIds: M8.slice(0, 7), invited: ['m8'], zones: { m1: GOAL_ZONE }, joinedAt: Object.fromEntries(M8.slice(0, 7).map((u) => [u, ts(Date.now() - DAY)])) }) }),
+    run: (db) => updateDoc(doc(db('m8'), 'sharedGoals/g1'), { invited: arrayRemove('m8'), memberIds: arrayUnion('m8'), 'joinedAt.m8': serverTimestamp(), 'zones.m8': 'America/Argentina/Buenos_Aires' }),
+  },
+  {
+    name: 'b3: invite 7 friends (4th branch)',
+    ...INVITE,
+    seed: () => ({ ...pairs(...M8.slice(1).map((u) => pairEntry('m1', u))), 'sharedGoals/g1': goal8({ memberIds: ['m1'], joinedAt: { m1: ts(Date.now() - DAY) } }) }),
+    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { invited: M8.slice(1) }),
+  },
+  {
+    name: 'b3: the owner leaves a goal of 8 (5th branch)',
+    ...LEAVE,
+    seed: () => ({ 'sharedGoals/g1': goal8() }),
+    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { memberIds: arrayRemove('m1'), 'joinedAt.m1': deleteField(), 'leftAt.m1': serverTimestamp(), ownerId: 'm2' }),
+  },
+  {
+    name: 'b3: the owner edits, reaching the target (6th branch)',
+    ...EDIT,
+    seed: () => ({ 'sharedGoals/g1': goal8() }),
+    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { name: 'Ж'.repeat(59) + 'x', unit: 'V'.repeat(16), target100: 9700, endsOn: '2099-12-30', reachedAt: serverTimestamp() }),
+  },
+  {
+    name: 'b3: the owner finishes a goal (the last branch)',
+    ...FINISH,
+    seed: () => ({ 'sharedGoals/g1': goal8({ memberIds: M8.slice(0, 1), invited: M8.slice(1) }) }),
+    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { archivedAt: serverTimestamp(), invited: [] }),
+  },
+  {
+    name: 'b3: a week\'s check-ins query (8 docs)',
+    ...CHECKINS_READ,
+    seed: () => ({
+      'sharedGoals/g1': goal8(),
+      ...Object.fromEntries(M8.map((u) => [`sharedGoals/g1/checkins/${B3W}_${u}`, { uid: u, weekId: B3W, amount100: 100, note: 'N'.repeat(80), at: ts(Date.now() - HOUR) }])),
+    }),
+    run: async (db) => {
+      const snap = await getDocs(query(collection(db('m1'), 'sharedGoals/g1/checkins'), where('weekId', '==', B3W)))
+      if (snap.size !== 8) throw new Error(`expected 8 check-ins, got ${snap.size}`)
     },
   },
 ]

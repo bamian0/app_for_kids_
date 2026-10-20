@@ -8,7 +8,8 @@ import { doc, serverTimestamp, setDoc, setLogLevel, Timestamp, type DocumentData
 // Denied listeners and writes would otherwise log a warning per test.
 setLogLevel('silent')
 
-const RULES = readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8')
+// RULES_FILE runs the suites against another copy of the rules (mutation runs), never the published file's edits.
+const RULES = readFileSync(process.env.RULES_FILE ?? new URL('../../firestore.rules', import.meta.url), 'utf8')
 
 export const HOUR = 3_600_000
 export const DAY = 24 * HOUR
@@ -300,3 +301,82 @@ export const monthStr = (ms: number): string => DateTime.fromMillis(ms, { zone: 
 /** The month `n` months after `monthId`. */
 export const addMonths = (monthId: string, n: number): string =>
   DateTime.fromISO(`${monthId}-01`, { zone: 'utc' }).plus({ months: n }).toFormat('yyyy-MM')
+
+// ---------- batch 3 fixtures (SPEC §11) ----------
+
+/** A profile as stored. */
+export const profileDoc = (name: string): DocumentData => ({ name, color: '#636366', createdAt: ts(Date.now() - 400 * DAY) })
+
+/** The pair doc of `a` and `b` (sorted uids), asked by `by` (default `a`), `daysAgo` old: [path, data]. */
+export function pairEntry(a: string, b: string, state = 'friends', by = a, daysAgo = 10): [string, DocumentData] {
+  const users = [a, b].sort()
+  return [`friends/${users[0]}_${users[1]}`, { users, by, state, at: ts(Date.now() - daysAgo * DAY) }]
+}
+
+/** The Monday ('YYYY-MM-DD') of the week holding `ms` on a clock `off` minutes ahead of UTC: a goal's
+ *  week as the rules see it (its stored utcOffsetMin). */
+export function weekOfClock(ms: number, off: number): string {
+  const local = new Date(ms + off * 60_000)
+  const back = (local.getUTCDay() + 6) % 7
+  const monday = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - back * DAY
+  return new Date(monday).toISOString().slice(0, 10)
+}
+/** 00:00 of the day `id` on a clock `off` minutes ahead of UTC (the rules' dayAnchor). */
+export const anchorOf = (id: string, off: number): number => Date.parse(`${id}T00:00:00Z`) - off * 60_000
+/** The day `n` days after `id`. */
+export const addDays = (id: string, n: number): string => new Date(Date.parse(`${id}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10)
+
+export const GOAL_ZONE = 'Europe/Berlin'
+
+/** A shared goal as stored (seeded): Alice owns it, Bob is a member, Cleo is invited; 55 of 100 km
+ *  counted. Every key of SPEC §11.3. */
+export function goalDoc(extra: DocumentData = {}): DocumentData {
+  return {
+    name: 'Run 100 km',
+    unit: 'km',
+    target100: 10_000,
+    endsOn: null,
+    timezone: GOAL_ZONE,
+    utcOffsetMin: offsetNow(GOAL_ZONE),
+    zones: { alice: GOAL_ZONE, bob: 'America/New_York' },
+    ownerId: 'alice',
+    createdBy: 'alice',
+    memberIds: ['alice', 'bob'],
+    invited: ['cleo'],
+    joinedAt: { alice: ts(Date.now() - 20 * DAY), bob: ts(Date.now() - 19 * DAY) },
+    leftAt: {},
+    totals100: { alice: 3000, bob: 2500 },
+    total100: 5500,
+    last: null,
+    reachedAt: null,
+    archivedAt: null,
+    createdAt: ts(Date.now() - 20 * DAY),
+    ...extra,
+  }
+}
+
+/** What createSharedGoal writes for `me`, inviting `invited`. */
+export function newGoalDoc(me: string, invited: string[] = [], extra: DocumentData = {}): DocumentData {
+  return {
+    name: 'Run 100 km',
+    unit: 'km',
+    target100: 10_000,
+    endsOn: null,
+    timezone: GOAL_ZONE,
+    utcOffsetMin: offsetNow(GOAL_ZONE),
+    zones: { [me]: GOAL_ZONE },
+    ownerId: me,
+    createdBy: me,
+    memberIds: [me],
+    invited,
+    joinedAt: { [me]: serverTimestamp() },
+    leftAt: {},
+    totals100: {},
+    total100: 0,
+    last: null,
+    reachedAt: null,
+    archivedAt: null,
+    createdAt: serverTimestamp(),
+    ...extra,
+  }
+}

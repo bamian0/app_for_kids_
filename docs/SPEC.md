@@ -102,12 +102,13 @@ spaces/{spaceId}                             { name, reward, penalty, ownerId, m
 spaces/{spaceId}/joins/{uid}                 { code, createdAt }            # proof of invite, written in the join batch
 spaces/{spaceId}/weeks/{weekId}              { startAt, lockAt, reviewOpenAt, deadlineAt, members[], submittedBy[],
                                                schedule?, judges?[] }         # the times its bounds follow (absent = usual); judges' snapshot until the lock
-spaces/{spaceId}/weeks/{weekId}/plans/{uid}     { tasks: [{ id, title, subs?: ["<subId>|<title>", …] }], added?: { [taskId]: ts }, updatedAt }
+spaces/{spaceId}/weeks/{weekId}/plans/{uid}     { tasks: [{ id, title, subs?: ["<subId>|<title>", …] }], added?: { [taskId]: ts }, updatedAt,
+                                               cancels?: { "<n>:<taskId>": { at: ts, why } | { at: ts } } }   # batch 2.5: the cross-out log (§10.3)
 spaces/{spaceId}/weeks/{weekId}/progress/{uid}  { done: { [taskId]: boolean }, updatedAt }
 spaces/{spaceId}/weeks/{weekId}/reviews/{reviewerId}_{revieweeId}
-                                             { reviewerId, revieweeId, marks: { [taskId]: 0|0.5|1 }, submittedAt }
+                                             { reviewerId, revieweeId, marks: { [taskId]: 0|0.5|1|'fair' }, submittedAt }   # 'fair': batch 2.5's vote (§10.4)
 spaces/{spaceId}/monthly/{monthId}           { startAt, lockAt, reviewOpenAt, deadlineAt, members[], judges[], submittedBy[] }   # a month's list (§9.5)
-spaces/{spaceId}/monthly/{monthId}/plans/{uid}     { tasks, updatedAt }   # as a week's plan, never `added`
+spaces/{spaceId}/monthly/{monthId}/plans/{uid}     { tasks, added?, cancels?, updatedAt }   # as a week's plan; `added` and `cancels` since batch 2.5 (§10.2, §10.3)
 spaces/{spaceId}/monthly/{monthId}/progress/{uid}  { done, updatedAt }
 spaces/{spaceId}/monthly/{monthId}/reviews/{reviewerId}_{revieweeId}  { reviewerId, revieweeId, marks, submittedAt }
 spaces/{spaceId}/stakes/{uid}                { rewardMode, penaltyMode, reward, penalty, per: { [friend]: { reward, penalty } },
@@ -122,7 +123,7 @@ public/config                                { vapidPublicKey }              # w
 _private/*                                   admin only (VAPID private key, sent-notification log)
 ```
 
-Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space (judges included); profile color `#RRGGBB`; profile photo ≤ 60,000 characters. Batch 2: schedule minutes `0 ≤ lock < reviewOpen`, `reviewOpen + 180 ≤ deadline ≤ 10080` (§9.2); a monthly list's caps are a week's; own stakes texts ≤ 120, ≤ 7 `per` entries, ≤ 5 streak rewards of 2–36 months, ≤ 6 agreements kept per friend (§9.7). Every new field is optional and reads as "as before" when missing.
+Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space (judges included); profile color `#RRGGBB`; profile photo ≤ 60,000 characters. Batch 2: schedule minutes `0 ≤ lock < reviewOpen`, `reviewOpen + 180 ≤ deadline ≤ 10080` (§9.2); a monthly list's caps are a week's; own stakes texts ≤ 120, ≤ 7 `per` entries, ≤ 5 streak rewards of 2–36 months, ≤ 6 agreements kept per friend (§9.7). Batch 2.5: a cross-out reason is 1–120 characters on one line with at least one character that shows (`WHY_BLANK`, §10.3); a task changes at most 5 times (2 undos), so a `cancels` log has ≤ 125 entries; a monthly list grows to ≤ 25 tasks by adds (§10.2). Every new field is optional and reads as "as before" when missing.
 
 ### Security rules (`firestore.rules`), what must hold
 - `users/{uid}`: any signed-in user can `get` a profile; `list` is denied, so nobody can enumerate users. Only the owner can write, with field validation; `color` must be `#RRGGBB` (it lands in CSS). `photo` is optional: a string of at most 60,000 characters (checked before the pattern) matching `^data:image/jpeg;base64,[A-Za-z0-9+/]+=*$`, so it can never be a link that loads from every viewer's phone. A write without it (older clients, a name change) keeps working.

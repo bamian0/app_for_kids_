@@ -291,42 +291,53 @@ describe('checkinClosesAt: exactly the rules’ upper bound', () => {
     expect(checkinClosesAt(goal(), 'next week')).toBeNaN()
   })
 
-  // Every 30 minutes for two years, in zones with 1 h, 30 min and no DST, created in winter and in summer: the week the
-  // app saves (goalWeek) is always inside the rules' window, and the window never closes before the true week ends.
+  // Two years, every 3 hours and at every week's edges, in zones with 1 h, 30 min and no DST, created in winter and in
+  // summer: the week the app saves (goalWeek) is always inside the rules' window, which never closes before the true
+  // week ends (nor more than 2 hours after).
   const ZONES = ['Europe/Berlin', 'America/New_York', 'Australia/Sydney', 'Australia/Lord_Howe', 'Asia/Kolkata', 'Pacific/Chatham', 'America/Santiago', 'Pacific/Kiritimati']
   const START = Date.parse('2026-10-05T00:00:00Z')
   const END = START + 2 * 365 * DAY
   for (const tz of ZONES) {
     it(`${tz}: the current week always fits the rules`, () => {
       const offsets = [...new Set([utcOffsetMinutes(tz, Date.parse('2027-01-15T12:00:00Z')), utcOffsetMinutes(tz, Date.parse('2027-07-15T12:00:00Z'))])]
+      const bad: string[] = []
       for (const off of offsets) {
         const g = goal({ timezone: tz, utcOffsetMin: off })
-        for (let now = START; now < END; now += 30 * 60_000) {
+        const fits = (now: number) => {
           const weekId = goalWeek(g, now)
-          expect(now >= dayAnchor(weekId, off) - H).toBe(true)
-          expect(now < checkinClosesAt(g, weekId)).toBe(true)
+          if (!(now >= dayAnchor(weekId, off) - H && now < checkinClosesAt(g, weekId))) bad.push(`${off} ${new Date(now).toISOString()} ${weekId}`)
+          return weekId
         }
+        for (let now = START; now < END; now += 3 * H) fits(now)
+        let weeks = 0
         for (let weekId = '2026-10-05'; weekId < '2028-10-01'; weekId = addWeeks(weekId, 1)) {
+          const trueStart = momentAt(weekId, tz, 0)
           const trueEnd = momentAt(weekId, tz, 10080)
+          // The week's own edges: its first instant, the next one, and its last.
+          for (const now of [trueStart, trueStart + 1, trueEnd - 1]) if (fits(now) !== weekId) bad.push(`${off} ${weekId} edge ${now}`)
           const closes = checkinClosesAt(g, weekId)
-          expect(closes).toBeGreaterThanOrEqual(trueEnd)
-          expect(closes).toBeLessThanOrEqual(trueEnd + 2 * H)
+          if (!(closes >= trueEnd && closes <= trueEnd + 2 * H)) bad.push(`${off} ${weekId} closes ${closes - trueEnd}`)
+          weeks += 1
         }
+        expect(weeks).toBe(103)
       }
+      expect(bad).toEqual([])
     })
   }
 
   it('goalEndsAt never passes the rules’ endsOn bound', () => {
+    const bad: string[] = []
     for (const tz of ZONES) {
       for (const off of [utcOffsetMinutes(tz, Date.parse('2027-01-15T12:00:00Z')), utcOffsetMinutes(tz, Date.parse('2027-07-15T12:00:00Z'))]) {
         for (let day = Date.parse('2026-10-01T00:00:00Z'); day < Date.parse('2028-10-01T00:00:00Z'); day += DAY) {
           const endsOn = new Date(day).toISOString().slice(0, 10)
           const endsAt = goalEndsAt(goal({ timezone: tz, utcOffsetMin: off, endsOn }))
-          expect(endsAt).not.toBeNull()
-          expect(endsAt as number).toBeLessThanOrEqual(dayAnchor(endsOn, off) + DAY + H)
+          // Never past the rules' bound, and never more than 2 hours (DST) before it.
+          if (endsAt === null || endsAt > dayAnchor(endsOn, off) + DAY + H || endsAt < dayAnchor(endsOn, off) + DAY - H) bad.push(`${tz} ${off} ${endsOn}`)
         }
       }
     }
+    expect(bad).toEqual([])
   })
 })
 

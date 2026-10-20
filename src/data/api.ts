@@ -22,7 +22,7 @@ import type {
   SharedGoalsView,
   Showcase,
   ShowcaseItems,
-  ShowSwitches,
+  ShowKey,
   Space,
   UID,
   UserProfile,
@@ -379,14 +379,18 @@ export function friendLink(code: string): string {
   return notBuilt() // batch3: TODO
 }
 
-/** Looks up a code or a pasted link: whose it is, with their profile. Throws "That’s your own code.", "No one has that
- *  code. Check it and try again.", "That’s a space invite. Join it from Spaces." or the offline message. */
+/** Looks up a code or a pasted link: whose it is, with their profile (a code whose owner has no profile is a miss).
+ *  Throws "That’s your own code.", "No one has that code. Check it and try again.", "That’s a space invite. Join it
+ *  from Spaces." (a pasted join link, or a code that is a space invite: one more read, only on a miss) or the offline
+ *  message. */
 export async function lookupFriendCode(codeOrLink: string): Promise<FriendLookup> {
   void codeOrLink
   return notBuilt() // batch3: TODO
 }
 
-/** Sends a friend request, or accepts theirs when they already asked (mutual). A transaction; fails at once offline. */
+/** Sends a friend request; accepts theirs when they asked (or you declined them: mutual); takes over a request they
+ *  canceled; re-asks after your own cancel once 30 days have passed, else resolves 'too-soon' without writing.
+ *  A transaction; fails at once offline. */
 export async function askFriend(uid: UID): Promise<AskResult> {
   void uid
   return notBuilt() // batch3: TODO
@@ -404,13 +408,14 @@ export async function declineFriend(uid: UID): Promise<void> {
   return notBuilt() // batch3: TODO
 }
 
-/** Withdraws your request to `uid` (deletes the pair). Fails at once offline. */
+/** Cancels your request to `uid` (pending or silently declined): the pair becomes 'withdrawn', a tombstone, so you
+ *  can ask again only after 30 days. No-op for anything else. Fails at once offline. */
 export async function cancelFriendRequest(uid: UID): Promise<void> {
   void uid
   return notBuilt() // batch3: TODO
 }
 
-/** Ends the friendship (deletes the pair). Either side can; either can ask again later. Fails at once offline. */
+/** Ends the friendship (deletes the pair). Either side can; either can ask again at once. Fails at once offline. */
 export async function removeFriend(uid: UID): Promise<void> {
   void uid
   return notBuilt() // batch3: TODO
@@ -424,28 +429,32 @@ export function useShowcase(uid: UID): Live<Showcase | null> {
   return NOT_BUILT // batch3: TODO
 }
 
-/** rings/{uid}: yours or a friend's (written by the reminders job). A refusal (not friends) reads as null. */
+/** rings/{uid}: yours or a friend's (written by the reminders job: one number across spaces). A refusal (not friends)
+ *  reads as null. */
 export function useRing(uid: UID): Live<Ring | null> {
   void uid
   return NOT_BUILT // batch3: TODO
 }
 
-/** stats/{uid}: yours, or anyone's whose showcase shows stats (written by the reminders job). A refusal reads as null. */
+/** stats/{uid}: yours, or anyone's whose showcase shows stats (written by the reminders job: the four facts and since).
+ *  A refusal reads as null. */
 export function useStats(uid: UID): Live<UserStats | null> {
   void uid
   return NOT_BUILT // batch3: TODO
 }
 
-/** Saves your switches with copies of only the switched-on items (showcaseDoc). Your own doc: it shows at once and
- *  queues offline, like a rename. */
-export async function saveShowcase(show: ShowSwitches, items: ShowcaseItems): Promise<void> {
-  void show
+/** Turns one showcase switch on or off: a transaction on the server's copy (switchShowcase), so another device's stale
+ *  cache can't undo it. `items` supplies the item of a switch being turned on. Fails at once offline. */
+export async function setShowcaseSwitch(key: ShowKey, on: boolean, items: ShowcaseItems): Promise<void> {
+  void key
+  void on
   void items
   return notBuilt() // batch3: TODO
 }
 
-/** Mounted once by the signed-in app: keeps your showcase's money copies in step with your money (debounced, writes
- *  only on change, while a money switch is on). Adds no reads. */
+/** Mounted once by the signed-in app: keeps your showcase's money copies in step with your money (showcasePatch,
+ *  debounced, only on change, while the stored showcase has a money switch on). Writes item fields with updateDoc,
+ *  never a switch; a refusal (the switch went off meanwhile) is ignored. Adds no reads. */
 export function useShowcaseSync(): void {
   // batch3: TODO
 }
@@ -470,8 +479,8 @@ export function useCheckins(goalId: string, weekId: WeekId): Live<Checkin[]> {
   return NOT_BUILT // batch3: TODO
 }
 
-/** Creates a goal in your device's time zone, with you as owner and member, inviting friends. Resolves with its id.
- *  Fails at once offline. */
+/** Creates a goal (auto id) in your device's time zone, with you as owner and member (zones: { you: zone }), inviting
+ *  friends. Resolves with its id. Fails at once offline. */
 export async function createSharedGoal(input: NewSharedGoalInput): Promise<string> {
   void input
   return notBuilt() // batch3: TODO
@@ -491,7 +500,7 @@ export async function cancelSharedInvite(goalId: string, uid: UID): Promise<void
   return notBuilt() // batch3: TODO
 }
 
-/** Accepts your invitation. Fails at once offline. */
+/** Accepts your invitation, storing your device's zone for the check-in push. Fails at once offline. */
 export async function joinSharedGoal(goalId: string): Promise<void> {
   void goalId
   return notBuilt() // batch3: TODO
@@ -503,8 +512,8 @@ export async function declineSharedGoal(goalId: string): Promise<void> {
   return notBuilt() // batch3: TODO
 }
 
-/** Leaves a goal: your part stays in the total; an owner hands on to the earliest-joined member; the last member's
- *  leave finishes it. Fails at once offline. */
+/** Leaves a goal: lists your check-ins, leaves, then deletes them. Your part stays in the total; an owner hands on to
+ *  the earliest-joined member; the last member's leave finishes it. Fails at once offline. */
 export async function leaveSharedGoal(goalId: string): Promise<void> {
   void goalId
   return notBuilt() // batch3: TODO
@@ -523,11 +532,13 @@ export async function finishSharedGoal(goalId: string): Promise<void> {
   return notBuilt() // batch3: TODO
 }
 
-/** Saves your part for this week (the goal's zone), replacing an earlier check-in that week; the goal's totals change
- *  in the same transaction. Fails at once offline. */
-export async function checkIn(goalId: string, amount: number, note: string): Promise<CheckinResult> {
+/** Saves your part for `weekId` (the week the sheet shows; default this week in the goal's zone), replacing an earlier
+ *  check-in that week; the goal's totals change in the same transaction. Once that week is past the rules' slack
+ *  (checkinClosesAt) it throws "That week just ended. Check in for this week instead." Fails at once offline. */
+export async function checkIn(goalId: string, amount: number, note: string, weekId?: WeekId): Promise<CheckinResult> {
   void goalId
   void amount
   void note
+  void weekId
   return notBuilt() // batch3: TODO
 }

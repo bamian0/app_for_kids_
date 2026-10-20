@@ -477,8 +477,11 @@ export interface Goal {
 // ---------- Batch 3: friends, profile showcase, shared goals (SPEC §11) ----------
 // Everything lives in new top-level collections (§11.3); nothing above changes.
 
-/** friends/{pairId}: 'asked' (pending), 'declined' (silent: the asker still sees "Requested"), 'friends'. */
-export type FriendState = 'asked' | 'declined' | 'friends'
+/**
+ * friends/{pairId}: 'asked' (pending), 'declined' (silent: the asker still sees "Requested"), 'withdrawn' (the asker
+ * canceled: a tombstone, so asking again waits ASK_AGAIN_DAYS), 'friends'.
+ */
+export type FriendState = 'asked' | 'declined' | 'withdrawn' | 'friends'
 
 /** One friends/{pairId} doc as seen by the signed-in user (SPEC §11.3). */
 export interface Friendship {
@@ -489,7 +492,7 @@ export interface Friendship {
   /** Who asked. */
   by: UID
   state: FriendState
-  /** When asked ('asked', 'declined'), or since when friends ('friends'). Server time. */
+  /** When asked ('asked', 'declined'), when the asker canceled ('withdrawn'), or since when friends ('friends'). Server time. */
   at: number
 }
 
@@ -500,20 +503,26 @@ export interface FriendsView {
   incoming: Friendship[]
   /** Asked by you, pending or (silently) declined: both read as "Requested". */
   sent: Friendship[]
+  /** Your canceled requests (tombstones): listed nowhere, kept to say when you can ask again (askAgainAt). */
+  withdrawn: Friendship[]
 }
 
-/** How someone relates to the signed-in user (relationOf in domain/friends.ts). */
+/** How someone relates to the signed-in user (relationOf in domain/friends.ts). Your withdrawn pair reads 'none'. */
 export type FriendRelation = 'me' | 'friend' | 'incoming' | 'sent' | 'none'
 
-/** A friend code looked up (lookupFriendCode): whose it is, with their profile when it loaded. */
+/** A friend code looked up (lookupFriendCode): whose it is, with their profile (a code without one is a miss). */
 export interface FriendLookup {
   code: string
   uid: UID
-  profile: UserProfile | null
+  profile: UserProfile
 }
 
-/** askFriend's outcome: a new request, an accepted one (they had asked you), or nothing to do. */
-export type AskResult = 'asked' | 'friends' | 'already-asked' | 'already-friends'
+/**
+ * askFriend's outcome: a new request (or a re-ask, or taking over their canceled one), an accepted one (they had asked
+ * you, or you had declined them), nothing to do, or 'too-soon' (your canceled request is still within its 30 days;
+ * nothing was written).
+ */
+export type AskResult = 'asked' | 'friends' | 'already-asked' | 'already-friends' | 'too-soon'
 
 /** The showcase switches (§11.7): DEFAULT_SHOW = stats on, the three money items off. */
 export interface ShowSwitches {
@@ -525,6 +534,9 @@ export interface ShowSwitches {
   /** Last month's earnings: the one item with an amount. */
   earnings: boolean
 }
+
+/** One switch of the showcase editor (setShowcaseSwitch). */
+export type ShowKey = keyof ShowSwitches
 
 export interface AchievedGoal {
   /** 1–60 characters. */
@@ -557,9 +569,8 @@ export interface ShowcaseItems {
   earnings: ShownEarnings
 }
 
-/** showcases/{uid}: readable by anyone signed in; holds only copies of what is switched on (§11.3). */
-export interface Showcase {
-  uid: UID
+/** What the app writes to showcases/{uid}, before `updatedAt` (switchShowcase, showcasePatch). */
+export interface ShowcaseDoc {
   show: ShowSwitches
   /** Present exactly when show.achieved. */
   achieved?: AchievedGoal[]
@@ -567,30 +578,48 @@ export interface Showcase {
   goals?: ShownGoal[]
   /** Present exactly when show.earnings. */
   earnings?: ShownEarnings
+}
+
+/** showcases/{uid}: readable by anyone signed in; holds only copies of what is switched on (§11.3). */
+export interface Showcase extends ShowcaseDoc {
+  uid: UID
   updatedAt: number
 }
 
-/** One space's month so far for one user, as the reminders job last computed it (rings/{uid}.spaces[spaceId]). */
-export interface RingEntry {
-  monthId: MonthId
+/** One space's month for one user in scores/{uid} (written by the reminders job; nobody can read it). */
+export interface ScoreEntry {
   /** computeMonth's finalScore: null when they have none (only judged, sat out, nothing closed yet). */
   score: number | null
+  /** The weeks they played that month in that space (closed, scored, not paused, skipped or judged). */
+  weeks: WeekId[]
   /** The month was complete when written. */
   final: boolean
-  at: number
+}
+
+/** scores/{uid}.months: monthId → spaceId → entry. The job's private per-space detail; ringOf and statsOf read it. */
+export type ScoreMonths = Record<MonthId, Record<string, ScoreEntry>>
+
+/** What a ring holds (ringOf): one number across spaces, no space ids. */
+export interface RingFacts {
+  /** The newest month with any score entry; null with none. */
+  monthId: MonthId | null
+  /** The mean of that month's non-null space scores, 0–100; null when none. */
+  score: number | null
+  /** Every space entry of that month was final. */
+  final: boolean
+  /** How many space scores were averaged. */
+  spaces: number
 }
 
 /** rings/{uid}: written only by the reminders job; readable by the owner and their friends (§11.4). */
-export interface Ring {
+export interface Ring extends RingFacts {
   uid: UID
-  /** By space id. Entries of spaces they left keep an old month and are ignored by ringView. */
-  spaces: Record<string, RingEntry>
   updatedAt: number
 }
 
 /** What a ring shows (ringView): their score this month so far across their spaces, or last month's final. */
 export interface RingView {
-  /** 0–100, or null (no score: the ring shows its track only). */
+  /** 0–100, or null (no score, or the ring is too old: the ring shows its track only). */
   value: number | null
   monthId: MonthId | null
   /** The month is complete in every space averaged ("September", not "October so far"). */
@@ -599,40 +628,36 @@ export interface RingView {
   spaces: number
 }
 
-/** One space's month for one user in stats/{uid}. */
-export interface StatsEntry {
-  score: number | null
-  /** The weeks they played that month in that space (closed, scored, not paused, skipped or judged). */
-  weeks: WeekId[]
-  final: boolean
-}
-
-/** stats/{uid}: written only by the reminders job, from FIRST_RESULTS_MONTH on; readable per the showcase switch. */
-export interface UserStats {
-  uid: UID
-  /** monthId → spaceId → entry. */
-  months: Record<MonthId, Record<string, StatsEntry>>
-  updatedAt: number
-}
-
-/** The showcase's stats (statsView in domain/showcase.ts). */
-export interface StatsView {
-  /** Finished months whose mean score across their spaces was at least 90. */
+/** What stats hold (statsOf): exactly the showcase's facts, no per-space or per-month detail. */
+export interface StatsFacts {
+  /** Finished months in which every space's score was at least 90. */
   monthsCleared: number
-  /** Months in a row at 90%+ up to the latest finished month (months without a score carry). */
+  /** Cleared months in a row up to the latest finished month (months without a score carry). */
   currentStreak: number
   bestStreak: number
-  /** Distinct weeks played across every space. */
+  /** Distinct weeks played across every space, this month's included. */
   weeksPlayed: number
+  /** Finished months with a score. */
+  finishedMonths: number
   /** The first month counted, null with no data. */
   since: MonthId | null
 }
+
+/** stats/{uid}: written only by the reminders job, from FIRST_RESULTS_MONTH on; readable per the showcase switch. */
+export interface UserStats extends StatsFacts {
+  uid: UID
+  updatedAt: number
+}
+
+/** The showcase's stats (statsView in domain/showcase.ts): zeros and since null without a stats doc. */
+export type StatsView = StatsFacts
 
 /**
  * sharedGoals/{goalId} (SPEC §11.3) in real units: the data layer divides the stored hundredths (target100, total100,
  * totals100) by 100. One team target filled together by up to 8 people (members + invited); no stakes.
  */
 export interface SharedGoal {
+  /** 1–40 letters and digits (isGoalId); Firestore's auto ids. */
   id: string
   /** 1–60 characters. */
   name: string
@@ -645,6 +670,8 @@ export interface SharedGoal {
   /** The creator's IANA zone: weeks run Monday to Sunday on it. */
   timezone: string
   utcOffsetMin: number
+  /** Each member's device zone when they created or joined (the check-in push keeps to their waking hours). */
+  zones: Record<UID, string>
   /** Invites, edits and finishes. Passes to the earliest-joined member when the owner leaves. */
   ownerId: UID
   createdBy: UID

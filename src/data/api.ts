@@ -3,16 +3,30 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { now } from '../domain/clock.ts'
 import type {
+  AskResult,
+  Checkin,
+  CheckinResult,
+  FriendLookup,
+  FriendsView,
   MemberStakes,
   MonthData,
   MonthId,
   MonthlyData,
   MonthResults,
   MonthStakes,
+  NewSharedGoalInput,
+  Ring,
   Settlement,
+  SharedGoal,
+  SharedGoalPatch,
+  SharedGoalsView,
+  Showcase,
+  ShowcaseItems,
+  ShowSwitches,
   Space,
   UID,
   UserProfile,
+  UserStats,
   WeekData,
   WeekId,
 } from '../domain/types.ts'
@@ -328,3 +342,192 @@ export { crossOutTask, undoCrossOut, CROSSED_OUT_TICK } from './cancel.ts'
 export { useMoneyState, useEarnings, useMoves, useGoals, useCurrency } from './money.ts'
 export { setCurrency, setBaseline, setTaskRevenue, addMove, deleteMove, saveGoal, deleteGoal, reorderGoals, markGoalBought } from './money.ts'
 export { forget, forgetWhere } from './store.ts'
+
+// ---------- Batch 3: friends, profile showcase, shared goals (SPEC §11) ----------
+// Contract stubs. The data builder implements them in src/data/friends.ts, showcase.ts and shared.ts and replaces
+// each stub below with a re-export (signatures fixed; SPEC §11.8 has the behaviour and the messages). Until then the
+// hooks stay loading and the writes refuse.
+
+// batch3: TODO replace with the real modules.
+const NOT_BUILT: Live<never> = Object.freeze({ data: undefined, loading: true, error: null })
+function notBuilt(): never {
+  throw new Error('This isn’t ready yet.')
+}
+
+// ----- Friends (§11.6, §11.8) -----
+
+/** Your pairs (one query: friends where users array-contains you), split into friends, incoming and sent
+ *  (friendsView). Key `${uid}|friends`. */
+export function useFriendships(): Live<FriendsView> {
+  return NOT_BUILT // batch3: TODO
+}
+
+/** Your current friend code (the newest friendCodes doc with your uid); created the first time it's needed.
+ *  Offline before it exists: `error` with the offline message. Key `${uid}|friendCode`. */
+export function useMyFriendCode(): Live<string> {
+  return NOT_BUILT // batch3: TODO
+}
+
+/** A new code, then the old ones deleted (old links stop working at once). Fails at once offline. */
+export async function resetFriendCode(): Promise<string> {
+  return notBuilt() // batch3: TODO
+}
+
+/** `<app url>?friend=CODE` for sharing (as inviteLink). */
+export function friendLink(code: string): string {
+  void code
+  return notBuilt() // batch3: TODO
+}
+
+/** Looks up a code or a pasted link: whose it is, with their profile. Throws "That’s your own code.", "No one has that
+ *  code. Check it and try again.", "That’s a space invite. Join it from Spaces." or the offline message. */
+export async function lookupFriendCode(codeOrLink: string): Promise<FriendLookup> {
+  void codeOrLink
+  return notBuilt() // batch3: TODO
+}
+
+/** Sends a friend request, or accepts theirs when they already asked (mutual). A transaction; fails at once offline. */
+export async function askFriend(uid: UID): Promise<AskResult> {
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+/** Accepts `uid`'s pending (or earlier declined) request. Fails at once offline. */
+export async function acceptFriend(uid: UID): Promise<void> {
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+/** Declines `uid`'s request, silently: they keep seeing "Requested". Fails at once offline. */
+export async function declineFriend(uid: UID): Promise<void> {
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+/** Withdraws your request to `uid` (deletes the pair). Fails at once offline. */
+export async function cancelFriendRequest(uid: UID): Promise<void> {
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+/** Ends the friendship (deletes the pair). Either side can; either can ask again later. Fails at once offline. */
+export async function removeFriend(uid: UID): Promise<void> {
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+// ----- Showcase, rings and stats (§11.7, §11.8) -----
+
+/** showcases/{uid} (anyone signed in can read it); null when there is none (DEFAULT_SHOW, no items). */
+export function useShowcase(uid: UID): Live<Showcase | null> {
+  void uid
+  return NOT_BUILT // batch3: TODO
+}
+
+/** rings/{uid}: yours or a friend's (written by the reminders job). A refusal (not friends) reads as null. */
+export function useRing(uid: UID): Live<Ring | null> {
+  void uid
+  return NOT_BUILT // batch3: TODO
+}
+
+/** stats/{uid}: yours, or anyone's whose showcase shows stats (written by the reminders job). A refusal reads as null. */
+export function useStats(uid: UID): Live<UserStats | null> {
+  void uid
+  return NOT_BUILT // batch3: TODO
+}
+
+/** Saves your switches with copies of only the switched-on items (showcaseDoc). Your own doc: it shows at once and
+ *  queues offline, like a rename. */
+export async function saveShowcase(show: ShowSwitches, items: ShowcaseItems): Promise<void> {
+  void show
+  void items
+  return notBuilt() // batch3: TODO
+}
+
+/** Mounted once by the signed-in app: keeps your showcase's money copies in step with your money (debounced, writes
+ *  only on change, while a money switch is on). Adds no reads. */
+export function useShowcaseSync(): void {
+  // batch3: TODO
+}
+
+// ----- Shared goals (§11.8) -----
+
+/** Your shared goals (finished ones included) and your invitations: two queries. Key `${uid}|shared`. */
+export function useSharedGoals(): Live<SharedGoalsView> {
+  return NOT_BUILT // batch3: TODO
+}
+
+/** One goal (members and invitees can read it); null when missing or no longer readable. */
+export function useSharedGoal(goalId: string): Live<SharedGoal | null> {
+  void goalId
+  return NOT_BUILT // batch3: TODO
+}
+
+/** One week's check-ins of a goal (members only). */
+export function useCheckins(goalId: string, weekId: WeekId): Live<Checkin[]> {
+  void goalId
+  void weekId
+  return NOT_BUILT // batch3: TODO
+}
+
+/** Creates a goal in your device's time zone, with you as owner and member, inviting friends. Resolves with its id.
+ *  Fails at once offline. */
+export async function createSharedGoal(input: NewSharedGoalInput): Promise<string> {
+  void input
+  return notBuilt() // batch3: TODO
+}
+
+/** The owner invites more friends (members + invited ≤ 8). Fails at once offline. */
+export async function inviteToSharedGoal(goalId: string, uids: UID[]): Promise<void> {
+  void goalId
+  void uids
+  return notBuilt() // batch3: TODO
+}
+
+/** The owner withdraws an invitation. Fails at once offline. */
+export async function cancelSharedInvite(goalId: string, uid: UID): Promise<void> {
+  void goalId
+  void uid
+  return notBuilt() // batch3: TODO
+}
+
+/** Accepts your invitation. Fails at once offline. */
+export async function joinSharedGoal(goalId: string): Promise<void> {
+  void goalId
+  return notBuilt() // batch3: TODO
+}
+
+/** Declines your invitation (silently). Fails at once offline. */
+export async function declineSharedGoal(goalId: string): Promise<void> {
+  void goalId
+  return notBuilt() // batch3: TODO
+}
+
+/** Leaves a goal: your part stays in the total; an owner hands on to the earliest-joined member; the last member's
+ *  leave finishes it. Fails at once offline. */
+export async function leaveSharedGoal(goalId: string): Promise<void> {
+  void goalId
+  return notBuilt() // batch3: TODO
+}
+
+/** The owner edits the name, unit, target or end date (reachedAt follows the new target). Fails at once offline. */
+export async function editSharedGoal(goalId: string, patch: SharedGoalPatch): Promise<void> {
+  void goalId
+  void patch
+  return notBuilt() // batch3: TODO
+}
+
+/** The owner finishes the goal: check-ins stop, invitations go, it moves to Finished. Fails at once offline. */
+export async function finishSharedGoal(goalId: string): Promise<void> {
+  void goalId
+  return notBuilt() // batch3: TODO
+}
+
+/** Saves your part for this week (the goal's zone), replacing an earlier check-in that week; the goal's totals change
+ *  in the same transaction. Fails at once offline. */
+export async function checkIn(goalId: string, amount: number, note: string): Promise<CheckinResult> {
+  void goalId
+  void amount
+  void note
+  return notBuilt() // batch3: TODO
+}

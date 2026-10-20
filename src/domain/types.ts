@@ -473,3 +473,234 @@ export interface Goal {
   order: number
   createdAt: number
 }
+
+// ---------- Batch 3: friends, profile showcase, shared goals (SPEC §11) ----------
+// Everything lives in new top-level collections (§11.3); nothing above changes.
+
+/** friends/{pairId}: 'asked' (pending), 'declined' (silent: the asker still sees "Requested"), 'friends'. */
+export type FriendState = 'asked' | 'declined' | 'friends'
+
+/** One friends/{pairId} doc as seen by the signed-in user (SPEC §11.3). */
+export interface Friendship {
+  /** `${a}_${b}` with a < b (string order): one doc per pair, found from either side. */
+  id: string
+  /** The other person. */
+  uid: UID
+  /** Who asked. */
+  by: UID
+  state: FriendState
+  /** When asked ('asked', 'declined'), or since when friends ('friends'). Server time. */
+  at: number
+}
+
+/** The signed-in user's pairs, split for the Friends screen (friendsView in domain/friends.ts). */
+export interface FriendsView {
+  friends: Friendship[]
+  /** Asked by the other person and still pending (a request you declined is not here). */
+  incoming: Friendship[]
+  /** Asked by you, pending or (silently) declined: both read as "Requested". */
+  sent: Friendship[]
+}
+
+/** How someone relates to the signed-in user (relationOf in domain/friends.ts). */
+export type FriendRelation = 'me' | 'friend' | 'incoming' | 'sent' | 'none'
+
+/** A friend code looked up (lookupFriendCode): whose it is, with their profile when it loaded. */
+export interface FriendLookup {
+  code: string
+  uid: UID
+  profile: UserProfile | null
+}
+
+/** askFriend's outcome: a new request, an accepted one (they had asked you), or nothing to do. */
+export type AskResult = 'asked' | 'friends' | 'already-asked' | 'already-friends'
+
+/** The showcase switches (§11.7): DEFAULT_SHOW = stats on, the three money items off. */
+export interface ShowSwitches {
+  stats: boolean
+  /** Goals marked Bought (moves with goal: true). */
+  achieved: boolean
+  /** Current goals: names and percentages, never amounts. */
+  goals: boolean
+  /** Last month's earnings: the one item with an amount. */
+  earnings: boolean
+}
+
+export interface AchievedGoal {
+  /** 1–60 characters. */
+  name: string
+  /** When it was marked Bought (the move's `at`). */
+  at: number
+}
+
+export interface ShownGoal {
+  /** 1–60 characters. */
+  name: string
+  /** Whole percent funded, 0–100 (100 = funded). */
+  pct: number
+}
+
+export interface ShownEarnings {
+  /** The month before the owner's money month when it was copied. */
+  monthId: MonthId
+  /** 0…1e9, in `currency`. */
+  amount: number
+  currency: CurrencyCode
+}
+
+/** Every item a showcase can hold, computed from the owner's money (showcaseItems); only switched-on ones are stored. */
+export interface ShowcaseItems {
+  /** Newest first, at most 12. */
+  achieved: AchievedGoal[]
+  /** Saving order, at most 8. */
+  goals: ShownGoal[]
+  earnings: ShownEarnings
+}
+
+/** showcases/{uid}: readable by anyone signed in; holds only copies of what is switched on (§11.3). */
+export interface Showcase {
+  uid: UID
+  show: ShowSwitches
+  /** Present exactly when show.achieved. */
+  achieved?: AchievedGoal[]
+  /** Present exactly when show.goals. */
+  goals?: ShownGoal[]
+  /** Present exactly when show.earnings. */
+  earnings?: ShownEarnings
+  updatedAt: number
+}
+
+/** One space's month so far for one user, as the reminders job last computed it (rings/{uid}.spaces[spaceId]). */
+export interface RingEntry {
+  monthId: MonthId
+  /** computeMonth's finalScore: null when they have none (only judged, sat out, nothing closed yet). */
+  score: number | null
+  /** The month was complete when written. */
+  final: boolean
+  at: number
+}
+
+/** rings/{uid}: written only by the reminders job; readable by the owner and their friends (§11.4). */
+export interface Ring {
+  uid: UID
+  /** By space id. Entries of spaces they left keep an old month and are ignored by ringView. */
+  spaces: Record<string, RingEntry>
+  updatedAt: number
+}
+
+/** What a ring shows (ringView): their score this month so far across their spaces, or last month's final. */
+export interface RingView {
+  /** 0–100, or null (no score: the ring shows its track only). */
+  value: number | null
+  monthId: MonthId | null
+  /** The month is complete in every space averaged ("September", not "October so far"). */
+  final: boolean
+  /** How many spaces' scores were averaged. */
+  spaces: number
+}
+
+/** One space's month for one user in stats/{uid}. */
+export interface StatsEntry {
+  score: number | null
+  /** The weeks they played that month in that space (closed, scored, not paused, skipped or judged). */
+  weeks: WeekId[]
+  final: boolean
+}
+
+/** stats/{uid}: written only by the reminders job, from FIRST_RESULTS_MONTH on; readable per the showcase switch. */
+export interface UserStats {
+  uid: UID
+  /** monthId → spaceId → entry. */
+  months: Record<MonthId, Record<string, StatsEntry>>
+  updatedAt: number
+}
+
+/** The showcase's stats (statsView in domain/showcase.ts). */
+export interface StatsView {
+  /** Finished months whose mean score across their spaces was at least 90. */
+  monthsCleared: number
+  /** Months in a row at 90%+ up to the latest finished month (months without a score carry). */
+  currentStreak: number
+  bestStreak: number
+  /** Distinct weeks played across every space. */
+  weeksPlayed: number
+  /** The first month counted, null with no data. */
+  since: MonthId | null
+}
+
+/**
+ * sharedGoals/{goalId} (SPEC §11.3) in real units: the data layer divides the stored hundredths (target100, total100,
+ * totals100) by 100. One team target filled together by up to 8 people (members + invited); no stakes.
+ */
+export interface SharedGoal {
+  id: string
+  /** 1–60 characters. */
+  name: string
+  /** 1–16 characters, e.g. "km", "books", or a currency code from CURRENCIES ("USD") for money. */
+  unit: string
+  /** > 0, at most 2 decimals, ≤ 1e9. */
+  target: number
+  /** The last day (YYYY-MM-DD, the goal's zone): check-ins stop when it ends. null = no end date. */
+  endsOn: string | null
+  /** The creator's IANA zone: weeks run Monday to Sunday on it. */
+  timezone: string
+  utcOffsetMin: number
+  /** Invites, edits and finishes. Passes to the earliest-joined member when the owner leaves. */
+  ownerId: UID
+  createdBy: UID
+  memberIds: UID[]
+  /** Pending invitations (friends of the owner). */
+  invited: UID[]
+  joinedAt: Record<UID, number>
+  leftAt: Record<UID, number>
+  /** Each person's part so far, members and former members alike (a leaver's part stays). */
+  totals: Record<UID, number>
+  /** The sum of `totals`. */
+  total: number
+  /** The latest check-in (the rules find its doc through it). */
+  last: { by: UID; weekId: WeekId; at: number } | null
+  /** Set by the check-in (or edit) that reached the target; cleared if the total falls below it again. */
+  reachedAt: number | null
+  /** Finished (Finish Goal, or the last member left): read-only from then on. */
+  archivedAt: number | null
+  createdAt: number
+}
+
+/** The signed-in user's shared goals (finished ones included) and invitations. */
+export interface SharedGoalsView {
+  goals: SharedGoal[]
+  invites: SharedGoal[]
+}
+
+/** sharedGoals/{goalId}/checkins/{weekId}_{uid}: one member's part in one week, editable that week. */
+export interface Checkin {
+  /** `${weekId}_${uid}` */
+  id: string
+  uid: UID
+  /** The week (its Monday) in the goal's zone. */
+  weekId: WeekId
+  /** ≥ 0, at most 2 decimals, in the goal's unit. */
+  amount: number
+  /** 0–80 characters, one line. */
+  note: string
+  /** When it was last saved. */
+  at: number
+}
+
+/** checkIn's outcome: the team's new total, and whether this check-in reached the target. */
+export interface CheckinResult {
+  total: number
+  reached: boolean
+}
+
+export interface NewSharedGoalInput {
+  name: string
+  unit: string
+  target: number
+  endsOn: string | null
+  /** Friends to invite (at most 7). */
+  invite: UID[]
+}
+
+/** What the owner can edit. */
+export type SharedGoalPatch = Partial<Pick<SharedGoal, 'name' | 'unit' | 'target' | 'endsOn'>>

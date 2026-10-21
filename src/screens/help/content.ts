@@ -40,7 +40,7 @@ function isMidnight(m: number): boolean {
 }
 
 export interface HelpSection {
-  id: 'spaces' | 'week' | 'review' | 'scores' | 'money' | 'reminders'
+  id: 'spaces' | 'week' | 'review' | 'scores' | 'money' | 'friends' | 'reminders'
   icon: IconName
   title: string
   paragraphs: string[]
@@ -48,9 +48,9 @@ export interface HelpSection {
 
 const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
 
-/** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4, §9.11). */
+/** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4, §9.11, §11.10). */
 export const REMINDER_TIMES =
-  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK.'
+  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK. Shared goals remind you to check in as each week ends.'
 
 /** The Help sheet, in the order a newcomer meets things. About three minutes of reading, at most. */
 export function helpSections(rules: HelpRules = RULES): HelpSection[] {
@@ -66,12 +66,12 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       title: 'Spaces and stakes',
       paragraphs: [
         `A space is you and up to ${maxMembers - 1} friends. Start one, or join with an invite link or code.`,
-        'Each space has house stakes, set by the owner. You can also set your own: what friends owe you when you hit the bar, and what you owe when you miss.',
+        'Each space has house stakes, set by the owner. You can also set your own reward and penalty.',
         'Your stakes count as soon as friends tap Agree; a line that’s the same for everyone needs all of them.',
         'A month’s stakes are set when it ends.',
-        `Deadlines follow the space’s time zone. If you join after ${momentDay(lock)}’s lock, you start with the next week.`,
-        'Prefer to only rate? Turn on Only Rate Friends: you review everyone, with no list and nothing owed. In a month you also play, weeks you judge count as 0%.',
-        'The owner can change when lists lock and reviews open and close, with at least a day’s notice to everyone.',
+        `Deadlines follow the space’s time zone. Join after ${momentDay(lock)}’s lock and you start the next week.`,
+        'Turn on Only Rate Friends to review everyone with no list and nothing owed. In a month you also play, weeks you judge count as 0%.',
+        'The owner can change when lists lock and reviews open and close, with a day’s notice.',
       ],
     },
     {
@@ -80,10 +80,10 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       title: 'Your week',
       paragraphs: [
         `Plan your tasks before ${momentText(lock, hourCycle)}, when your list locks. You can plan next week any time.`,
-        'From the lock on, the week counts, even if you leave the space. An empty list scores 0%.',
-        `Tick tasks off as you finish them; everyone in the space sees your ticks. A task can have up to ${maxSteps} steps, and it’s done when every step is.`,
+        'From the lock on, the week counts, even if you leave. An empty list scores 0%.',
+        `Tick tasks off as you finish them; everyone in the space sees your ticks. A task can have up to ${maxSteps} steps.`,
         `Until ${momentText(reviewOpen, hourCycle)} you can still add tasks. They can’t be changed, show the day you added them, and are reviewed ${isMidnight(reviewOpen) ? `on ${reviewDay} like` : 'with'} the rest.`,
-        'Each month can also have a list of bigger things. Plan it in its first week; it locks with the second week’s list and counts as one extra week. You can add to it until reviews open.',
+        'Each month can also have a list of bigger things: it locks with the second week’s list and counts as one extra week. You can add to it until reviews open.',
         'Can’t do a task for reasons outside your control? Cross it out with a reason before reviews open. You can undo that twice.',
       ],
     },
@@ -92,7 +92,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       icon: 'person2',
       title: `${reviewDay} review`,
       paragraphs: [
-        `${reviewStart}, mark each friend’s tasks: Done, Half or Not done. You review everyone who had tasks that week.`,
+        `${reviewStart}, mark each friend’s tasks: Done, Half or Not done. You review everyone with tasks that week.`,
         'It’s blind: nobody sees any marks until everyone has submitted, or the deadline passes.',
         `Submit once, before ${momentText(deadline, hourCycle)}. Reviews are final.`,
         `Every friend you don’t review costs you ${points(latePenalty)} off your month.`,
@@ -109,7 +109,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
         `Your month is the average of its weeks, minus ${points(latePenalty)} for each review you missed. A week belongs to the month its Friday falls in.`,
         `Hit ${threshold}% for the month and your friends owe you your reward. Miss it and you owe them your penalty.`,
         'Nothing is paid in the app. Settle up in real life, then whoever was owed marks each one Settled.',
-        'Need a break? Anyone can ask to pause a week before its reviews open. If everyone says OK, it doesn’t count. One pause a month.',
+        'Anyone can ask to pause a week before its reviews open. If everyone says OK, it doesn’t count. One pause a month.',
         `Hit ${threshold}% several months in a row for streak rewards. Sitting a month out doesn’t break a streak; a month under ${threshold}% starts it over.`,
       ],
     },
@@ -118,10 +118,20 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       icon: 'banknote',
       title: 'Money and goals',
       paragraphs: [
-        'Only you see this part. Friends never see amounts, your balance or your goals.',
-        'Turn on Generates revenue for a task (tap ⓘ next to it) and enter what it pays. It’s earned when you tick it off.',
+        'Only you see this part, unless you show it on your profile.',
+        'Turn on Generates revenue for a task (tap ⓘ) and enter what it pays. It’s earned when you tick it off.',
         'Set your balance once, then add or remove money as it comes and goes. Earnings add to it.',
         'Goals fill from the top with your balance. When one is funded, mark it as bought.',
+      ],
+    },
+    {
+      id: 'friends',
+      icon: 'personPlus',
+      title: 'Friends and shared goals',
+      paragraphs: [
+        'Add friends with your link or code. Their ring shows their month so far.',
+        'Your profile shows only what you switch on, to anyone on Stakes.',
+        'Shared goals are targets you fill together, like 100 km. Check in your part each week.',
       ],
     },
     {
@@ -129,11 +139,11 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       icon: 'bell',
       title: 'Reminders and installing',
       paragraphs: [
-        'Add Stakes to your Home Screen: in Safari, open the Share menu and tap Add to Home Screen.',
-        'Reminders only work from the installed app; turn them on in your profile. They nudge you before lists lock and reviews are due, and tell you when results are in.',
-        'On Wednesday evening they nudge you if nothing is ticked yet, and on Thursday evening if tasks are still open.',
+        'Add Stakes to your Home Screen: in Safari, tap Share, then Add to Home Screen.',
+        'Reminders only work from the installed app; turn them on in your profile. They nudge you before lists lock and reviews are due, and when results are in.',
+        'On Wednesday evening they nudge you if nothing is ticked yet, and Thursday evening if tasks are still open.',
         'The installed app signs in separately from Safari: same email, same password.',
-        'Spaces with their own times follow them.',
+        'Spaces with their own times follow them; shared goals remind you as each week ends.',
       ],
     },
   ]
@@ -217,7 +227,7 @@ export function introPages(rules: HelpRules = RULES): IntroPage[] {
     {
       id: 'money',
       title: 'Your money stays yours',
-      text: 'Mark tasks that earn money, watch your balance and save for goals. Friends never see any of it.',
+      text: 'Mark tasks that earn money, watch your balance and save for goals. It’s private unless you choose to show it.',
     },
   ]
 }

@@ -17,7 +17,10 @@ import type { Live } from './api.ts'
 import { isProfilePhoto, toProfile } from './convert.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { deleteAllMoney } from './money.ts'
+import { deleteMyFriendCodes, deleteMyFriendships } from './friends.ts'
 import { cleanText, duringSignUp, ensureProfile, newProfile, profileRef, requireUser, startAuth } from './session.ts'
+import { leaveAllSharedGoals } from './shared.ts'
+import { deleteScoreDocs, deleteShowcase, hideShowcase } from './showcase.ts'
 import { leaveAllSpaces } from './spaces.ts'
 import type { Start } from './store.ts'
 
@@ -126,7 +129,14 @@ export async function updateMyPhoto(photo: string | null): Promise<void> {
   }
 }
 
-/** Re-authenticates, leaves all spaces, deletes the user's docs (money included) and the auth user. */
+/**
+ * Re-authenticates, leaves all spaces, deletes the user's docs (money included) and the auth user. Batch 3 (SPEC
+ * §11.12), each step idempotent so a retry finishes the job: after the money, the showcase is switched off (strangers
+ * see nothing from then on, stats included), every shared goal is left the way leaveSharedGoal leaves it (your part
+ * stays in its totals) and every invitation declined, and your friend codes go; after the profile, every pair you are
+ * in, then the job's rings, stats and scores docs (the job skips users without a profile, so it won't write them
+ * again), and the showcase last.
+ */
 export async function deleteMyAccount(password: string): Promise<void> {
   const user = requireUser()
   if (!user.email) throw new Error(MSG.signedOut)
@@ -145,10 +155,16 @@ export async function deleteMyAccount(password: string): Promise<void> {
     // Money first: leaving can't be undone, so anything that can fail goes before it and a retry
     // finds the user still in their spaces.
     await deleteAllMoney(user.uid)
+    await hideShowcase(user.uid)
+    await leaveAllSharedGoals(user.uid)
+    await deleteMyFriendCodes(user.uid)
     await leaveAllSpaces(user.uid)
     const subs = await getDocs(collection(db, 'users', user.uid, 'push'))
     await Promise.all(subs.docs.map((sub) => deleteDoc(sub.ref)))
     await deleteDoc(profileRef(db, user.uid))
+    await deleteMyFriendships(user.uid)
+    await deleteScoreDocs(user.uid)
+    await deleteShowcase(user.uid)
     await deleteUser(user)
   } catch (e) {
     throw humanError(e, MSG.noAccess)

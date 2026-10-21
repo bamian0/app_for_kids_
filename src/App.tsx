@@ -2,7 +2,8 @@
 // and crossfades between them. Everything else is navigation stacks and sheets from the design system.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useAuth } from './data/api.ts'
+import { useAuth, useFriendships, useProfiles, useSharedGoals, useShowcaseSync } from './data/api.ts'
+import { friendsBadge } from './domain/friends.ts'
 import { isConfigured } from './firebase/config.ts'
 import { isIOS, isStandalone } from './push/index.ts'
 import { NavigationStack, Sheet, TabView, UIProvider } from './ui/index.ts'
@@ -12,28 +13,33 @@ import { WelcomeScreen } from './screens/auth/WelcomeScreen.tsx'
 import { GoalsScreen } from './screens/GoalsScreen.tsx'
 import { OverviewScreen } from './screens/OverviewScreen.tsx'
 import { SpacesScreen } from './screens/SpacesScreen.tsx'
+import { FriendsScreen } from './screens/friends/FriendsScreen.tsx'
+import { captureFriendParams, hasGoalTarget, hasPendingFriend } from './screens/friends/links.ts'
 import { IntroScreen } from './screens/help/IntroScreen.tsx'
 import { hasSeenIntro, markIntroSeen } from './screens/help/introFlag.ts'
 import { captureOpenParam, hasOpenTarget } from './screens/components/openTarget.ts'
 import { captureJoinParam, hasPendingJoin } from './screens/components/pendingJoin.ts'
+import { useNow } from './screens/components/clock.ts'
 import { readLocal, writeLocal } from './screens/components/storage.ts'
 import './screens/screens.css'
 
 captureJoinParam()
 captureOpenParam()
+captureFriendParams()
 
-type TabId = 'spaces' | 'overview' | 'goals'
+type TabId = 'spaces' | 'overview' | 'goals' | 'friends'
 
 const TAB_KEY = 'tab'
 
 function isTabId(value: string | null): value is TabId {
-  return value === 'spaces' || value === 'overview' || value === 'goals'
+  return value === 'spaces' || value === 'overview' || value === 'goals' || value === 'friends'
 }
 
 /** The tab the app opens on: the last one used on this device, but Spaces for an invite link or a
- *  notification, since both open a space. */
+ *  notification that opens a space, and Friends for a friend link or a shared goal's check-in push. */
 function initialTab(): TabId {
   if (hasPendingJoin() || hasOpenTarget()) return 'spaces'
+  if (hasPendingFriend() || hasGoalTarget()) return 'friends'
   const saved = readLocal(TAB_KEY)
   return isTabId(saved) ? saved : 'spaces'
 }
@@ -83,9 +89,12 @@ function Session() {
 
 function SignedIn({ intro, onIntroDone }: { intro: boolean; onIntroDone: () => void }) {
   const [tab, setTab] = useState<TabId>(initialTab)
-  // Someone already signed in sees the intro once, as a cover. An invite link or a notification goes
-  // straight to its space instead, and the intro waits for the next launch.
-  const [cover] = useState(() => intro && !hasPendingJoin() && !hasOpenTarget())
+  // Someone already signed in sees the intro once, as a cover. An invite link, a friend link or a notification
+  // goes straight to where it points instead, and the intro waits for the next launch.
+  const [cover] = useState(() => intro && !hasPendingJoin() && !hasOpenTarget() && !hasPendingFriend() && !hasGoalTarget())
+  // Keeps the showcase's money copies in step with your money (SPEC §11.8): once, for the whole signed-in app.
+  useShowcaseSync()
+  const badge = useFriendsBadge()
   const select = useCallback((id: TabId) => {
     setTab(id)
     writeLocal(TAB_KEY, id)
@@ -95,8 +104,9 @@ function SignedIn({ intro, onIntroDone }: { intro: boolean; onIntroDone: () => v
       { id: 'spaces', title: 'Spaces', icon: 'squareStack', root: <SpacesScreen /> },
       { id: 'overview', title: 'Overview', icon: 'chartBar', root: <OverviewScreen /> },
       { id: 'goals', title: 'Goals', icon: 'target', root: <GoalsScreen /> },
+      { id: 'friends', title: 'Friends', icon: 'person2', root: <FriendsScreen />, badge },
     ],
-    [],
+    [badge],
   )
   return (
     <>
@@ -106,4 +116,15 @@ function SignedIn({ intro, onIntroDone }: { intro: boolean; onIntroDone: () => v
       </Sheet>
     </>
   )
+}
+
+/** The Friends tab's badge: incoming requests from people who still have a profile, plus open shared-goal
+ *  invitations (not to finished or ended goals), as friendsBadge counts them (SPEC §11.2). */
+function useFriendsBadge(): number {
+  const nowMs = useNow()
+  const friendships = useFriendships().data
+  const shared = useSharedGoals().data
+  const profiles = useProfiles(friendships?.incoming.map((p) => p.uid) ?? [])
+  const view = useMemo(() => (friendships ? { ...friendships, incoming: friendships.incoming.filter((p) => profiles[p.uid]) } : undefined), [friendships, profiles])
+  return friendsBadge(view, shared, nowMs)
 }

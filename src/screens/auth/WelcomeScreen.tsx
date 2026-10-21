@@ -10,6 +10,7 @@ import { Avatar, Button, Icon, Screen, Section, cx, useNav } from '../../ui/inde
 import type { IconName } from '../../ui/index.ts'
 import { AppIcon } from '../components/Bits.tsx'
 import { peekPendingJoin } from '../components/pendingJoin.ts'
+import { hasPendingFriend } from '../friends/links.ts'
 import { StakesList } from '../components/Stakes.tsx'
 import { SignInScreen, SignUpScreen } from './AuthScreens.tsx'
 
@@ -59,6 +60,8 @@ export function WelcomeScreen() {
   const nav = useNav()
   const code = peekPendingJoin()
   const invite = usePendingInvite(code)
+  // A friend link (?friend=): who sent it shows once you're signed in (codes are read signed in).
+  const friendLink = hasPendingFriend()
   // The installed app is where friends who signed up in Safari land: signing in comes first there.
   const installed = isStandalone()
   // Short phones get a smaller icon and title so everything fits above the pinned actions.
@@ -86,8 +89,10 @@ export function WelcomeScreen() {
         <div className="s-welcome__actions">
           {installed ? (
             <p className="s-welcome__note">Signed up in Safari? Same email, same password.</p>
+          ) : code && !invite ? (
+            <p className="s-welcome__note">You’ve been invited. Sign up or sign in to join.</p>
           ) : (
-            code && !invite && <p className="s-welcome__note">You’ve been invited. Sign up or sign in to join.</p>
+            !code && friendLink && <p className="s-welcome__note">A friend sent you their Stakes link. Sign in or create an account to see who.</p>
           )}
           {installed ? [existing, create] : [create, existing]}
         </div>

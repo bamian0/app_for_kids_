@@ -1,9 +1,23 @@
 // Firestore documents -> domain types. Timestamps become epoch ms; a pending serverTimestamp()
 // reads as the SDK's local estimate, so optimistic writes render immediately.
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
-import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras, isReviewMark } from '../domain/decode.ts'
+import {
+  decodeCheckin,
+  decodeFriendship,
+  decodeMemberStakes,
+  decodeMonthResults,
+  decodeRing,
+  decodeSharedGoal,
+  decodeShowcase,
+  decodeSpaceExtras,
+  decodeStats,
+  decodeWeekExtras,
+  isReviewMark,
+} from '../domain/decode.ts'
 import type {
+  Checkin,
   Earning,
+  Friendship,
   Goal,
   Invite,
   Mark,
@@ -17,10 +31,14 @@ import type {
   Progress,
   Review,
   ReviewMark,
+  Ring,
   Settlement,
+  SharedGoal,
+  Showcase,
   Space,
   UID,
   UserProfile,
+  UserStats,
   Week,
 } from '../domain/types.ts'
 import { decodeTasks } from './tasks.ts'
@@ -227,4 +245,36 @@ export function toMove(snap: Snap): MoneyMove {
 export function toGoal(snap: Snap): Goal {
   const d = data(snap)
   return { id: snap.id, name: str(d.name), cost: amount(d.cost), order: amount(d.order), createdAt: ms(d.createdAt) }
+}
+
+// ---------- Batch 3 (SPEC §11.3): through the shared decoders, which drop what the rules would never have written ----------
+
+/** friends/{pairId} as seen by `me`; null when malformed (or not a pair of mine). */
+export function toFriendship(snap: Snap, me: UID): Friendship | null {
+  return decodeFriendship(snap.id, data(snap), me, msOrNull)
+}
+
+/** showcases/{uid}; null without a doc (DEFAULT_SHOW, no items). */
+export function toShowcase(snap: Snap): Showcase | null {
+  return snap.exists() ? decodeShowcase(snap.id, data(snap), msOrNull) : null
+}
+
+/** rings/{uid}; null without a doc. */
+export function toRing(snap: Snap): Ring | null {
+  return snap.exists() ? decodeRing(snap.id, data(snap), msOrNull) : null
+}
+
+/** stats/{uid}; null without a doc. */
+export function toStats(snap: Snap): UserStats | null {
+  return snap.exists() ? decodeStats(snap.id, data(snap), msOrNull) : null
+}
+
+/** sharedGoals/{goalId} in real units; null without a doc or when malformed. */
+export function toSharedGoal(snap: Snap): SharedGoal | null {
+  return snap.exists() ? decodeSharedGoal(snap.id, data(snap), msOrNull) : null
+}
+
+/** sharedGoals/{goalId}/checkins/{weekId}_{uid} in real units; null when malformed. */
+export function toCheckin(snap: Snap): Checkin | null {
+  return snap.exists() ? decodeCheckin(snap.id, data(snap), msOrNull) : null
 }

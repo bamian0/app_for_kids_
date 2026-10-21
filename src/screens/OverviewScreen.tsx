@@ -1,6 +1,6 @@
 // Overview: your week across every space, what your tasks earned, and where each month stands.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useAuth, useCurrency, useEarnings, useMonthData, useMySpaces } from '../data/api.ts'
+import { useAuth, useCurrency, useEarnings, useMonthData, useMySpaces, useShowcase } from '../data/api.ts'
 import { earnedByWeek, earnedInMonth, earningId, formatMoney, pendingIn, topEarnings, totalEarned } from '../domain/money.ts'
 import { isWeekPaused } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
@@ -260,7 +260,17 @@ function SpaceMonthRow({ space, uid, onOpen }: { space: Space; uid: UID; onOpen:
 
 // ---------- Money ----------
 
+/** Money's footer: it says so while your showcase shows any money (SPEC §11.9.6). */
+function useMoneyFooter(): string {
+  const { uid } = useAuth()
+  const show = useShowcase(uid ?? '').data?.show
+  return show && (show.achieved || show.goals || show.earnings)
+    ? 'Only you see your amounts and goals, except what you put on your showcase.'
+    : 'Only you see your amounts and goals.'
+}
+
 function MoneySection({ names, skip }: { names: Record<string, string>; skip: ReadonlySet<string> }) {
+  const moneyFooter = useMoneyFooter()
   const tabs = useTabBar()
   const nowMs = useNow()
   const currency = useCurrency()
@@ -279,7 +289,7 @@ function MoneySection({ names, skip }: { names: Record<string, string>; skip: Re
 
   if (all.length === 0) {
     return (
-      <Section header="Money" headerStyle="prominent" footer="Only you see your amounts and goals.">
+      <Section header="Money" headerStyle="prominent" footer={moneyFooter}>
         <div className="m-note">
           <span className="m-note__icon" aria-hidden>
             <Icon name="banknote" size={28} weight={1.7} />
@@ -299,7 +309,7 @@ function MoneySection({ names, skip }: { names: Record<string, string>; skip: Re
   const top = topEarnings(all, monthId, TOP_EARNINGS)
 
   return (
-    <Section header="Money" headerStyle="prominent" footer="Only you see your amounts and goals.">
+    <Section header="Money" headerStyle="prominent" footer={moneyFooter}>
       <div className="m-earned">
         <div className="m-earned__label">Earned in {monthName(monthId)}</div>
         <div className="m-earned__value t-tabular">{formatMoney(earnedInMonth(all, monthId), currency)}</div>

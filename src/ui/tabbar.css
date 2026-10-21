@@ -119,8 +119,38 @@
 .ui-tab-bar__item.is-selected {
   color: var(--label);
 }
+/* Four tabs share the capsule at 375 points: narrower items, the same labels. */
+.ui-tab-bar__items[data-count="4"] .ui-tab-bar__item {
+  min-width: min(80px, calc((100vw - 48px) / 4));
+  padding: 0 6px;
+}
+.ui-tab-bar__glyph {
+  position: relative;
+  display: inline-flex;
+}
 .ui-tab-bar__icon {
   transition: transform 0.35s cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+/* The app-icon badge: a red count at the icon's top trailing corner. It sits over the glyph, so the icon and
+   the label never move when it comes and goes. */
+.ui-tab-bar__badge {
+  position: absolute;
+  top: -4px;
+  left: calc(100% - 9px);
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--system-red);
+  color: #fff;
+  font: 600 12px/17px var(--font);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  text-align: center;
+  pointer-events: none;
+}
+.ui-tab-bar__badge.is-wide {
+  padding: 0 4px;
 }
 .ui-tab-bar__item[data-pressed] .ui-tab-bar__icon {
   transform: scale(0.88);

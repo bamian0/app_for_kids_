@@ -1,10 +1,13 @@
-// Your account: photo, name, reminders on this device, sign out, delete account.
+// Your account: photo, name, your showcase, reminders on this device, sign out, delete account.
 import { useEffect, useRef, useState } from 'react'
-import { deleteMyAccount, signOut, updateMyName, useAuth } from '../data/api.ts'
+import { deleteMyAccount, signOut, updateMyName, useAuth, useShowcase } from '../data/api.ts'
+import { showcaseSummary, showOf } from '../domain/showcase.ts'
 import { disablePush, enablePush, isPushEnabled, preloadPushConfig, pushSupport } from '../push/index.ts'
 import type { UID } from '../domain/types.ts'
 import { Button, GlassButton, NavigationStack, Row, Screen, Section, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
 import { ErrorText } from './components/Bits.tsx'
+import { PROFILE_SHOWCASE_FOOTER } from './friends/copy.ts'
+import { ShowcaseEditorScreen } from './friends/ShowcaseEditorScreen.tsx'
 import { REMINDER_TIMES } from './help/content.ts'
 import { HelpScreen } from './help/HelpSheet.tsx'
 import { ProfilePhoto } from './profile/ProfilePhoto.tsx'
@@ -108,6 +111,8 @@ function ProfileHome({ close, onInstallGuide }: Props) {
         />
       </Section>
 
+      {auth.uid && <ShowcaseSection uid={auth.uid} />}
+
       {auth.uid && <NotificationsSection uid={auth.uid} onInstallGuide={onInstallGuide} />}
 
       <Section>
@@ -121,6 +126,18 @@ function ProfileHome({ close, onInstallGuide }: Props) {
         <Row title="Delete Account" destructive chevron onPress={() => nav.push(<DeleteAccountScreen close={close} />, { title: 'Delete Account' })} />
       </Section>
     </Screen>
+  )
+}
+
+/** What anyone on Stakes sees on your profile (SPEC §11.9.4): the switches live in the editor. */
+function ShowcaseSection({ uid }: { uid: UID }) {
+  const nav = useNav()
+  const showcase = useShowcase(uid)
+  const detail = showcase.data === undefined ? undefined : showcaseSummary(showOf(showcase.data))
+  return (
+    <Section footer={PROFILE_SHOWCASE_FOOTER}>
+      <Row icon="person2" title="Showcase" detail={detail} chevron onPress={() => nav.push(<ShowcaseEditorScreen />, { title: 'Showcase' })} />
+    </Section>
   )
 }
 

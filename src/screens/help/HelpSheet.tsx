@@ -19,6 +19,7 @@ const TILE: Record<HelpSection['id'], string> = {
   review: AVATAR_COLORS[6],
   scores: AVATAR_COLORS[3],
   money: AVATAR_COLORS[1],
+  friends: AVATAR_COLORS[5],
   reminders: AVATAR_COLORS[4],
 }
 

@@ -95,7 +95,7 @@ UITabBarController: one `NavigationStack` per tab under an iOS 26 floating glass
 
 | prop | type | notes |
 |---|---|---|
-| `tabs` | `{ id, title, icon, root }[]` | `root` is the tab's root screen |
+| `tabs` | `{ id, title, icon, root, badge? }[]` | `root` is the tab's root screen; `badge` a red count at the icon's corner ("9+" above 9, hidden at 0; VoiceOver "Friends, 2 new") |
 | `selected`, `onSelect` | | Controlled; persist the choice if the app should reopen on it |
 
 ```tsx
@@ -291,7 +291,7 @@ Reminders-style. Checking it fills the circle, draws the checkmark, sweeps a pri
 ## Icons
 `<Icon name="gear" size={22} weight? title? />` renders an SF Symbols-style inline SVG in `currentColor`.
 
-Names: chevronLeft, chevronRight, chevronDown, plus, minus, xmark, checkmark, person, person2, gear, bell, bellSlash, lock, lockOpen, share, ellipsis, link, calendar, trophy, flame, clock, arrowUpRight, trash, info, addToHomeScreen, copy, envelope, signOut, listBullet, pencil, sparkles, halfCircle, xmarkCircleFill, checkmarkCircleFill, chevronUp, arrowUp, arrowDown, plusCircle, minusCircle, squareStack, chartBar, target, banknote, listIndent, bag, questionmark. `iconNames` lists them; `IconName` is the type.
+Names: chevronLeft, chevronRight, chevronDown, plus, minus, xmark, checkmark, person, person2, personPlus, gear, bell, bellSlash, lock, lockOpen, share, ellipsis, link, calendar, trophy, flame, clock, arrowUpRight, trash, info, addToHomeScreen, copy, envelope, signOut, listBullet, pencil, sparkles, halfCircle, xmarkCircleFill, checkmarkCircleFill, chevronUp, arrowUp, arrowDown, plusCircle, minusCircle, squareStack, chartBar, target, banknote, listIndent, bag, questionmark. `iconNames` lists them; `IconName` is the type.
 
 ## Motion, haptics, accessibility
 - `springs.navigation | sheet | snappy | banner | bouncy` are motion spring options (`banner` settles with no visible bounce; `bouncy` is only for check-offs and badges): `<motion.div transition={springs.snappy} />`. `transitionFor(name)` returns a short fade instead when the user prefers reduced motion.

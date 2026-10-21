@@ -13,7 +13,7 @@ const section = (id: string) => sections.find((s) => s.id === id)?.paragraphs.jo
 
 describe('help content', () => {
   it('covers the topics in the order the spec lists them', () => {
-    expect(sections.map((s) => s.id)).toEqual(['spaces', 'week', 'review', 'scores', 'money', 'reminders'])
+    expect(sections.map((s) => s.id)).toEqual(['spaces', 'week', 'review', 'scores', 'money', 'friends', 'reminders'])
   })
 
   it('quotes the rules of the game exactly', () => {
@@ -63,7 +63,7 @@ describe('help content', () => {
     // Judges and custom times.
     expect(section('spaces')).toContain('Turn on Only Rate Friends')
     expect(section('spaces')).toContain('weeks you judge count as 0%')
-    expect(section('spaces')).toContain('with at least a day’s notice to everyone.')
+    expect(section('spaces')).toContain('with a day’s notice.')
     // Monthly lists.
     expect(section('week')).toContain('it locks with the second week’s list and counts as one extra week')
     expect(section('review')).toContain('you also review your friends’ monthly lists')
@@ -74,9 +74,9 @@ describe('help content', () => {
     expect(section('scores')).toContain('a month under 90% starts it over')
     expect(section('scores')).toContain('your friends owe you your reward')
     expect(section('scores')).toContain('marks each one Settled')
-    expect(section('reminders')).toContain('Spaces with their own times follow them.')
+    expect(section('reminders')).toContain('Spaces with their own times follow them;')
     expect(REMINDER_TIMES).toBe(
-      'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK.',
+      'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK. Shared goals remind you to check in as each week ends.',
     )
   })
 
@@ -90,10 +90,32 @@ describe('help content', () => {
     expect(section('week')).toContain('They can’t be changed, show the day you added them')
   })
 
+  it('covers friends, the showcase and shared goals (SPEC §11.11)', () => {
+    const friends = sections.find((s) => s.id === 'friends')
+    expect(friends?.title).toBe('Friends and shared goals')
+    expect(friends?.icon).toBe('personPlus')
+    expect(section('friends')).toContain('Add friends with your link or code')
+    expect(section('friends')).toContain('Their ring shows their month so far')
+    expect(section('friends')).toContain('only what you switch on, to anyone on Stakes')
+    expect(section('friends')).toContain('Check in your part each week')
+    expect(section('reminders')).toContain('shared goals remind you as each week ends')
+    expect(section('money')).toContain('unless you show it on your profile')
+    expect(section('money')).not.toContain('Friends never see')
+    expect(REMINDER_TIMES.endsWith('Shared goals remind you to check in as each week ends.')).toBe(true)
+    // The two clauses that went (the task sheet and the monthly card show them).
+    expect(section('week')).not.toContain('it’s done when every step is')
+    expect(section('week')).not.toContain('Plan it in its first week')
+    // The 5-point line stays where people review.
+    expect(section('review')).toContain('Every friend you don’t review costs you 5 points off your month.')
+    expect(introPages().find((p) => p.id === 'money')?.text).toBe(
+      'Mark tasks that earn money, watch your balance and save for goals. It’s private unless you choose to show it.',
+    )
+  })
+
   it('reads in about three minutes', () => {
     const words = helpText.split(/\s+/).filter(Boolean).length
-    // SPEC §10.9: 696 words with the batch-2.5 paragraphs; the cap is 700.
-    expect(words).toBe(696)
+    // SPEC §11.11: 697 words with the batch-3 section and trims; the cap is 700.
+    expect(words).toBe(697)
     expect(words).toBeLessThanOrEqual(700)
     for (const s of sections) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })
@@ -207,7 +229,7 @@ describe('help for a space’s own times', () => {
     expect(custom.find((s) => s.id === 'review')?.title).toBe('Friday review')
     expect(of('review')).toContain('From Friday at 6:00 PM, mark each friend’s tasks')
     expect(of('review')).toContain('Submit once, before Saturday at noon.')
-    expect(of('spaces')).toContain('If you join after Tuesday’s lock')
+    expect(of('spaces')).toContain('Join after Tuesday’s lock')
     // Reviews that open on Thursday evening name Thursday, as the review sheet does.
     expect(helpSections({ ...RULES, schedule: { ...own, reviewOpen: 3 * 1440 + 1080 } }).find((s) => s.id === 'review')?.title).toBe('Thursday review')
     expect(helpSections({ ...RULES, schedule: own, hourCycle: 'h23' }).find((s) => s.id === 'week')?.paragraphs[0]).toBe(
@@ -217,8 +239,8 @@ describe('help for a space’s own times', () => {
 
   it('stays within the limits', () => {
     const text = custom.flatMap((s) => [s.title, ...s.paragraphs]).join('\n')
-    // SPEC §10.9: 699 words on these times.
-    expect(text.split(/\s+/).filter(Boolean).length).toBe(699)
+    // SPEC §11.11: 700 words on these times.
+    expect(text.split(/\s+/).filter(Boolean).length).toBe(700)
     expect(text).not.toMatch(/['"]/)
     for (const s of custom) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })

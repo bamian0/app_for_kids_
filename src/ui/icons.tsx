@@ -56,6 +56,17 @@ const ICONS = {
       </>
     ),
   },
+  /** SF "person.badge.plus": add a friend. */
+  personPlus: {
+    weight: 1.7,
+    body: (
+      <>
+        <circle cx="9.75" cy="8.25" r="3.5" />
+        <path d="M3.25 19.75c0-3.65 2.9-6 6.5-6s6.5 2.35 6.5 6Z" />
+        <path d="M18.75 5.25v6.5M15.5 8.5H22" />
+      </>
+    ),
+  },
   gear: {
     weight: 1.7,
     body: (

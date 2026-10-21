@@ -1,7 +1,7 @@
 // Join with a code or a pasted link: formats as you type, previews the space, then joins.
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { joinSpace, lookupInvite, useMySpaces } from '../data/api.ts'
+import { joinSpace, lookupFriendCode, lookupInvite, useMySpaces } from '../data/api.ts'
 import { INVITE_ALPHABET, INVITE_CODE_LENGTH, normalizeInviteCode } from '../domain/ids.ts'
 import type { Invite } from '../domain/types.ts'
 import { ActivityIndicator, Avatar, Button, GlassButton, Row, Screen, Section, TextFieldRow } from '../ui/index.ts'
@@ -20,7 +20,8 @@ export function formatCodeInput(value: string): string {
   return raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw
 }
 
-type Lookup = { code: string; invite: Invite | null; error: string | null }
+/** `friendCode`: no space uses the code, but it is someone's friend code (yours included). */
+type Lookup = { code: string; invite: Invite | null; error: string | null; friendCode?: boolean }
 
 interface Props {
   close: () => void
@@ -42,7 +43,16 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
     if (!code) return
     let live = true
     lookupInvite(code).then(
-      (invite) => live && setLookup({ code, invite, error: null }),
+      (invite) => {
+        if (!live) return
+        setLookup({ code, invite, error: null })
+        // A miss may be a friend code typed in the wrong place (SPEC §11.6): one more read, only on a miss.
+        if (!invite)
+          lookupFriendCode(code).then(
+            () => live && setLookup({ code, invite: null, error: null, friendCode: true }),
+            (e: unknown) => live && e instanceof Error && e.message === 'That’s your own code.' && setLookup({ code, invite: null, error: null, friendCode: true }),
+          )
+      },
       (e: unknown) => live && setLookup({ code, invite: null, error: e instanceof Error ? e.message : 'Couldn’t check this code.' }),
     )
     return () => {
@@ -76,6 +86,8 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
     hint = <ErrorText>Codes never use {listNames([...new Set(bad)].map((c) => `“${c}”`))}. Check the code with your friend.</ErrorText>
   } else if (result?.error) {
     hint = <ErrorText>{result.error}</ErrorText>
+  } else if (result?.friendCode) {
+    hint = <ErrorText>That’s a friend code. Add them in Friends.</ErrorText>
   } else if (result && !invite) {
     hint = <ErrorText>No space uses this code. Check it with your friend.</ErrorText>
   }

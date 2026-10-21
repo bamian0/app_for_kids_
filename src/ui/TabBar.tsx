@@ -3,7 +3,7 @@
 // keyboard is up and while the active tab shows a screen pushed on top of its root.
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
-import { motion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
 import { GlassSurface } from './Glass.tsx'
 import { Icon } from './icons.tsx'
 import type { IconName } from './icons.tsx'
@@ -16,6 +16,9 @@ export interface TabItem<T extends string = string> {
   id: T
   title: string
   icon: IconName
+  /** A red count at the icon's top trailing corner ("9+" above 9), like an app badge; 0 or absent hides it.
+   *  VoiceOver reads "Friends, 2 new". */
+  badge?: number
 }
 
 export interface TabBarProps<T extends string = string> {
@@ -48,7 +51,14 @@ export function TabBar<T extends string>({ items, selected, onSelect, hidden, id
   return (
     <div className={cx('ui-tab-bar', className)} data-hidden={hidden || undefined} inert={hidden} aria-hidden={hidden || undefined}>
       <GlassSurface className="ui-tab-bar__capsule">
-        <div className="ui-tab-bar__items" role="tablist" aria-label="Tabs" onKeyDown={onKeyDown} style={{ gridTemplateColumns: `repeat(${items.length}, 1fr)` }}>
+        <div
+          className="ui-tab-bar__items"
+          role="tablist"
+          aria-label="Tabs"
+          onKeyDown={onKeyDown}
+          data-count={items.length}
+          style={{ gridTemplateColumns: `repeat(${items.length}, 1fr)` }}
+        >
           <motion.span
             className="ui-tab-bar__pill"
             aria-hidden
@@ -87,6 +97,7 @@ interface TabButtonProps {
 
 function TabButton({ item, selected, id, controls, buttonRef, onPress }: TabButtonProps) {
   const { pressed, handlers } = usePress(true, 30)
+  const badge = item.badge !== undefined && Number.isFinite(item.badge) && item.badge > 0 ? Math.floor(item.badge) : 0
   return (
     <button
       ref={buttonRef}
@@ -95,13 +106,31 @@ function TabButton({ item, selected, id, controls, buttonRef, onPress }: TabButt
       id={id}
       aria-controls={controls}
       aria-selected={selected}
+      aria-label={badge > 0 ? `${item.title}, ${badge} new` : undefined}
       tabIndex={selected ? 0 : -1}
       className={cx('ui-tab-bar__item', selected && 'is-selected')}
       data-pressed={pressed || undefined}
       onClick={onPress}
       {...handlers}
     >
-      <Icon name={item.icon} size={25} weight={selected ? 2 : 1.8} className="ui-tab-bar__icon" />
+      <span className="ui-tab-bar__glyph">
+        <Icon name={item.icon} size={25} weight={selected ? 2 : 1.8} className="ui-tab-bar__icon" />
+        <AnimatePresence initial={false}>
+          {badge > 0 && (
+            <motion.span
+              key="badge"
+              className={cx('ui-tab-bar__badge', badge > 9 && 'is-wide')}
+              aria-hidden
+              initial={{ scale: 0.4, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.4, opacity: 0 }}
+              transition={springs.bouncy}
+            >
+              {badge > 9 ? '9+' : badge}
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </span>
       <span className="ui-tab-bar__label">{item.title}</span>
     </button>
   )

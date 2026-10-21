@@ -90,10 +90,11 @@ function cents(x: number): number {
  * Every item a showcase can hold, from the owner's own money (the hooks of SPEC §6.3), `tz` the device's zone:
  * achieved = goals marked Bought (spends with goal: true), newest first, ≤ 12, named by the move's note (blank ones
  * left out); goals = saving order, ≤ 8, names and whole percent funded (floored; 100 only when funded), never
- * amounts; earnings = what tasks earned in lastMoneyMonth, even 0.
+ * amounts; earnings = what tasks earned in `input.monthId` (default lastMoneyMonth; the background sync passes
+ * earningsBasis's), even 0.
  */
 export function showcaseItems(
-  input: { moves: MoneyMove[]; goals: Goal[]; earnings: Earning[]; state: MoneyState | null; currency: CurrencyCode },
+  input: { moves: MoneyMove[]; goals: Goal[]; earnings: Earning[]; state: MoneyState | null; currency: CurrencyCode; monthId?: MonthId },
   nowMs: number,
   tz: string,
 ): ShowcaseItems {
@@ -115,10 +116,34 @@ export function showcaseItems(
     .filter((g) => g.name !== '')
     .slice(0, SHOWCASE_MAX_GOALS)
 
-  const monthId = lastMoneyMonth(nowMs, tz)
+  const monthId = input.monthId ?? lastMoneyMonth(nowMs, tz)
   const amount = Math.min(MAX_AMOUNT, Math.max(0, earnedInMonth(input.earnings, monthId)))
   const earnings: ShownEarnings = { monthId, amount, currency: input.currency }
   return { achieved, goals, earnings }
+}
+
+/**
+ * What the background sync's earnings copy is about: the same on every device of one user, so two devices never
+ * rewrite each other's copy for ever (each write wakes the other device's sync).
+ * - monthId: this device's lastMoneyMonth, or the stored copy's month when that is the month right after it: a device
+ *   further east reached the next money month first (zones are at most a day apart, so a month at most), and the copy
+ *   only moves forward. A stored month further ahead came from a wrong clock and is replaced.
+ * - currency: the money state's (one doc for every device); without one, the stored copy's, never replaced by a
+ *   locale's guess (two devices' locales can differ, en-US and en-GB); only without both, `fallback` (the device's
+ *   defaultCurrency, as Overview shows it).
+ */
+export function earningsBasis(
+  stored: Showcase | null,
+  state: MoneyState | null,
+  nowMs: number,
+  tz: string,
+  fallback: CurrencyCode,
+): { monthId: MonthId; currency: CurrencyCode } {
+  const own = lastMoneyMonth(nowMs, tz)
+  const kept = stored?.earnings
+  const monthId = kept && kept.monthId === addMonths(own, 1) ? kept.monthId : own
+  const currency = state?.currency || kept?.currency || fallback
+  return { monthId, currency }
 }
 
 function cloneList<T extends object>(list: T[]): T[] {

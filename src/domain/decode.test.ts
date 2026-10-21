@@ -16,7 +16,7 @@ import {
   isReviewMark,
   type ToMs,
 } from './decode.ts'
-import { goalEndsAt, goalWeek } from './shared.ts'
+import { goalEndsAt, goalProgress, goalShares, goalWeek } from './shared.ts'
 
 /** A stand-in for a Firestore Timestamp, as the data layer and the job get them. */
 const ts = (ms: number) => ({ toMillis: () => ms })
@@ -655,6 +655,18 @@ describe('decodeSharedGoal', () => {
   it('a malformed total falls back to the sum of the parts', () => {
     expect(decodeSharedGoal(id, { ...good, total100: 67.6 }, toMs)?.total).toBe(67.6)
     expect(decodeSharedGoal(id, { ...good, total100: null }, toMs)?.total).toBe(67.6)
+    expect(decodeSharedGoal(id, { ...good, total100: Number.MAX_SAFE_INTEGER + 1 }, toMs)?.total).toBe(67.6)
+  })
+  it('parts and totals of any size the rules take: 9 weekly check-ins of 1e11 hundredths stay counted', () => {
+    // The rules bound each check-in (≤ 10¹¹) but never a part or the total.
+    const ben = 9 * 1e11
+    const d = decodeSharedGoal(id, { ...good, target100: 2000, totals100: { ana: 1500, ben }, total100: ben + 1500, reachedAt: ts(T) }, toMs)!
+    expect(d.totals).toEqual({ ana: 15, ben: 9e9 })
+    expect(d.total).toBe(9e9 + 15)
+    expect(goalProgress(d)).toMatchObject({ reached: true, ratio: 1 })
+    expect(goalShares(d).map((s) => s.uid)).toEqual(['ben', 'ana'])
+    const huge = Number.MAX_SAFE_INTEGER - 1
+    expect(decodeSharedGoal(id, { ...good, totals100: { ana: huge }, total100: huge }, toMs)?.total).toBe(huge / 100)
   })
   it('never throws', () => {
     for (const v of JUNK) {

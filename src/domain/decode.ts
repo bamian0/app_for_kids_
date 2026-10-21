@@ -562,7 +562,8 @@ function strictUids(v: unknown): UID[] {
  * sharedGoals/{goalId} in real units (hundredths ÷ 100). null when the id fails isGoalId, or the name, unit, target100,
  * utcOffsetMin, ownerId or memberIds is malformed. A zone that isn't a valid IANA zone becomes the fixed zone of
  * utcOffsetMin (the rules' anchor); a bad `zones` entry, a non-int part, a bad `last` or `endsOn` is left out (null);
- * invitees who are members are dropped; `total` falls back to the sum of the parts when `total100` is malformed.
+ * invitees who are members are dropped; `total` falls back to the sum of the parts when `total100` is malformed. Parts
+ * and the total are any safe ints (the rules bound each check-in, never the sum).
  */
 export function decodeSharedGoal(id: string, d: unknown, toMs: ToMs): SharedGoal | null {
   const o = obj(d)
@@ -573,9 +574,11 @@ export function decodeSharedGoal(id: string, d: unknown, toMs: ToMs): SharedGoal
   if (name === null || unit === null || ownerId === null || !Array.isArray(o.memberIds)) return null
   if (!isInt(o.target100, 1, MAX_HUNDREDTHS) || !isInt(o.utcOffsetMin, -720, 840)) return null
   const memberIds = strictUids(o.memberIds)
-  const totals100 = uidMap(o.totals100, (v) => (isInt(v, -MAX_HUNDREDTHS * 8, MAX_HUNDREDTHS * 8) ? v : null))
+  // Parts and the total grow by up to 10¹¹ a week per member with no upper bound in the rules: any safe int is
+  // theirs (a cap here would drop a big part, and the bar and the reached state with it, while the rules took it).
+  const totals100 = uidMap(o.totals100, (v) => (Number.isSafeInteger(v) ? (v as number) : null))
   const sum100 = Object.values(totals100).reduce((a, b) => a + b, 0)
-  const total100 = isInt(o.total100, -MAX_HUNDREDTHS * 8, MAX_HUNDREDTHS * 8) ? o.total100 : sum100
+  const total100 = Number.isSafeInteger(o.total100) ? (o.total100 as number) : sum100
   const last = obj(o.last)
   const lastAt = last ? time(last.at, toMs) : null
   return {

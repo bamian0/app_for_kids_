@@ -19,7 +19,7 @@ import {
 } from 'firebase/firestore'
 import { now } from '../domain/clock.ts'
 import { defaultCurrency } from '../domain/money.ts'
-import { showcaseItems, showcasePatch, showOf, switchShowcase } from '../domain/showcase.ts'
+import { earningsBasis, showcaseItems, showcasePatch, showOf, switchShowcase } from '../domain/showcase.ts'
 import type {
   AchievedGoal,
   Earning,
@@ -212,6 +212,12 @@ export interface SyncOptions {
  * money switch is on, the money docs (the same store entries, and so the same listeners, as Overview and Goals); on
  * each change it computes showcasePatch(stored, showcaseItems(…)) and, debounced, writes it. Nothing while no money
  * switch is on. Returns the function that stops it.
+ *
+ * Every device of one user must agree on the items, or each write wakes the other device's sync for ever (a write and
+ * a read per listener each time, on the project's shared daily quota): the earnings copy is about earningsBasis's
+ * month and currency, the same on every device. And should two devices still disagree on anything, an item another
+ * device replaced is not written back with the value this sync last wrote: it waits for this device's own copy to
+ * change, or the hourly look (so at most one write per device and hour, not one every few seconds).
  */
 export function startShowcaseSync(me: UID, opts: SyncOptions = {}): () => void {
   const debounceMs = opts.debounceMs ?? SYNC_DEBOUNCE_MS
@@ -220,6 +226,8 @@ export function startShowcaseSync(me: UID, opts: SyncOptions = {}): () => void {
   /** The patch the timer will write ('' for none). */
   let scheduled: string | null = null
   let money: (() => void)[] | null = null
+  /** What this sync last wrote, by item (JSON); an item switched off is forgotten. */
+  const written = new Map<ItemKey, string>()
   const check = () => {
     if (stopped) return
     const stored = peek<Showcase | null>(showcaseKey(me, me)).data
@@ -239,10 +247,17 @@ export function startShowcaseSync(me: UID, opts: SyncOptions = {}): () => void {
     const goals = peek<Goal[]>(moneyKeys.goals(me)).data
     const earnings = peek<Earning[]>(moneyKeys.earnings(me)).data
     const state = peek<MoneyState | null>(moneyKeys.state(me)).data
+    const show = showOf(stored ?? null)
+    for (const k of ITEM_KEYS) if (!show[k]) written.delete(k)
     let patch: Partial<Pick<ShowcaseDoc, ItemKey>> | null = null
     if (on && stored && moves && goals && earnings && state !== undefined) {
-      const items = showcaseItems({ moves, goals, earnings, state, currency: state?.currency || defaultCurrency() }, now(), deviceTimeZone())
-      patch = showcasePatch(stored, items)
+      const t = now()
+      const zone = deviceTimeZone()
+      const basis = earningsBasis(stored, state, t, zone, defaultCurrency())
+      patch = showcasePatch(stored, showcaseItems({ moves, goals, earnings, state, ...basis }, t, zone))
+      // Never write back what this sync last wrote over another device's copy (see above).
+      for (const k of ITEM_KEYS) if (patch && patch[k] !== undefined && written.get(k) === JSON.stringify(patch[k])) delete patch[k]
+      if (patch && Object.keys(patch).length === 0) patch = null
     }
     const signature = patch ? JSON.stringify(patch) : ''
     if (signature === scheduled) return
@@ -253,6 +268,7 @@ export function startShowcaseSync(me: UID, opts: SyncOptions = {}): () => void {
     timer = setTimeout(() => {
       void writePatch(me, write).then((outcome) => {
         if (outcome === 'refused') refused.set(me, signature)
+        if (outcome === 'done') for (const k of ITEM_KEYS) if (write[k] !== undefined) written.set(k, JSON.stringify(write[k]))
         if (outcome === 'pending') {
           // The moves reached the server: look again with their server times.
           scheduled = null
@@ -262,9 +278,11 @@ export function startShowcaseSync(me: UID, opts: SyncOptions = {}): () => void {
     }, debounceMs)
   }
   const release = watch(showcaseKey(me, me), startShowcase(me, me), check)
-  // Last month's earnings move on at the month's turn without any change: look again every hour.
+  // Last month's earnings move on at the month's turn without any change: look again every hour (and write back,
+  // once, an item another device replaced).
   const hourly = setInterval(() => {
     scheduled = null
+    written.clear()
     check()
   }, HOUR)
   check()

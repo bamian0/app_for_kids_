@@ -7,6 +7,7 @@ import {
   SHOWCASE_MAX_GOALS,
   SHOWCASE_NAME_MAX,
   STATS_THRESHOLD,
+  earningsBasis,
   lastMoneyMonth,
   playedWeeks,
   ringCaption,
@@ -267,6 +268,69 @@ describe('showcasePatch', () => {
     expect(showcasePatch(s, { ...ITEMS, goals: [{ name: 'Bike', pct: 65 }] })).toEqual({ goals: [{ name: 'Bike', pct: 65 }] })
     expect(showcasePatch(s, { ...ITEMS, earnings: { ...ITEMS.earnings, monthId: '2026-10' } })).toEqual({ earnings: { ...ITEMS.earnings, monthId: '2026-10' } })
     expect(showcasePatch(s, { ...ITEMS, earnings: { ...ITEMS.earnings, currency: 'EUR' } })).toEqual({ earnings: { ...ITEMS.earnings, currency: 'EUR' } })
+  })
+})
+
+describe('earningsBasis: every device of one user agrees, so the sync settles', () => {
+  // Monday Nov 2, 00:30 UTC: Berlin (01:30) is in the week of Friday Nov 6, money month November; New York (Sunday
+  // 19:30) still in the week of Friday Oct 30, money month October. For about 6 hours they disagree on "last month".
+  const now = Date.parse('2026-11-02T00:30:00Z')
+  const NY = 'America/New_York'
+  const earnings = [earning('2026-09-21', 20), earning('2026-10-19', 300), earning('2026-10-26', 40)]
+  const shown = (monthId: string, currency = 'USD', amount = 0) => stored({ earnings: true }, { earnings: { monthId, amount, currency } })
+
+  it('the month: this device’s last month, or the stored one when it is the month after (only forward)', () => {
+    expect(lastMoneyMonth(now, BERLIN)).toBe('2026-10')
+    expect(lastMoneyMonth(now, NY)).toBe('2026-09')
+    expect(earningsBasis(null, STATE, now, NY, 'USD').monthId).toBe('2026-09')
+    expect(earningsBasis(shown('2026-10'), STATE, now, NY, 'USD').monthId).toBe('2026-10')
+    expect(earningsBasis(shown('2026-09'), STATE, now, BERLIN, 'USD').monthId).toBe('2026-10')
+    expect(earningsBasis(shown('2026-10'), STATE, now, BERLIN, 'USD').monthId).toBe('2026-10')
+    // A month further ahead came from a wrong clock: replaced. So is an older one.
+    expect(earningsBasis(shown('2026-11'), STATE, now, NY, 'USD').monthId).toBe('2026-09')
+    expect(earningsBasis(shown('2027-03'), STATE, now, BERLIN, 'USD').monthId).toBe('2026-10')
+    expect(earningsBasis(shown('2026-06'), STATE, now, BERLIN, 'USD').monthId).toBe('2026-10')
+    // Across a year's turn too.
+    const feb = Date.parse('2027-02-01T00:30:00Z')
+    expect([lastMoneyMonth(feb, NY), lastMoneyMonth(feb, BERLIN)]).toEqual(['2026-12', '2027-01'])
+    expect(earningsBasis(shown('2027-01'), STATE, feb, NY, 'USD').monthId).toBe('2027-01')
+  })
+
+  it('the currency: the money state’s; without one the stored copy’s, never a locale’s guess; else the fallback', () => {
+    expect(earningsBasis(shown('2026-10', 'GBP'), { ...STATE, currency: 'EUR' }, now, BERLIN, 'USD').currency).toBe('EUR')
+    expect(earningsBasis(shown('2026-10', 'GBP'), null, now, BERLIN, 'USD').currency).toBe('GBP')
+    expect(earningsBasis(stored({ earnings: true }), null, now, BERLIN, 'USD').currency).toBe('USD')
+    expect(earningsBasis(null, null, now, BERLIN, 'GBP').currency).toBe('GBP')
+  })
+
+  it('the lagging device copies the stored month’s amount, so both write the same copy', () => {
+    const basis = earningsBasis(shown('2026-10', 'USD', 0), STATE, now, NY, 'USD')
+    expect(showcaseItems(money({ earnings, ...basis }), now, NY).earnings).toEqual({ monthId: '2026-10', amount: 340, currency: 'USD' })
+    expect(showcaseItems(money({ earnings }), now, BERLIN).earnings).toEqual({ monthId: '2026-10', amount: 340, currency: 'USD' })
+  })
+
+  it('two devices in two zones, with two locales and no money state, stop writing after at most one round', () => {
+    const devices = [
+      { tz: BERLIN, fallback: 'USD' },
+      { tz: NY, fallback: 'GBP' },
+    ]
+    for (const start of [0, 1]) {
+      // One device switched earnings on with its own copy; then each device's sync takes turns on the stored doc.
+      const first = devices[start]
+      let doc = stored({ earnings: true }, { earnings: showcaseItems(money({ earnings, state: null, currency: first.fallback }), now, first.tz).earnings })
+      let writes = 0
+      for (let turn = 0; turn < 8; turn++) {
+        const d = devices[(start + 1 + turn) % 2]
+        const basis = earningsBasis(doc, null, now, d.tz, d.fallback)
+        const patch = showcasePatch(doc, showcaseItems(money({ earnings, state: null, ...basis }), now, d.tz))
+        if (patch) {
+          writes += 1
+          doc = { ...doc, ...patch }
+        }
+      }
+      expect(writes).toBeLessThanOrEqual(1)
+      expect(doc.earnings).toEqual({ monthId: '2026-10', amount: 340, currency: first.fallback })
+    }
   })
 })
 

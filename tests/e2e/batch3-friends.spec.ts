@@ -11,7 +11,6 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { addMonths, monthIdForWeek, utcOffsetMinutes, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { createAccount, db, moneyDoc, resetEmulators, setEarning, setMoneyState, setSpace, ts } from './emulator.ts'
 import { addBoughtGoal, friendCodeOf, leftovers, readPair, readShowcase, setFriendCode, setPair, setRing, setStats } from './friends-seed.ts'
-import { whenText } from '../../src/screens/friends/copy.ts'
 import { centerOn, phone, sheet, shown, snap } from './helpers.ts'
 
 const MINUTE = 60_000
@@ -301,7 +300,9 @@ test('a silent decline, a cancel that waits 30 days, and the other side adding i
     await openFriends(cleo.page)
     const sent = section(cleo.page, 'Sent')
     // "today", or "yesterday" when the run starts in the minute after midnight on the phone's clock.
-    await expect(personRow(sent, BEN.name)).toHaveAccessibleName(`${BEN.name}, Requested ${whenText(askedAt, Date.now(), TZ)}`)
+    const day = (ms: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(ms)
+    const when = day(askedAt) === day(Date.now()) ? 'today' : 'yesterday'
+    await expect(personRow(sent, BEN.name)).toHaveAccessibleName(`${BEN.name}, Requested ${when}`)
     await snap(cleo.page, 'fr12-sent')
     await sent.getByRole('button', { name: 'Cancel', exact: true }).click()
     await answer(cleo.page, 'Cancel Request', 'Ben won’t see it anymore. You can ask again in 30 days.')

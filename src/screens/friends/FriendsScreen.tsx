@@ -24,7 +24,7 @@ import {
   requestSubtitle,
   shareLinkData,
   spacesSubtitle,
-  youLine,
+  YOU_TITLE,
 } from './copy.ts'
 import type { PersonInSpaces } from './copy.ts'
 import { takeGoalTarget, takePendingFriend } from './links.ts'
@@ -203,7 +203,7 @@ function YouRow({ uid, onOpen }: { uid: UID; onOpen: () => void }) {
   const auth = useAuth()
   const ring = useRingView(uid)
   const person = personFor(auth.profile ? { [uid]: auth.profile } : {}, uid, auth.email ?? 'You')
-  return <PersonRow person={person} subtitle={youLine(ringLine(ring))} trailing={<MiniRing view={ring} />} chevron onOpen={onOpen} />
+  return <PersonRow person={person} title={YOU_TITLE} subtitle={ringLine(ring)} trailing={<MiniRing view={ring} />} chevron onOpen={onOpen} />
 }
 
 function FriendRow({ pair, name, onOpen }: { pair: Friendship; name: string; onOpen: (uid: UID, name?: string) => void }) {

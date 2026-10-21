@@ -11,6 +11,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { addMonths, monthIdForWeek, utcOffsetMinutes, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { createAccount, db, moneyDoc, resetEmulators, setEarning, setMoneyState, setSpace, ts } from './emulator.ts'
 import { addBoughtGoal, friendCodeOf, leftovers, readPair, readShowcase, setFriendCode, setPair, setRing, setStats } from './friends-seed.ts'
+import { whenText } from '../../src/screens/friends/copy.ts'
 import { centerOn, phone, sheet, shown, snap } from './helpers.ts'
 
 const MINUTE = 60_000
@@ -179,7 +180,8 @@ test('a friend request by code: the badge, Accept, and both rings', async ({ bro
   await test.step('Both list each other with rings', async () => {
     const anaFriends = section(ana.page, 'Friends')
     await expect(personRow(anaFriends, BEN.name)).toHaveAccessibleName(`${BEN.name}, No score yet this month`)
-    await expect(personRow(anaFriends, ANA.name)).toHaveAccessibleName(`${ANA.name}, You · 92% · ${month} so far`)
+    // You first, titled You (as Find My's Me), with your own ring line.
+    await expect(personRow(anaFriends, 'You')).toHaveAccessibleName(`You, 92% · ${month} so far`)
     await expect(shown(ana.page, 'Rings show each friend’s score this month so far, across their spaces. They update after each week’s reviews are due.', true)).toBeVisible()
     await snap(ana.page, 'fr06-friends-ana')
     const benFriends = section(ben.page, 'Friends')
@@ -191,7 +193,11 @@ test('a friend request by code: the badge, Accept, and both rings', async ({ bro
     // Ana's showcase from Ben's list: her ring, across two spaces.
     await personRow(benFriends, ANA.name).click()
     await expect(ben.page.getByRole('heading', { name: ANA.name })).toBeVisible()
-    await expect(shown(ben.page, `92% · ${month} so far`, true)).toBeVisible()
+    // The number in the ring, the month under it; VoiceOver reads the whole line.
+    const ring = ben.page.locator('.fr-ring').filter({ visible: true })
+    await expect(ring.getByRole('img', { name: `92% · ${month} so far` })).toBeVisible()
+    await expect(ring.locator('.ui-ring__value')).toHaveText('92%')
+    await expect(shown(ring, `${month} so far`, true)).toBeVisible()
     await expect(shown(ben.page, 'Across 2 spaces', true)).toBeVisible()
     await expect(shown(ben.page, /^Friends since /)).toBeVisible()
     await snap(ben.page, 'fr08-showcase-friend')
@@ -275,7 +281,8 @@ test('a silent decline, a cancel that waits 30 days, and the other side adding i
   const [benUid, cleoUid] = await accounts(t0, BEN, CLEO)
   await setFriendCode(BEN_CODE, benUid, t0)
   await setFriendCode(CLEO_CODE, cleoUid, t0)
-  await setPair(cleoUid, benUid, { by: cleoUid, state: 'asked', at: Date.now() - MINUTE })
+  const askedAt = Date.now() - MINUTE
+  await setPair(cleoUid, benUid, { by: cleoUid, state: 'asked', at: askedAt })
   const ben = await phone(browser)
   const cleo = await phone(browser)
 
@@ -293,7 +300,8 @@ test('a silent decline, a cancel that waits 30 days, and the other side adding i
     await signIn(cleo.page, CLEO)
     await openFriends(cleo.page)
     const sent = section(cleo.page, 'Sent')
-    await expect(personRow(sent, BEN.name)).toHaveAccessibleName(`${BEN.name}, Requested today`)
+    // "today", or "yesterday" when the run starts in the minute after midnight on the phone's clock.
+    await expect(personRow(sent, BEN.name)).toHaveAccessibleName(`${BEN.name}, Requested ${whenText(askedAt, Date.now(), TZ)}`)
     await snap(cleo.page, 'fr12-sent')
     await sent.getByRole('button', { name: 'Cancel', exact: true }).click()
     await answer(cleo.page, 'Cancel Request', 'Ben won’t see it anymore. You can ask again in 30 days.')

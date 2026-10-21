@@ -142,6 +142,10 @@
 .fr-ring .ui-ring {
   margin-bottom: 6px;
 }
+/* Room for "100%" inside a 120 px ring. */
+.fr-ring .ui-ring__value {
+  font-size: 28px;
+}
 .fr-ring__line {
   font: 600 17px/22px var(--font);
   letter-spacing: -0.012em;

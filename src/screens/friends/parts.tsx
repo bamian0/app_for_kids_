@@ -32,6 +32,8 @@ export function useCopyToast(): (copy: ToastCopy) => void {
 
 interface PersonRowProps {
   person: Person
+  /** The row's title instead of the person's name ("You" for your own row). */
+  title?: string
   subtitle?: ReactNode
   /** Trailing secondary text ("Requested", "Ask again Nov 19"). */
   detail?: ReactNode
@@ -45,15 +47,16 @@ interface PersonRowProps {
 }
 
 /** A list row for a person: avatar, name and a line, with trailing buttons that don't open the row. */
-export function PersonRow({ person, subtitle, detail, trailing, below, chevron, onOpen }: PersonRowProps) {
+export function PersonRow({ person, title, subtitle, detail, trailing, below, chevron, onOpen }: PersonRowProps) {
   const { pressed, handlers } = usePress(!!onOpen)
+  const name = title ?? person.name
   return (
     <div className={cx('ui-row fr-person', subtitle != null && 'ui-row--subtitle')} data-pressed={pressed || undefined}>
       {onOpen && (
         <button
           type="button"
           className="fr-person__open"
-          aria-label={typeof subtitle === 'string' ? `${person.name}, ${subtitle}` : person.name}
+          aria-label={typeof subtitle === 'string' ? `${name}, ${subtitle}` : name}
           onClick={onOpen}
           {...handlers}
         />
@@ -63,7 +66,7 @@ export function PersonRow({ person, subtitle, detail, trailing, below, chevron, 
       </span>
       <span className="ui-row__main">
         <span className="ui-row__text">
-          <span className="ui-row__title">{person.name}</span>
+          <span className="ui-row__title">{name}</span>
           {subtitle != null && <span className="ui-row__subtitle">{subtitle}</span>}
           {below && <span className="fr-person__below">{below}</span>}
         </span>

@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { cancelFriendRequest, removeFriend, useAuth, useProfiles, useShowcase, useStats } from '../../data/api.ts'
 import { formatMoney } from '../../domain/money.ts'
-import { ringLine, showOf, statsView } from '../../domain/showcase.ts'
+import { ringCaption, ringLine, showOf, statsView } from '../../domain/showcase.ts'
 import type { Showcase, UID } from '../../domain/types.ts'
 import { Avatar, Button, GlassButton, Icon, ProgressBar, Row, ScoreRing, Screen, Section, useAlert, useNav, useToast } from '../../ui/index.ts'
 import { Loading } from '../components/Bits.tsx'
@@ -93,8 +93,9 @@ function RingSection({ uid, mine }: { uid: UID; mine: boolean }) {
   return (
     <Section padded footer={mine ? 'Only friends see your ring.' : undefined}>
       <div className="fr-ring">
-        <ScoreRing key={ring.value === null ? 'empty' : 'score'} value={ring.value} size={120} stroke={13} aria-label={ringLine(ring)} />
-        <div className="fr-ring__line t-tabular">{ringLine(ring)}</div>
+        {/* The number in the ring, as on every other hero ring of the app; the month under it. */}
+        <ScoreRing key={ring.value === null ? 'empty' : 'score'} value={ring.value} size={120} stroke={13} showValue aria-label={ringLine(ring)} />
+        <div className="fr-ring__line">{ringCaption(ring)}</div>
         {across && <div className="fr-ring__across">{across}</div>}
       </div>
     </Section>

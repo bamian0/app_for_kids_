@@ -28,7 +28,7 @@ import {
   switchCopy,
   updatedFooter,
   whenText,
-  youLine,
+  YOU_TITLE,
 } from './copy.ts'
 import { parseFriendParams } from './links.ts'
 
@@ -80,9 +80,8 @@ describe('requests and relations', () => {
     expect(relationLine('none', null, NOW, BERLIN)).toBeNull()
   })
 
-  it('puts you first with your ring', () => {
-    expect(youLine('92% · October so far')).toBe('You · 92% · October so far')
-    expect(youLine('No score yet this month')).toBe('You · No score yet this month')
+  it('titles your own row You', () => {
+    expect(YOU_TITLE).toBe('You')
   })
 
   it('confirms a cancel and a remove', () => {

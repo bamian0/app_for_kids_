@@ -80,10 +80,8 @@ export function relationLine(relation: 'me' | 'friend' | 'incoming' | 'sent' | '
   return null
 }
 
-/** "You · 92% · October so far": your own row in Friends. */
-export function youLine(ringLine: string): string {
-  return `You · ${ringLine}`
-}
+/** Your own row in Friends is titled like Find My's "Me" row, so its ring line fits on one line at 375 pt. */
+export const YOU_TITLE = 'You'
 
 export const RING_FOOTER = 'Rings show each friend’s score this month so far, across their spaces. They update after each week’s reviews are due.'
 export const PEOPLE_FOOTER = 'People you share a space with. Add them to see each other’s rings.'

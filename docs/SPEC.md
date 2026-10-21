@@ -1205,7 +1205,7 @@ Old clients (about 30 minutes, until they update): they don't show cross-outs or
 
 ## 11. Batch 3: friends, profile showcase, shared goals
 
-The owner decided three features after batch 2.5 (verbatim in substance below). This section is the contract for them. Where it and §1–§10 disagree, this one wins; §11.1 lists every such change. Batches 1, 2 and 2.5 are live with real users, so nothing here touches an existing collection, field or rule: every feature lives in **new top-level collections** with their own rules, the existing rules and their budgets stay exactly as they are (the 25 × 8 plan save stays at 895 of 1000), and old clients keep working unchanged (§11.14). Nothing here touches stakes or scoring.
+The owner decided three features after batch 2.5 (verbatim in substance below). This section is the contract for them, with "As built" notes where the code refines it (built on `claude/task-rating-app-feasibility-abixvp`, October 2026, every check green; it ships when the owner publishes the rules and deploys, §11.14). Where it and §1–§10 disagree, this one wins; §11.1 lists every such change. Batches 1, 2 and 2.5 are live with real users, so nothing here touches an existing collection, field or rule: every feature lives in **new top-level collections** with their own rules, the existing rules and their budgets stay exactly as they are (the 25 × 8 plan save stays at 895 of 1000), and old clients keep working unchanged (§11.14). Nothing here touches stakes or scoring.
 
 Owner's decisions:
 1. **Friends by friend request.** You add someone with a personal link or code (shareable via the share sheet); they accept or decline. Friends are across spaces. Either side can remove the friendship; a declined or removed person can ask again. The **friends list** shows each friend with a **score ring** and opens their profile showcase. Pending requests (incoming and sent) are visible with clear actions; incoming ones get a badge.
@@ -1387,6 +1387,24 @@ d.keys().hasAll(['show', 'updatedAt']) && d.keys().hasOnly(['show', 'achieved', 
 
 Every batch-3 request must stay under 500 expressions and 8 reads; anything measured above that is a design problem to report, not to ship.
 
+Budgets, as built: measured in the emulator (firebase-tools 15.33, on 2026-10-21) and recorded in `tests/rules/budget.test.ts`, each the whole request (rules evaluate every branch before the one that allows it, so the numbers sit far above the per-branch estimates above). The existing rows were re-measured and haven't moved: the 25 × 8 plan saves 895, the append 325, the cross-out 482.
+
+| Request (worst case) | Expressions | Reads |
+|---|---|---|
+| Friend request (create) / accept / decline / withdraw / re-ask / take over | 147 / 79 / 110 / 105 / 136 / 152 | 1 / 0 / 0 / 0 / 0 / 0 |
+| Pair delete by the asker after deleting their profile | 63 | 1 |
+| Showcase: a switch (lists as stored) / the sync of 12 achieved goals / all three lists new at once | 131 / 482 / 812 | 0 |
+| Ring `get` by a friend / stats `get` (shown) | 58 / 52 | 1 / 1 |
+| Shared goal create with 7 invitees | 476 | 7 |
+| Check-in batch: the check-in op (first / edit) / the goal op (`checksIn`) | 225 / 236 / 230 | ≤ 4 for the batch |
+| Join / invite 7 friends / owner leaves a goal of 8 / edit / finish | 157 / 440 / 356 / 309 / 246 | 0 / 7 / 0 / 0 / 0 |
+| Week's check-ins query (8 docs) | 26 | 1 |
+
+As built, refinements of the rules above:
+- **The showcase checks only the lists a write changes** (`validShowcase(d, changedKeys)`): a list the write leaves as stored was checked when it was written. Every write the app sends stays at or under 482: a switch changes at most one list, and the background sync sends each changed list in its own `updateDoc` (§11.8). Only a crafted write of all three full lists at once reaches 812, which is still under the hard limit of 1000, can't grow with data (the list caps fix it), and costs nobody but its writer. Decision: kept as is, rather than a rule allowing one changed list per write, which would add a check to every showcase write and a refusal path no app write needs.
+- **"Not blank" is what `trim()` keeps** (`shows()`): a goal's name or unit must hold a character outside JavaScript's whitespace and line terminators (listed as plain code points in one RE2 class). The rules' own `trim()` kept no-break and ideographic spaces, so an owner could have renamed a goal to one that every client's decoder drops, hiding it from all members (the lesson of §10.3). `tests/rules/shared.test.ts` compares `shows()` with `trim()` over every code point.
+- `tests/rules/shared-clock.test.ts` checks a goal's week and end date on fixed calendar dates (DST weeks, zones at both ends of the clock, goals created in one season and checked in in another): it runs the published rules with only `inGoalWeek`'s "now" moved to a seeded time, as `calendar.test.ts` does for spaces. Date-dependent setups in `shared.test.ts`, `weeks.test.ts` and `schedule.test.ts` keep at least 3 hours from a week boundary and avoid the week before a DST change, so the suite passes at any hour. Each abuse case of the list above is a named entry in an `allDenied` group (as in batch 2), so a failure still names its case.
+
 ### 11.6 Friend links and codes
 
 - **Code**: 8 characters from `INVITE_ALPHABET`, made with `newInviteCode()`, shown `XXXX-XXXX` (`formatInviteCode`). Each user has one current code: the newest `friendCodes` doc with their uid. The app creates it the first time the Add Friend sheet (or Share My Link) needs it; a create that finds the code taken (refused, since no update rule exists) retries with a new one. **Reset Link** creates a new code, then deletes the old ones, so old links stop working at once; requests already sent stay.
@@ -1443,6 +1461,14 @@ New pure modules (Node runs them; explicit `.ts` imports): `src/domain/friends.t
 - `openInvites(view: SharedGoalsView, nowMs) → SharedGoal[]`: invitations to goals that are neither finished nor ended.
 - `nextOwner(goal, leaving) → UID | null`: the earliest-joined member other than `leaving` (ties by uid), null when nobody remains: what `leaveSharedGoal` writes and the rules' `earliestJoined` accepts.
 
+As built (`src/domain/friends.ts`, `showcase.ts`, `shared.ts`, `decode.ts`):
+- `toHundredths` shaves float noise before rounding (as `roundMoney`): the same int as `Math.round(x * 100)` for every amount with 2 decimals or fewer, and the right one for values like 0.29; it differs only on 3-decimal values such as 1.005 (101, not 100), which the fields refuse anyway.
+- **Units agree with the number** (`unitFor`, used by `formatGoalAmount` and so by `progressText`, the screens and the push): "1 book", "1 hour", "1 time", "0 of 1 book", but "2 books", "1 km", "1.5 hours". Only plain lowercase plurals lose their "s" ("books", "laps", "days"; "glasses", "boxes" and "Books" stay), plus a short list of irregular ones ("times", "minutes", "miles", "pages", "pieces", "games").
+- `decodeSharedGoal`: a stored `timezone` that isn't a usable IANA zone falls back to the fixed zone of `utcOffsetMin` (e.g. "UTC+5:30"), the rules' own anchor, instead of dropping the goal.
+- Extra helpers: `weekProgress` (the This Week section: each current member's check-in for the week and its total), `checkinId`, `noteProblemText` (shared.ts); `readAmount` (money.ts, so a goal amount can tell "too many decimals" from "too big"); `isUid`, `normalizeCodeParam`, `hasCodeParam` (ids.ts, shared by the friend and invite link readers). `types.ts` is as the contract wrote it.
+- `ringOf` follows the text above: when the newest month's entries all have a null score the ring reads "No score yet this month". The job never writes such an entry (§11.10, as built), so in practice the newest month always has a score.
+- A test runs `computeMonth` results through the job's whole chain (`playedWeeks`, `ringOf`, `statsOf`, `ringView`) for two spaces, one with a paused week and one the person only judges, early in November ("100% · October", the last finished month) and after November's first week is scored ("50% · November so far").
+
 ### 11.8 Data layer API (`src/data/api.ts`)
 
 Signatures (stubbed in `api.ts` with `// batch3: TODO`; built in new modules `src/data/friends.ts`, `showcase.ts`, `shared.ts`, re-exported by `api.ts`). Hooks are live, scoped to the signed-in user, keyed like the rest (`${uid}|friends`, `${uid}|friendCode`, `${uid}|showcase|${who}`, `${uid}|ring|${who}`, `${uid}|stats|${who}`, `${uid}|shared`, `${uid}|sharedGoal|${id}`, `${uid}|checkins|${id}|${weekId}`).
@@ -1474,6 +1500,8 @@ Signatures (stubbed in `api.ts` with `// batch3: TODO`; built in new modules `sr
 - `checkIn(goalId, amount, note, weekId?): Promise<CheckinResult>` (`{ total, reached }`, `reached` true when this write reached the target): `weekId` is the week the sheet shows (default `goalWeek(goal, now)`). Before the transaction: if now ≥ `checkinClosesAt(goal, weekId)` − 2 minutes, it throws "That week just ended. Check in for this week instead." (a rules refusal of a past week maps to the same message). The transaction reads the goal and your check-in for `weekId`, then writes the check-in (`set`, `at: serverTimestamp()`) and the goal (`totals100.{me}`, `total100`, `last: { by, weekId, at: serverTimestamp() }`, and `reachedAt` per `applyCheckin`). So an edit started before Monday 00:00 and saved just after still replaces that week's number, while the rules allow it.
 - Messages: `goalProblemText` / `amountProblem` texts; "You can only invite friends." · "A shared goal has room for 8 people." · "This goal has ended." · "This goal is finished." · "You’re not in this goal anymore." · "This invitation is no longer there." · "That week just ended. Check in for this week instead." · "Couldn’t check in. Try again." · else `humanError(e, "Couldn’t do that. Try again.")`.
 - Every shared-goal write **fails at once offline** (transactions; `MSG.offline`).
+
+As built (`src/data/friends.ts`, `showcase.ts`, `shared.ts`): the showcase sync sends **each changed list in its own `updateDoc`** (with `updatedAt`), so every app write stays within the rules' budget for one list (§11.5, as built), and a refusal of one (its switch went off meanwhile) doesn't hold up the others. While a money move is still on its way to the server, the sync leaves the achieved list for later: until then the move's time is the device's estimate, which the rules refuse when it runs ahead of their clock. A patch the rules refused isn't sent again until something changes.
 
 **Account deletion**: §11.12.
 
@@ -1553,6 +1581,21 @@ Copy is plain, warm, short, second person, curly apostrophes, sentence case for 
 - The intro's money page text becomes "Mark tasks that earn money, watch your balance and save for goals. It’s private unless you choose to show it." (`INTRO_VERSION` stays: a precision, not a new story).
 - The Spaces avatar button, the Goals tab and every space screen are unchanged (opening a space member's showcase from a space is later).
 
+As built (`src/screens/friends/**`, `src/screens/shared/**`), refinements where §11.9 says nothing or where the integration review at 375 and 430 pt asked for one:
+- **Your own row in Friends is titled "You"** (as Find My's "Me" row), with the plain `ringLine` under it; VoiceOver reads "You, 92% · October so far". "You · {ringLine}" under your name wrapped to two lines at 375 pt ("You · No score yet this month", "You · 100% · September so far"), so your row stood taller than every other.
+- **The showcase ring shows the number inside** ("92%", or "—" with no score), as every other hero ring of the app does (Overview's week, the month view), with the month alone under it ("October so far", "September", "No score yet this month"); VoiceOver reads the whole `ringLine`.
+- A request's **Accept** and **Decline** sit under the name and line rather than trailing, so both keep their full size at 375 pt. On the showcase of someone you asked, **Cancel Request** sits under a disabled "Requested" row, as a stranger's **Add Friend** turns into. "No finished months yet." uses the secondary text color.
+- Add Friend: **Share Link** and **Copy Code** are equal halves of the card. The first **Share My Link** tap creates your code before it can share; when Safari no longer counts the tap as yours by then, the app opens Add Friend (which shows the link with its own Share Link) instead of a share that would fail.
+- Help keeps "100 km" together with a no-break space; the counts stay 697 / 700.
+- Shared goals:
+  - An **ended** goal (its end date passed, not finished) keeps **Edit Goal** and **Finish Goal** in the owner's menu, so a wrong end date can still be moved (there is no un-finish, and the rules allow both while `archivedAt` is null); everything else on it is read-only.
+  - The sheets name the target rows **Amount** and **Unit** under "Target"; the end date section has no header (the **End Date** switch, then **Last Day**).
+  - Units agree with the number ("1 book", "1 hour to go"; `unitFor`, §11.7 as built).
+  - A reached bar becomes the full prism with hairline gaps where each member's part ends (a see-through prism over the members' colors turned green segments lime).
+  - "Everyone's part" shows each person's share of the total, rounded (30 of 64 → 47%).
+  - New copy: "1 spot left." / "No spots left." (Invite Friends), "All your friends are in or invited.", "Can’t open this goal" · "It’s only for its members and the people they invite.", "Nothing finished yet" · "Goals you finish, or that reach their last day, show up here.", and leaving a finished goal says only "Your part stays in the total."
+  - The invitee view also shows Everyone's part and Details. The moment plays only for members; a check-in from the Friends list's **Check In** that reaches the target opens the goal so the moment plays there. This Week lists you first.
+
 ### 11.10 Reminders and the job
 
 **The scores writer** (`ensureScores`, `scripts/reminders.ts`; pure parts in `reminders-plan.ts` and `showcase.ts`), run for every space right after `ensureResults` and, like it, before the send-time mute (it sends nothing). Like `ensureResults`, it runs inside its own `.catch` (log, `summary.errors++`): a failure never holds up that space's reminders.
@@ -1575,6 +1618,14 @@ Copy is plain, warm, short, second person, curly apostrophes, sentence case for 
 - Tests: the existing legacy-oracle sweep and every batch-2/2.5 planner test pass unchanged; a new sweep over two years at 30-minute steps, for every pair (goal zone, member zone) of the 8 test zones (pairs at +8 h and beyond included), checks that each member gets exactly one window per week, 4–6 hours of their wall clock, never inside their 00:00–08:00, inside the goal's week, Sunday 18:00 → Monday 00:00 when the zones match (DST weeks included), cut by `endsOn`, none for finished, ended or reached goals; decisions per member (checked in → final; joined later → nothing; no device → left open; an unknown member zone → the goal's).
 
 `REMINDER_TIMES` (Profile's Notifications footer) gains " Shared goals remind you to check in as each week ends."
+
+As built (`scripts/reminders.ts`, `scripts/reminders-plan.ts`):
+- **Entries only for people with a score** (`scoreEntries`): `computeMonth` also lists members who took no part (only judged, sat out, joined after the lock); an entry without a score would only flip their ring from last month's score to "No score yet this month" (statsOf ignores it), so they get none, and a month missing from the doc carries the streak as §11.7 says.
+- **A space everyone has left** still gets its scores written for 60 days after the last member left (`EMPTIED_SCORES_MS`), so the month they left in ends as final for them; it sends nothing else.
+- The previous month is looked at only in a run where this week's `_scores` marker is missing, so a steady run costs one read per space. When a week's stored deadline is later than the computed one (after a change of times), the writer waits for the stored one.
+- `planShared(input, sent, nowMs)` takes no `profiles`: the push text names nobody. The pure parts are `checkinWindow`, `checkinCandidates`, `checkinGateOpen`, `scoreEntries`, `scoresTarget`, `scoresKey`, `statsKey` and the caps `SCORES_PER_SPACE` (2), `SCORES_PER_RUN` (8). Each goal runs inside its own catch and the spaces' time budget.
+- The sweep holds for all 64 zone pairs over 2026–2027: each window is 4–6 hours on the member's clock, never in their 00:00–08:00, at most 18 hours before the goal's week ends and inside the UTC gate (also checked with UTC−12 and UTC+14 zones). Tests: `scripts/reminders-batch3.test.ts` (pure, with the sweep) and `tests/data/reminders-batch3.test.ts` (the job against the emulators); the legacy-oracle sweep and every existing planner test pass unchanged. Three existing read-count checks (`tests/data/reminders.test.ts`, `reminders-results.test.ts`) now seed the scores markers (`scoresWritten` in `reminders-fixtures.ts`) and count the marker read.
+- Reads measured on the emulator (2 spaces of 3 people, 3 goals): a steady night 4, a steady day 6, a week's close 62 and the hour after it 4, a Sunday evening with 3 goals 17 and the hour after it 9. A week's close at a month's end for a space of 8 comes to about 450 (estimated).
 
 ### 11.11 Help
 
@@ -1615,11 +1666,11 @@ Then the auth user. Nothing left breaks a friend's screen: missing pairs simply 
 |---|---|---|
 | `src/domain/types.ts` | contract | Batch-3 types (additive): `FriendState`, `Friendship`, `FriendsView`, `FriendRelation`, `FriendLookup`, `AskResult`, `ShowSwitches`, `ShowKey`, `AchievedGoal`, `ShownGoal`, `ShownEarnings`, `ShowcaseItems`, `ShowcaseDoc`, `Showcase`, `ScoreEntry`, `ScoreMonths`, `RingFacts`, `Ring`, `RingView`, `StatsFacts`, `UserStats`, `StatsView`, `SharedGoal`, `SharedGoalsView`, `Checkin`, `CheckinResult`, `NewSharedGoalInput`, `SharedGoalPatch`. |
 | `src/domain/friends.ts`, `showcase.ts`, `shared.ts` (+ tests); `decode.ts` gains `decodeFriendship`, `decodeShowcase`, `decodeRing`, `decodeStats`, `decodeScores`, `decodeSharedGoal`, `decodeCheckin` | domain | §11.7. Pure; the job uses `showcase.ts`'s `playedWeeks`, `ringOf`, `statsOf` and `shared.ts`'s dates and `isGoalId`. |
-| `src/data/friends.ts`, `showcase.ts`, `shared.ts`; `auth.ts` (`deleteMyAccount`), `convert.ts` | data | §11.8, §11.12. This batch the data builder also owns `scripts/reminders*.ts` and their tests (§11.10). |
-| `firestore.rules`, `tests/rules/friends.test.ts`, `showcase.test.ts`, `shared.test.ts` (+ `budget.test.ts` rows) | rules | §11.5. |
-| `src/screens/friends/**`, `src/App.tsx`, `src/ui/TabBar.tsx` + `tabbar.css` (badge), `src/ui/icons.tsx` (`personPlus`), `src/screens/ProfileSheet.tsx` (Showcase row), `src/screens/JoinSheet.tsx` (friend-code hint), `src/screens/auth/WelcomeScreen.tsx` (friend-link line), `src/screens/OverviewScreen.tsx` (the Money footer only), `src/screens/help/**` | screens (friends) | §11.2, §11.9.1–§11.9.4, §11.9.6, §11.11. |
-| `src/screens/shared/**` | screens (shared) | §11.9.5. |
-| `tests/e2e/batch3-friends.spec.ts`, `batch3-shared.spec.ts` (+ their seed helpers) | screens | The flows of §11.9. |
+| `src/data/friends.ts`, `showcase.ts`, `shared.ts`; `auth.ts` (`deleteMyAccount`), `convert.ts` | data | §11.8, §11.12. This batch the data builder also owns `scripts/reminders*.ts` and their tests (§11.10). As built: `tests/data/friends.test.ts`, `showcase.test.ts`, `shared.test.ts` (an interrupted account deletion included), `reminders-batch3.test.ts`; `scripts/reminders-batch3.test.ts`. |
+| `firestore.rules`, `tests/rules/friends.test.ts`, `showcase.test.ts`, `shared.test.ts` (+ `budget.test.ts` rows) | rules | §11.5. As built also `shared-clock.test.ts` (a goal's week and end date on fixed dates) and helpers in `tests/rules/helpers.ts`. |
+| `src/screens/friends/**`, `src/App.tsx`, `src/ui/TabBar.tsx` + `tabbar.css` (badge), `src/ui/icons.tsx` (`personPlus`), `src/screens/ProfileSheet.tsx` (Showcase row), `src/screens/JoinSheet.tsx` (friend-code hint), `src/screens/auth/WelcomeScreen.tsx` (friend-link line), `src/screens/OverviewScreen.tsx` (the Money footer only), `src/screens/help/**` | screens (friends) | §11.2, §11.9.1–§11.9.4, §11.9.6, §11.11. As built also `links.ts` (the `?friend=` and `?goal=` readers), `parts.tsx` (`PersonRow`, `MiniRing`, the request buttons), `copy.ts` (pure copy, unit-tested in `friends.test.ts`), `friends.css`. |
+| `src/screens/shared/**` | screens (shared) | §11.9.5. As built: `index.ts` is the seam the Friends root imports (`SharedGoalsSection`, `SharedGoalScreen`, `useNewSharedGoal`); `TeamBar.tsx`, `parts.tsx` (rows, the moment card), `copy.ts` (pure copy, unit-tested in `shared.test.ts`), `shared.css`. |
+| `tests/e2e/batch3-friends.spec.ts`, `batch3-shared.spec.ts` (+ their seed helpers) | screens | The flows of §11.9. As built: `friends-seed.ts` (codes, the job's rings and stats, showcases, money) and `shared-seed.ts` (goals and check-ins at any week); screenshots with `E2E_SCREENSHOTS` and `E2E_WIDTHS=375,430`. |
 
 ### 11.14 Deploy order and old clients
 
@@ -1649,6 +1700,7 @@ To check it shipped: the app has four tabs, the Friends tab shows "Better with f
 - A leave (or account deletion) interrupted between leaving a goal and deleting its check-ins leaves those check-ins (number and note) in the goal; a retry can't find them.
 - The rules count a note's characters as code points, the app as UTF-16 units (as cross-out reasons, §10.12).
 - Old clients' account deletions leave batch-3 docs (§11.14).
+- As built, also: if the job is down for more than a whole month, the month before last never gets written as final, so it never counts in stats (the writer looks back one month). A slow month load counts against a space's 60-second budget, so it can push that space's reminders to the next run (as the results writer can). A zone whose summer time moves more than the rules' hour of slack (Antarctica/Troll, 2 hours) can't check in during the edge hours of its week. If every one of your pairs is with a deleted account (an old app's leftovers), the Friends tab lists only you instead of the empty state. Each active goal on the Friends root opens one check-ins listener (to decide its **Check In** button), and the list reorders once when they load. The moment's haptic doesn't come from a tap, so iOS may skip it.
 
 ### 11.16 Decisions made in this contract
 

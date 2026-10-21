@@ -1,7 +1,7 @@
 // sharedGoals/{goalId} and sharedGoals/{goalId}/checkins/{weekId}_{uid} (SPEC §11.3–§11.5): members and
 // invitees read a goal; the owner invites friends, edits and finishes; invitees join or decline; members
 // check in once a week, the check-in and the goal's totals in one batch; anyone leaves, and the last one
-// out finishes it. Amounts are ints in hundredths.
+// out deletes it with their check-ins. Amounts are ints in hundredths.
 import { describe, expect, test } from 'vitest'
 import {
   arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, query, runTransaction, serverTimestamp,
@@ -624,19 +624,20 @@ describe('inviting', () => {
 
 describe('leaving', () => {
   const leave = (fs: Firestore, me: string, extra: DocumentData = {}, id = 'g1') =>
-    updateDoc(goalRef(fs, id), { memberIds: arrayRemove(me), [`joinedAt.${me}`]: deleteField(), [`leftAt.${me}`]: now(), ...extra })
+    updateDoc(goalRef(fs, id), { memberIds: arrayRemove(me), [`joinedAt.${me}`]: deleteField(), [`leftAt.${me}`]: now(), [`zones.${me}`]: deleteField(), ...extra })
   /** Eight members; hal joined right after alice, so he takes over. */
   const EIGHT = ['alice', 'bob', 'cleo', 'dan', 'eve', 'fay', 'gus', 'hal']
   const joined = Object.fromEntries(EIGHT.map((u, i) => [u, ago((u === 'alice' ? 30 : u === 'hal' ? 29 : 20 - i) * DAY)]))
   const eight = (extra: DocumentData = {}) => storedGoal({ memberIds: EIGHT, invited: [], joinedAt: joined, ...extra })
 
-  test('a member leaves; their part stays in the totals', async () => {
+  test('a member leaves; their part stays in the totals, their zone goes', async () => {
     await seed({ ...people(), 'sharedGoals/g1': storedGoal() })
     await allowed(leave(db('bob'), 'bob'))
     const g = (await getDoc(goalRef(db('alice')))).data()!
     expect(g.memberIds).toEqual(['alice'])
     expect(g.totals100).toEqual({ alice: 3000, bob: 2500 })
     expect(g.ownerId).toBe('alice')
+    expect(g.zones).toEqual({ alice: GOAL_ZONE })
   })
 
   test('an owner leaving a goal of 8 hands on to the earliest-joined', async () => {
@@ -649,7 +650,7 @@ describe('leaving', () => {
     await allowed(leave(db('alice'), 'alice', { ownerId: 'hal' }))
   })
 
-  test('the last member leaving finishes the goal and clears its invitations', async () => {
+  test('the last member leaving finishes the goal and clears its invitations (the app deletes it; past 499 check-ins it leaves so)', async () => {
     await seed({
       ...people(),
       'sharedGoals/g1': storedGoal({ memberIds: ['alice'], joinedAt: { alice: ago(20 * DAY) }, invited: ['cleo', 'dan'] }),
@@ -683,7 +684,68 @@ describe('leaving', () => {
       'leaving and clearing invitations others still have': () => leave(bob, 'bob', { invited: [] }),
       'a member leaving who takes the goal': () => leave(bob, 'bob', { ownerId: 'cleo' }),
       'a member leaving who moves someone\'s leftAt': () => leave(bob, 'bob', { 'leftAt.alice': now() }),
+      'leaving and keeping my zone': () => updateDoc(goalRef(bob), { memberIds: arrayRemove('bob'), 'joinedAt.bob': deleteField(), 'leftAt.bob': now() }),
+      'leaving and changing my zone': () => leave(bob, 'bob', { 'zones.bob': 'Asia/Tokyo' }),
+      'leaving and taking someone else\'s zone': () => leave(bob, 'bob', { 'zones.alice': deleteField() }),
       'signed out': () => leave(db(), 'bob'),
+    })
+  })
+})
+
+describe('the last member out deletes the goal', () => {
+  /** What leaveGoal does for the last member: their check-ins and the goal, in one transaction. */
+  const deleteAll = (fs: Firestore, cids: string[], id = 'g1') =>
+    runTransaction(fs, async (tx) => {
+      await tx.get(goalRef(fs, id))
+      for (const cid of cids) tx.delete(ciRef(fs, cid, id))
+      tx.delete(goalRef(fs, id))
+    })
+  const alone = (extra: DocumentData = {}) =>
+    storedGoal({ memberIds: ['alice'], joinedAt: { alice: ago(20 * DAY) }, invited: ['cleo'], zones: { alice: GOAL_ZONE }, totals100: { alice: 1200, bob: 300 }, total100: 1500, leftAt: { bob: ago(DAY) }, ...extra })
+
+  test('with their check-ins, in one go, invitations and former members\' parts included; finished or not', async () => {
+    await seed({
+      ...people(),
+      'sharedGoals/g1': alone(),
+      [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 500),
+      [`sharedGoals/g1/checkins/${LAST}_alice`]: ciDoc('alice', 700, LAST),
+      'sharedGoals/done': alone({ archivedAt: ago(DAY), invited: [] }),
+      [`sharedGoals/done/checkins/${W}_alice`]: ciDoc('alice', 500),
+    })
+    await allowed(deleteAll(db('alice'), [`${W}_alice`, `${LAST}_alice`]))
+    await allowed(deleteAll(db('alice'), [`${W}_alice`], 'done'))
+  })
+
+  test('a year of weekly check-ins goes in one transaction (the goal is read once for all of them)', async () => {
+    const weeks = Array.from({ length: 60 }, (_, i) => addDays(W, -7 * i))
+    await seed({ ...people(), 'sharedGoals/g1': alone(), ...Object.fromEntries(weeks.map((w) => [`sharedGoals/g1/checkins/${w}_alice`, ciDoc('alice', 100, w)])) })
+    await allowed(deleteAll(db('alice'), weeks.map((w) => `${w}_alice`)))
+  })
+
+  test('nobody else deletes a goal, nor check-ins without the goal going', async () => {
+    await seed({
+      ...people(),
+      'sharedGoals/g1': storedGoal(),
+      [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 500),
+      'sharedGoals/solo': alone(),
+      [`sharedGoals/solo/checkins/${W}_alice`]: ciDoc('alice', 500),
+      'sharedGoals/left': alone({ memberIds: [], joinedAt: {}, leftAt: { alice: ago(HOUR), bob: ago(DAY) }, archivedAt: ago(HOUR), invited: [] }),
+    })
+    await allDenied({
+      'the owner deleting a goal others are in': () => deleteAll(db('alice'), [`${W}_alice`]),
+      'a member deleting a goal others are in': () => deleteDoc(goalRef(db('bob'))),
+      'an invitee deleting a goal': () => deleteDoc(goalRef(db('cleo'), 'solo')),
+      'a former member deleting a goal': () => deleteDoc(goalRef(db('bob'), 'solo')),
+      'the last leaver deleting a goal nobody is in': () => deleteDoc(goalRef(db('alice'), 'left')),
+      'a stranger deleting a goal': () => deleteDoc(goalRef(db('zed'), 'solo')),
+      'signed out': () => deleteDoc(goalRef(db(), 'solo')),
+      'the only member deleting a check-in and keeping the goal': () => deleteDoc(ciRef(db('alice'), `${W}_alice`, 'solo')),
+      'a member deleting a check-in in a batch that deletes another goal': () => {
+        const b = writeBatch(db('alice'))
+        b.delete(ciRef(db('alice'), `${W}_alice`))
+        b.delete(goalRef(db('alice'), 'solo'))
+        return b.commit()
+      },
     })
   })
 })

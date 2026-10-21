@@ -267,7 +267,8 @@ describe('confirms and footers', () => {
     const base = 'Your part stays in the total. To come back, you’ll need a new invite.'
     expect(leaveConfirm(goal(), 'ben', null).message).toBe(base)
     expect(leaveConfirm(goal(), 'ana', 'Sam Lee').message).toBe(`${base} Sam becomes the owner.`)
-    expect(leaveConfirm(goal({ memberIds: ['ana'] }), 'ana', null).message).toBe(`${base} You’re the last one, so it moves to Finished.`)
+    expect(leaveConfirm(goal({ memberIds: ['ana'] }), 'ana', null).message).toBe('You’re the last one here. The goal and its check-ins will be gone.')
+    expect(leaveConfirm(goal({ memberIds: ['ana'], archivedAt: NOW }), 'ana', null).message).toBe('You’re the last one here. The goal and its check-ins will be gone.')
     expect(leaveConfirm(goal({ archivedAt: NOW }), 'ana', 'Sam').message).toBe('Your part stays in the total.')
     expect(leaveConfirm(goal(), 'ben', null).title).toBe('Leave Run 100 km?')
     expect(leaveConfirm(goal(), 'ben', null).confirmLabel).toBe('Leave')

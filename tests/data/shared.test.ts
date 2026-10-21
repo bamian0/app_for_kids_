@@ -375,18 +375,31 @@ describe('finishing and leaving', () => {
     expect(d).toMatchObject({ ownerId: cleo.uid, memberIds: [cleo.uid, ben.uid], totals100: { [ana.uid]: 700 }, total100: 700, archivedAt: null })
     expect(d!.joinedAt[ana.uid]).toBeUndefined()
     expect(d!.leftAt[ana.uid]).toBeDefined()
+    expect(d!.zones[ana.uid]).toBeUndefined()
     expect(await adminList(checkinsPath(id))).toEqual([])
     // Ana can't read it any more; Cleo, the new owner, edits it.
     expect(await goalAs(ana, id, (g) => g === null)).toBeNull()
     await as(cleo)
     await editSharedGoal(id, { name: 'Walk 50 km' })
-    // The last one out finishes it.
+    // The last one out deletes it, with their check-ins: nobody could read it again.
     await leaveSharedGoal(id)
     await as(ben)
+    await checkIn(id, 2, 'Last')
     await leaveSharedGoal(id)
-    const last = await adminGet(goalPath(id))
-    expect(last).toMatchObject({ memberIds: [], invited: [], ownerId: ben.uid, total100: 700 })
-    expect(last!.archivedAt).not.toBeNull()
+    expect(await adminGet(goalPath(id))).toBeUndefined()
+    expect(await adminList(checkinsPath(id))).toEqual([])
+    // Leaving again resolves.
+    await leaveSharedGoal(id)
+  })
+
+  it('the last member of a finished goal deletes it too; nothing is left of a goal only you filled', async () => {
+    await as(ana)
+    const id = await createSharedGoal({ name: 'Read 20 books about my divorce', unit: 'books', target: 20, endsOn: null, invite: [cleo.uid] })
+    await checkIn(id, 3, 'Started')
+    await finishSharedGoal(id)
+    await leaveSharedGoal(id)
+    expect(await adminGet(goalPath(id))).toBeUndefined()
+    expect(await adminList(checkinsPath(id))).toEqual([])
   })
 })
 
@@ -412,6 +425,7 @@ describe('account deletion', () => {
     // A goal she owns with Ana in it, one she's alone in, and an invitation.
     const shared = await createSharedGoal({ name: 'Together', unit: 'km', target: 100, endsOn: null, invite: [ana.uid] })
     const alone = await createSharedGoal({ name: 'Alone', unit: 'km', target: 10, endsOn: null, invite: [] })
+    await checkIn(alone, 3, 'Just me')
     await as(ana)
     await joinSharedGoal(shared)
     const invite = await createSharedGoal({ name: 'Invite', unit: 'km', target: 10, endsOn: null, invite: [eve.uid] })
@@ -422,9 +436,13 @@ describe('account deletion', () => {
     await deleteMyAccount(PASSWORD)
 
     expect(await adminGet(`users/${eve.uid}`)).toBeUndefined()
-    expect(await adminGet(goalPath(shared))).toMatchObject({ ownerId: ana.uid, memberIds: [ana.uid], totals100: { [eve.uid]: 1200 }, total100: 1200 })
+    const kept = await adminGet(goalPath(shared))
+    expect(kept).toMatchObject({ ownerId: ana.uid, memberIds: [ana.uid], totals100: { [eve.uid]: 1200 }, total100: 1200 })
+    expect(Object.keys(kept!.zones)).toEqual([ana.uid])
     expect(await adminList(checkinsPath(shared))).toEqual([])
-    expect((await adminGet(goalPath(alone)))!.archivedAt).not.toBeNull()
+    // The goal only she was in is gone, with her check-in: nothing of it is left.
+    expect(await adminGet(goalPath(alone))).toBeUndefined()
+    expect(await adminList(checkinsPath(alone))).toEqual([])
     expect((await adminGet(goalPath(invite)))!.invited).toEqual([])
     for (const other of [ana, cleo, zed, dan]) expect(await adminGet(`friends/${pairId(eve.uid, other.uid)}`)).toBeUndefined()
     expect(await adminGet(`friendCodes/${code}`)).toBeUndefined()

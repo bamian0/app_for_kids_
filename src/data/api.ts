@@ -436,8 +436,8 @@ export function useCheckins(goalId: string, weekId: WeekId): Live<Checkin[]> {
  * (zones: { you: zone }), inviting up to 7 friends ("You can only invite friends.").
  * inviteToSharedGoal(goalId, uids), cancelSharedInvite(goalId, uid): the owner (members + invited ≤ 8).
  * joinSharedGoal(goalId) (stores your device's zone), declineSharedGoal(goalId).
- * leaveSharedGoal(goalId): lists your check-ins, leaves, then deletes them; your part stays in the total; an owner
- * hands on to the earliest-joined member; the last member's leave finishes it.
+ * leaveSharedGoal(goalId): lists your check-ins, leaves (your zone goes), then deletes them; your part stays in the
+ * total; an owner hands on to the earliest-joined member; the last member deletes the goal with their check-ins.
  * editSharedGoal(goalId, patch), finishSharedGoal(goalId): the owner; reachedAt follows the target.
  * checkIn(goalId, amount, note, weekId?) → { total, reached }: replaces your check-in for that week (default this week
  * in the goal's zone); "That week just ended. Check in for this week instead." once it's past (checkinClosesAt).

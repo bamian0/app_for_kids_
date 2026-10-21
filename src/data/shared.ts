@@ -422,10 +422,17 @@ function joinedMicros(raw: DocumentData): Record<UID, number> {
   return out
 }
 
+/** Writes in one Firestore batch or transaction, at most. */
+const MAX_WRITES = 500
+
 /**
- * Leaves a goal the way every leave does (SPEC §11.8, §11.12): lists your check-in ids while still a member, leaves
- * in a transaction (an owner hands on to the earliest-joined member; the last one out finishes it and clears the
- * invitations), then deletes those check-ins. Your part stays in the totals. Not a member: nothing happens.
+ * Leaves a goal the way every leave does (SPEC §11.8, §11.12): lists your check-in ids while still a member, then
+ * - the last member out deletes the goal with those check-ins, in one transaction (nobody could read it again, so
+ *   nothing of it is left behind: its name, the zones, everyone's parts);
+ * - anyone else leaves in a transaction (your zone goes, your part stays in the totals; an owner hands on to the
+ *   earliest-joined member), then deletes those check-ins.
+ * Not a member: nothing happens. A last member with more check-ins than a transaction holds (499: nine years of
+ * weeks) finishes the goal instead, as the rules also allow, and it stays, unreadable (SPEC §11.15).
  */
 export async function leaveGoal(me: UID, goalId: string): Promise<boolean> {
   const mine = await getDocs(query(checkinsOf(goalId), where('uid', '==', me))).then(
@@ -435,20 +442,29 @@ export async function leaveGoal(me: UID, goalId: string): Promise<boolean> {
       throw e
     },
   )
-  const left = await runTransaction(db(), async (tx) => {
+  const outcome = await runTransaction(db(), async (tx): Promise<'none' | 'left' | 'deleted'> => {
     let snap: DocumentSnapshot
     try {
       snap = await tx.get(goalRef(goalId))
     } catch (e) {
-      if (isDenied(e)) return false
+      if (isDenied(e)) return 'none'
       throw e
     }
-    if (!snap.exists()) return false
+    if (!snap.exists()) return 'none'
     const raw = snap.data()
     const members = rawUids(raw.memberIds)
-    if (!members.includes(me)) return false
+    if (!members.includes(me)) return 'none'
     const rest = members.filter((u) => u !== me)
-    const args: unknown[] = [new FieldPath('joinedAt', me), deleteField(), new FieldPath('leftAt', me), serverTimestamp()]
+    if (rest.length === 0 && mine.length < MAX_WRITES) {
+      for (const ref of mine) tx.delete(ref)
+      tx.delete(goalRef(goalId))
+      return 'deleted'
+    }
+    const args: unknown[] = [
+      new FieldPath('joinedAt', me), deleteField(),
+      new FieldPath('leftAt', me), serverTimestamp(),
+      new FieldPath('zones', me), deleteField(),
+    ]
     if (rest.length === 0) {
       if (raw.archivedAt == null) args.push('archivedAt', serverTimestamp())
       args.push('invited', [])
@@ -458,14 +474,16 @@ export async function leaveGoal(me: UID, goalId: string): Promise<boolean> {
       args.push('ownerId', next ?? rest[0])
     }
     tx.update(goalRef(goalId), 'memberIds', rest, ...args)
-    return true
+    return 'left'
   })
-  if (mine.length > 0) {
-    const batch = writeBatch(db())
-    for (const ref of mine) batch.delete(ref)
-    await batch.commit()
+  if (outcome === 'none' || outcome === 'left') {
+    for (let i = 0; i < mine.length; i += MAX_WRITES) {
+      const batch = writeBatch(db())
+      for (const ref of mine.slice(i, i + MAX_WRITES)) batch.delete(ref)
+      await batch.commit()
+    }
   }
-  return left
+  return outcome !== 'none'
 }
 
 /** Leaves a goal: your part stays in the total; your check-ins (numbers and notes) go with you. Fails at once offline. */

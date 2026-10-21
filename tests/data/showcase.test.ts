@@ -7,10 +7,12 @@ import { moneyKeys, startEarnings, startGoals, startMoneyState, startMoves } fro
 import { showcaseKey, startShowcase, startShowcaseSync, startStats, statsKey } from '../../src/data/showcase.ts'
 import { forget, peek, watch, type Start } from '../../src/data/store.ts'
 import { now } from '../../src/domain/clock.ts'
+import { defaultCurrency } from '../../src/domain/money.ts'
 import { lastMoneyMonth, showcaseItems } from '../../src/domain/showcase.ts'
+import { addMonths, monthIdForWeek, weekIdFor } from '../../src/domain/time.ts'
 import type { ShowcaseItems, UserStats } from '../../src/domain/types.ts'
 import { getFirebase } from '../../src/firebase/app.ts'
-import { adminGet, as, clientFor, createUser, eventually, observe, rejectsWith, seed, setupEmulators, teardownEmulators, ts, type TestUser } from './helpers.ts'
+import { adminGet, as, clientFor, createUser, eventually, HOUR, observe, rejectsWith, seed, setupEmulators, teardownEmulators, ts, type TestUser } from './helpers.ts'
 
 const OFFLINE = 'You’re offline. Check your connection and try again.'
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -154,6 +156,74 @@ describe('the background sync', () => {
       await eventually(async () => ((await adminGet(path(ana)))?.achieved ?? []).some((a: { name: string }) => a.name === 'Tent'))
       const d = await adminGet(path(ana))
       expect(d!.achieved.map((a: { name: string }) => a.name)).toEqual(['Tent', 'Lamp'])
+    } finally {
+      stop()
+    }
+  })
+
+  // Two devices of one user that compute different copies rewrite each other's for ever (a write and a read per
+  // listener every few seconds, on the project's shared quota). The other device is a second client of the same user.
+  it('keeps the currency another device showed while you never picked one, never a locale’s guess', async () => {
+    const bo = await createUser('Bo')
+    expect(defaultCurrency()).not.toBe('GBP')
+    // An en-GB device switched earnings on; Bo has no money state (only Choose Currency and a baseline create it).
+    const items = await itemsOf(bo)
+    await setShowcaseSwitch('earnings', true, { ...items, earnings: { ...items.earnings, currency: 'GBP' } })
+    const stop = startShowcaseSync(bo.uid, { debounceMs: 100 })
+    try {
+      await eventually(() => peek(moneyKeys.state(bo.uid)).data !== undefined && peek(moneyKeys.earnings(bo.uid)).data !== undefined)
+      const before = await adminGet(path(bo))
+      await sleep(1_000)
+      const after = await adminGet(path(bo))
+      expect(after!.earnings).toEqual({ monthId: lastMoneyMonth(now(), TZ), amount: 0, currency: 'GBP' })
+      expect(after!.updatedAt.isEqual(before!.updatedAt)).toBe(true)
+      // Once Bo picks a currency, every device shows that one.
+      await setCurrency('EUR')
+      await eventually(async () => (await adminGet(path(bo)))?.earnings?.currency === 'EUR')
+    } finally {
+      stop()
+    }
+  })
+
+  it('keeps the next month a device further east already shows, with that month’s amount', async () => {
+    const cy = await createUser('Cy')
+    const own = lastMoneyMonth(now(), TZ)
+    const ahead = addMonths(own, 1)
+    // This week's money month is the month after "last month": what Cy earned this week counts for it.
+    const week = weekIdFor(now(), TZ)
+    expect(monthIdForWeek(week)).toBe(ahead)
+    await seed({ [`users/${cy.uid}/earnings/s1_${week}_t1`]: { spaceId: 's1', weekId: week, taskId: 't1', title: 'Gig', amount: 25, earnedAt: ts(Date.now() - HOUR), updatedAt: ts(Date.now()) } })
+    await setShowcaseSwitch('earnings', true, await itemsOf(cy))
+    // The other device has reached the next money month and shows it, before this week's gig was synced there.
+    await updateDoc(doc(clientFor(cy.uid), path(cy)), { earnings: { monthId: ahead, amount: 0, currency: 'USD' }, updatedAt: serverTimestamp() })
+    const stop = startShowcaseSync(cy.uid, { debounceMs: 100 })
+    try {
+      await eventually(async () => (await adminGet(path(cy)))?.earnings?.amount === 25)
+      await sleep(800)
+      expect((await adminGet(path(cy)))!.earnings).toEqual({ monthId: ahead, amount: 25, currency: 'USD' })
+    } finally {
+      stop()
+    }
+  })
+
+  it('an item another device keeps replacing is written back once, not again and again', async () => {
+    await as(ana)
+    const stop = startShowcaseSync(ana.uid, { debounceMs: 100 })
+    const other = doc(clientFor(ana.uid), path(ana))
+    const odd = [{ name: 'Bike', pct: 1 }]
+    try {
+      const mine = (await itemsOf(ana)).goals
+      expect(mine).not.toEqual(odd)
+      await eventually(async () => JSON.stringify((await adminGet(path(ana)))?.goals) === JSON.stringify(mine))
+      await updateDoc(other, { goals: odd, updatedAt: serverTimestamp() })
+      await eventually(async () => JSON.stringify((await adminGet(path(ana)))?.goals) === JSON.stringify(mine))
+      // The other device writes its copy again: this sync leaves it until its own copy changes (or the hourly look).
+      await updateDoc(other, { goals: odd, updatedAt: serverTimestamp() })
+      await sleep(1_000)
+      expect((await adminGet(path(ana)))!.goals).toEqual(odd)
+      // A change of Ana's own money: written again.
+      await saveGoal({ name: 'Kayak', cost: 900 })
+      await eventually(async () => ((await adminGet(path(ana)))?.goals ?? []).some((g: { name: string }) => g.name === 'Kayak'))
     } finally {
       stop()
     }

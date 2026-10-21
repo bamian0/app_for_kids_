@@ -688,7 +688,8 @@ export interface SharedGoal {
   last: { by: UID; weekId: WeekId; at: number } | null
   /** Set by the check-in (or edit) that reached the target; cleared if the total falls below it again. */
   reachedAt: number | null
-  /** Finished (Finish Goal, or the last member left): read-only from then on. */
+  /** Finished (Finish Goal): read-only from then on. (The last member out deletes the goal; only past 499 check-ins
+   *  does their leave finish it instead.) */
   archivedAt: number | null
   createdAt: number
 }

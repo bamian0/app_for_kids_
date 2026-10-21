@@ -1545,15 +1545,16 @@ service cloud.firestore {
         && !added.hasAny(e.memberIds)
         && invitesFriends(me, added);
     }
-    // 5. A member leaves; their part stays in the totals. The last one out finishes the goal (and
-    // clears the invitations); an owner who leaves others behind hands the goal to the earliest-joined
-    // of them (earliestJoined, as for spaces).
+    // 5. A member leaves; their part stays in the totals, their zone goes. The last one out finishes
+    // the goal (and clears the invitations; the app deletes it instead, below); an owner who leaves
+    // others behind hands the goal to the earliest-joined of them (earliestJoined, as for spaces).
     function leavesShared(me, e, d, ch) {
       return me in e.memberIds
-        && ch.hasOnly(['memberIds', 'joinedAt', 'leftAt', 'ownerId', 'archivedAt', 'invited'])
+        && ch.hasOnly(['memberIds', 'joinedAt', 'leftAt', 'ownerId', 'archivedAt', 'invited', 'zones'])
         && d.memberIds == e.memberIds.removeAll([me])
         && d.joinedAt.diff(e.joinedAt).affectedKeys().hasOnly([me]) && !(me in d.joinedAt)
         && d.leftAt.diff(e.leftAt).affectedKeys().hasOnly([me]) && d.leftAt[me] == request.time
+        && d.zones.diff(e.zones).affectedKeys().hasOnly([me]) && !(me in d.zones)
         && (d.memberIds.size() == 0
             ? d.archivedAt == (e.archivedAt == null ? request.time : e.archivedAt) && d.invited == [] && d.ownerId == e.ownerId
             : d.archivedAt == e.archivedAt && d.invited == e.invited
@@ -1614,22 +1615,26 @@ service cloud.firestore {
     }
 
     // Members and invitees read a goal, and list theirs with where('memberIds', 'array-contains', me)
-    // or where('invited', 'array-contains', me). Never deleted: the last member leaving archives it.
+    // or where('invited', 'array-contains', me). The last member out deletes it, with their check-ins
+    // in the same batch: nobody could read it again (former members can't, and nobody can join), so
+    // nothing of it, of theirs or of anyone's, is left behind (an account deletion included).
     match /sharedGoals/{goalId} {
       allow get, list: if signedIn()
         && (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.invited);
       allow create: if signedIn() && createsShared(goalId);
       allow update: if signedIn() && updatesShared(goalId, request.auth.uid, existing(), incoming(), incoming().diff(existing()).affectedKeys());
+      allow delete: if signedIn() && existing().memberIds == [request.auth.uid];
 
       // The goal's current members read check-ins (a week's is one query). Only the author writes
-      // theirs, in the check-in batch, and deletes them only once they have left (every leave does),
-      // so nobody can delete and re-create a week to count it twice.
+      // theirs, in the check-in batch, and deletes them only once they have left (every leave does)
+      // or with the goal itself (the last one out), so nobody can delete and re-create a week to count
+      // it twice.
       match /checkins/{cid} {
         allow read: if signedIn() && request.auth.uid in get(goalPath(goalId)).data.memberIds;
         allow create: if signedIn() && checkinFits(goalId, cid);
         allow update: if signedIn() && existing().weekId == incoming().weekId && checkinFits(goalId, cid);
         allow delete: if signedIn() && existing().uid == request.auth.uid
-          && !(request.auth.uid in get(goalPath(goalId)).data.memberIds);
+          && (!(request.auth.uid in get(goalPath(goalId)).data.memberIds) || !existsAfter(goalPath(goalId)));
       }
     }
   }

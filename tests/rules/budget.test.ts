@@ -66,7 +66,11 @@
 //     of the same check-in count as one read)
 //   join, the 8th member (2nd branch)                           157      843          10
 //   invite 7 friends (4th branch)                               440      560           3   (7 reads)
-//   the owner leaves a goal of 8 (5th branch)                   356      644          10
+//   the owner leaves a goal of 8 (5th branch)                   377      623          10   (2026-10-21, review
+//     fix: the leaver's zone goes too; it was 356)
+//   the last member deletes the goal with 52 check-ins: the     21 / 52   979 / 948  10 / 9   (one read of the
+//     goal op / a check-in op (one transaction)                                                goal for all 53)
+//   a former member deletes a check-in after leaving             42      958           9
 //   the owner edits, reaching the target (6th branch)           309      691          10
 //   the owner finishes a goal (the last branch)                 246      754          10
 //   a week's check-ins query, 8 docs                             26      974          10
@@ -188,6 +192,8 @@ const LEAVE = atEnd('&& (me == e.ownerId ? earliestJoined(d) : d.ownerId == e.ow
 const EDIT = atEnd('&& validGoalText(d) && reachesRule(e, d);')
 const FINISH = atEnd('&& d.archivedAt == request.time && d.invited == [];')
 const CHECKINS_READ = atEnd('allow read: if signedIn() && request.auth.uid in get(goalPath(goalId)).data.memberIds;')
+const GOAL_DELETE = atEnd('allow delete: if signedIn() && existing().memberIds == [request.auth.uid];')
+const CHECKIN_DELETE = atEnd('&& (!(request.auth.uid in get(goalPath(goalId)).data.memberIds) || !existsAfter(goalPath(goalId)));')
 
 const space = (extra: DocumentData = {}) => spaceDoc(M8, { createdAt: ts(Date.now() - 90 * DAY), ...extra })
 const weekEnding = (deadlineMs: number): DocumentData => ({
@@ -239,6 +245,23 @@ const editCheckin = (fs: Firestore) => runTransaction(fs, async (tx) => {
 const goal8WithCheckin = () => ({
   'sharedGoals/g1': goal8(),
   [`sharedGoals/g1/checkins/${B3W}_m8`]: { uid: 'm8', weekId: B3W, amount100: 100, note: 'N'.repeat(80), at: ts(Date.now() - HOUR) },
+})
+/** 52 weekly check-ins of `uid`'s, the newest this week. */
+const yearOfCheckins = (uid: string): Record<string, DocumentData> =>
+  Object.fromEntries(Array.from({ length: 52 }, (_, i) => {
+    const w = new Date(Date.parse(`${B3W}T00:00:00Z`) - i * 7 * DAY).toISOString().slice(0, 10)
+    return [`sharedGoals/g1/checkins/${w}_${uid}`, { uid, weekId: w, amount100: 100, note: 'N'.repeat(80), at: ts(Date.now() - (i * 7 + 1) * DAY) }]
+  }))
+/** m1, the last member of a goal 7 others have left, with a year of check-ins and 7 invitations. */
+const lastMemberWithAYear = () => ({
+  'sharedGoals/g1': goal8({ memberIds: ['m1'], joinedAt: { m1: ts(Date.now() - 400 * DAY) }, invited: ['i2', 'i3', 'i4', 'i5', 'i6', 'i7', 'i8'], leftAt: Object.fromEntries(M8.slice(1).map((u) => [u, ts(Date.now() - DAY)])) }),
+  ...yearOfCheckins('m1'),
+})
+/** What leaveGoal does for the last member: their check-ins and the goal in one transaction. */
+const deleteLastGoal = (fs: Firestore) => runTransaction(fs, async (tx) => {
+  await tx.get(doc(fs, 'sharedGoals/g1'))
+  for (const id of Object.keys(yearOfCheckins('m1'))) tx.delete(doc(fs, id))
+  tx.delete(doc(fs, 'sharedGoals/g1'))
 })
 /** 12 achieved goals and 8 goals with 60-character names (fixed times, so a rewrite leaves them unchanged). */
 const SHOWN_ACHIEVED = Array.from({ length: 12 }, (_, i) => ({ name: `${'Ж'.repeat(57)}${String(i).padStart(3, '0')}`, at: ts(T0 - (i + 1) * DAY) }))
@@ -697,7 +720,25 @@ const CASES: Case[] = [
     name: 'b3: the owner leaves a goal of 8 (5th branch)',
     ...LEAVE,
     seed: () => ({ 'sharedGoals/g1': goal8() }),
-    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { memberIds: arrayRemove('m1'), 'joinedAt.m1': deleteField(), 'leftAt.m1': serverTimestamp(), ownerId: 'm2' }),
+    run: (db) => updateDoc(doc(db('m1'), 'sharedGoals/g1'), { memberIds: arrayRemove('m1'), 'joinedAt.m1': deleteField(), 'leftAt.m1': serverTimestamp(), 'zones.m1': deleteField(), ownerId: 'm2' }),
+  },
+  {
+    name: 'b3: the last member deletes the goal with a year of check-ins, the goal op',
+    ...GOAL_DELETE,
+    seed: lastMemberWithAYear,
+    run: (db) => deleteLastGoal(db('m1')),
+  },
+  {
+    name: 'b3: the last member deletes the goal with a year of check-ins, a check-in op',
+    ...CHECKIN_DELETE,
+    seed: lastMemberWithAYear,
+    run: (db) => deleteLastGoal(db('m1')),
+  },
+  {
+    name: 'b3: a former member deletes a check-in after leaving',
+    ...CHECKIN_DELETE,
+    seed: () => ({ 'sharedGoals/g1': goal8({ memberIds: M8.slice(1), leftAt: { m1: ts(Date.now() - HOUR) } }), ...yearOfCheckins('m1') }),
+    run: (db) => deleteDoc(doc(db('m1'), `sharedGoals/g1/checkins/${B3W}_m1`)),
   },
   {
     name: 'b3: the owner edits, reaching the target (6th branch)',

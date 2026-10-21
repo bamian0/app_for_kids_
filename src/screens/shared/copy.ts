@@ -294,14 +294,14 @@ export function finishConfirm(name: string): Confirm {
 
 /**
  * Leave: "Your part stays in the total. To come back, you’ll need a new invite." plus, for the owner with others
- * left, " Sam becomes the owner.", or for the last member " You’re the last one, so it moves to Finished." A
- * finished goal only keeps the first sentence (it can't take invites, and it's in Finished already).
+ * left, " Sam becomes the owner." A finished goal only keeps the first sentence (it can't take invites). The last
+ * member deletes the goal (SPEC §11.12): "You’re the last one here. The goal and its check-ins will be gone."
  */
 export function leaveConfirm(goal: SharedGoal, me: UID, nextOwnerName: string | null): Confirm {
   const finished = goal.archivedAt !== null
   let message = finished ? 'Your part stays in the total.' : 'Your part stays in the total. To come back, you’ll need a new invite.'
   const others = goal.memberIds.filter((uid) => uid !== me)
-  if (!finished && others.length === 0) message += ' You’re the last one, so it moves to Finished.'
+  if (others.length === 0) message = 'You’re the last one here. The goal and its check-ins will be gone.'
   else if (!finished && goal.ownerId === me && nextOwnerName) message += ` ${firstName(nextOwnerName)} becomes the owner.`
   return {
     title: `Leave ${goal.name}?`,

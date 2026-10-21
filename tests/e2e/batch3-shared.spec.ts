@@ -485,18 +485,11 @@ test('leaving: a member’s check-in goes and their part stays; the owner hands 
     await expect(shown(parts, 'Invited', true)).toHaveCount(0)
   })
 
-  await test.step('Cleo, the last one, leaves: it moves to Finished', async () => {
+  await test.step('Cleo, the last one, leaves: the goal is gone', async () => {
     await menu(cleo.page, 'Leave Goal')
-    await answer(cleo.page, 'Leave', 'You’re the last one, so it moves to Finished.')
+    await answer(cleo.page, 'Leave', 'You’re the last one here. The goal and its check-ins will be gone.')
     await expect(toast(cleo.page, 'You left Read 20 books')).toBeVisible()
-    await expect
-      .poll(() => readGoal(goalId))
-      .toMatchObject({
-        memberIds: [],
-        invited: [],
-        archived: true,
-        total100: 900,
-      })
+    await expect.poll(() => readGoal(goalId)).toBeNull()
   })
 
   expect(ana.errors).toEqual([])

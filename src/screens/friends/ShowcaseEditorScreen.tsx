@@ -1,7 +1,7 @@
 // The showcase editor (SPEC §11.9.4): one switch per item anyone on Stakes can see on your profile. Each switch
 // saves at once against the server's copy (setShowcaseSwitch) and shows the server's answer; money items ask
 // first and wait until your money has loaded, so what they copy is complete.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { setShowcaseSwitch, useAuth, useCurrency, useEarnings, useGoals, useMoneyState, useMoves, useShowcase } from '../../data/api.ts'
 import { lastMoneyMonth, showcaseItems, showOf } from '../../domain/showcase.ts'
 import type { ShowKey, ShowSwitches } from '../../domain/types.ts'
@@ -28,7 +28,9 @@ export function ShowcaseEditorScreen() {
   const moves = useMoves()
   const goals = useGoals()
   const currency = useCurrency()
-  const [pending, setPending] = useState<Partial<ShowSwitches>>({})
+  // A switch being saved, or saved and not yet back from the server's copy: it shows its new state meanwhile, so
+  // it never flicks back for a moment between the write and the listener catching up.
+  const [pending, setPending] = useState<Partial<Record<ShowKey, { on: boolean; saving: boolean }>>>({})
 
   const moneyLoaded = state.data !== undefined && earnings.data !== undefined && moves.data !== undefined && goals.data !== undefined
   const zone = deviceZone()
@@ -40,23 +42,44 @@ export function ShowcaseEditorScreen() {
         : null,
     [moneyLoaded, moves.data, goals.data, earnings.data, state.data, currency, nowMs, zone],
   )
-  const stored = showcase.data === undefined ? null : showOf(showcase.data)
+  const stored: ShowSwitches | null = showcase.data === undefined ? null : showOf(showcase.data)
+
+  const drop = (key: ShowKey) =>
+    setPending((p) => {
+      const next = { ...p }
+      delete next[key]
+      return next
+    })
+
+  // A saved switch hands over to the stored one once the listener has it.
+  useEffect(() => {
+    if (!stored) return
+    for (const key of KEYS) {
+      const p = pending[key]
+      if (p && !p.saving && stored[key] === p.on) drop(key)
+    }
+  }, [stored, pending])
 
   const toggle = async (key: ShowKey, on: boolean) => {
-    if (!items || key in pending) return
+    if (!items || pending[key]) return
     const ask = on ? showConfirm(key, month) : null
     if (ask && !(await confirm({ title: ask.title, message: ask.message, confirmLabel: ask.confirmLabel, cancelLabel: ask.cancelLabel }))) return
-    setPending((p) => ({ ...p, [key]: on }))
+    setPending((p) => ({ ...p, [key]: { on, saving: true } }))
     try {
       await setShowcaseSwitch(key, on, items)
+      setPending((p) => ({ ...p, [key]: { on, saving: false } }))
+      // Should another device change it meanwhile, the stored switch wins anyway.
+      window.setTimeout(() => {
+        setPending((p) => {
+          if (p[key]?.saving !== false) return p
+          const next = { ...p }
+          delete next[key]
+          return next
+        })
+      }, 4000)
     } catch (e) {
+      drop(key)
       toast({ title: 'Couldn’t update your showcase', message: errorText(e), tone: 'error' })
-    } finally {
-      setPending((p) => {
-        const next = { ...p }
-        delete next[key]
-        return next
-      })
     }
   }
 
@@ -66,8 +89,9 @@ export function ShowcaseEditorScreen() {
       <Section header="Show" footer={EDITOR_FOOTER}>
         {KEYS.map((key) => {
           const copy = switchCopy(key, month)
-          const saving = key in pending
-          const value = saving ? pending[key] === true : stored ? stored[key] : false
+          const p = pending[key]
+          const saving = p?.saving === true
+          const value = p ? p.on : stored ? stored[key] : false
           return (
             <Row
               key={key}

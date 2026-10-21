@@ -1432,12 +1432,19 @@ service cloud.firestore {
 
     function goalPath(goalId) { return /databases/$(database)/documents/sharedGoals/$(goalId); }
 
-    // A name of 1-60 characters and a unit of 1-16, neither blank (a non-space somewhere: text()'s
-    // meaning, for fewer expressions); a target of 0.01…1e9 (hundredths); an end date that exists
-    // (timestamp.date() errors on 2027-02-30), or none. matches() errors on anything but a string.
+    // Not blank as the app sees it: a character that JavaScript's trim() keeps (its whitespace and line
+    // terminators, listed as plain code points so no Unicode table can differ). The app's goalProblem and
+    // decodeSharedGoal use trim(), so a name the rules take is never one every client drops (the lesson
+    // of SPEC §10.3: there, the rules' trim() took no-break spaces that the app removed).
+    // matches() errors on anything but a string.
+    function shows(s) {
+      return s.matches('(?s).*[^\\t\\n\\x{b}\\f\\r \\x{a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}\\x{feff}].*');
+    }
+    // A name of 1-60 characters and a unit of 1-16, neither blank; a target of 0.01…1e9 (hundredths);
+    // an end date that exists (timestamp.date() errors on 2027-02-30), or none.
     function validGoalText(d) {
-      return d.name.size() <= 60 && d.name.matches('(?s).*\\S.*')
-        && d.unit.size() <= 16 && d.unit.matches('(?s).*\\S.*')
+      return d.name.size() <= 60 && shows(d.name)
+        && d.unit.size() <= 16 && shows(d.unit)
         && d.target100 is int && d.target100 >= 1 && d.target100 <= 100000000000
         && (d.endsOn == null
             || (d.endsOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && dayAnchor(d.endsOn, 0) is timestamp));

@@ -1,4 +1,4 @@
-// Pure reminder planning for scripts/reminders.ts (no Firebase, no network). See docs/SPEC.md §4 and §9.11.
+// Pure reminder planning for scripts/reminders.ts (no Firebase, no network). See docs/SPEC.md §4, §9.11 and §11.10.
 //
 // Each reminder has a window in the space's local time instead of an exact hour, so a delayed or
 // dropped hourly run still sends it on the next run. The sent log (keys from reminderKey) makes
@@ -9,6 +9,8 @@ import { DateTime } from 'luxon'
 import { isCancelled } from '../src/domain/cancel.ts'
 import { isWeekPaused, pauseNeeded } from '../src/domain/pause.ts'
 import { boundsFor, momentText, scheduleOf } from '../src/domain/schedule.ts'
+import { goalEndsAt, goalWeek, isGoalId, progressText } from '../src/domain/shared.ts'
+import { playedWeeks } from '../src/domain/showcase.ts'
 import {
   computeMonth,
   computeMonthly,
@@ -21,9 +23,11 @@ import {
   reviewTargets,
   spaceJudges,
   taskSelfFraction,
+  type MemberMonthResult,
 } from '../src/domain/scoring.ts'
 import {
   agreementStatus,
+  FIRST_RESULTS_MONTH,
   inLockedWeek,
   memberTerms,
   monthDebts,
@@ -37,16 +41,34 @@ import {
 import {
   addMonths,
   addWeeks,
+  firstMonthOf,
   isMonthlyReviewWeek,
   lastCompleteMonthCandidate,
   momentAt,
   monthIdFor,
   monthIdForWeek,
   utcOffsetMinutes,
+  WEEK_MINUTES,
   weekIdFor,
   weekIdsInMonth,
 } from '../src/domain/time.ts'
-import type { MemberStakes, MonthId, MonthlyData, MonthlyList, MonthResults, Space, TermsInForce, UID, UserProfile, Week, WeekData, WeekId } from '../src/domain/types.ts'
+import type {
+  Checkin,
+  MemberStakes,
+  MonthId,
+  MonthlyData,
+  MonthlyList,
+  MonthResults,
+  ScoreEntry,
+  SharedGoal,
+  Space,
+  TermsInForce,
+  UID,
+  UserProfile,
+  Week,
+  WeekData,
+  WeekId,
+} from '../src/domain/types.ts'
 
 export type ReminderKind =
   | 'plan'
@@ -62,6 +84,8 @@ export type ReminderKind =
   | 'schedule'
   | 'stakes'
   | 'house'
+  // Batch 3 (SPEC §11.10): a shared goal's weekly check-in, to members who haven't checked in; opens `./?goal=<id>`.
+  | 'checkin'
 
 /** The midweek nudges: they need only the plans and progress of the members still waiting for one. */
 export function isNudge(kind: ReminderKind): boolean {
@@ -108,7 +132,10 @@ export interface Reminder {
    *  one is logged with it. Absent: just `key`. */
   parts?: string[]
   kind: ReminderKind
+  /** The space it is about ('' for `checkin`, which is about a shared goal: goalId). */
   spaceId: string
+  /** The shared goal a `checkin` push is about. */
+  goalId?: string
   uid: UID
   title: string
   body: string
@@ -970,4 +997,207 @@ export function planReminders(input: PlanInput): PlanResult {
     all.skipped.push(...skipped)
   }
   return all
+}
+
+// ---------- Batch 3: the scores writer (SPEC §11.10) ----------
+
+/** Score months loaded per space and per run (SPEC §11.10): a backfill after an outage spreads over runs. */
+export const SCORES_PER_SPACE = 2
+export const SCORES_PER_RUN = 8
+
+/** The marker a space's closed week leaves in the sent log once its scores are written. */
+export function scoresKey(spaceId: string, weekId: WeekId): string {
+  return `${spaceId}_${weekId}_scores`
+}
+
+/** The marker a space's month leaves in the sent log once its scores are written as final. */
+export function statsKey(spaceId: string, monthId: MonthId): string {
+  return `${spaceId}_${monthId}_stats`
+}
+
+export interface ScoresTarget {
+  /** W: the newest of last week and this week whose deadline (stored, else computed) has passed. */
+  weekId: WeekId
+  /** M = the month W belongs to. */
+  monthId: MonthId
+  /** The earliest month written: FIRST_RESULTS_MONTH, or the space's first month when later. */
+  floor: MonthId
+}
+
+/**
+ * The week and month the scores writer looks at for a space now (SPEC §11.10), or null when no deadline of last or
+ * this week has passed, or the month is before FIRST_RESULTS_MONTH or the space's first month. `known`: stored week
+ * docs already read (the job's preload); other weeks go by computed times, and the job checks W's stored deadline
+ * before writing.
+ */
+export function scoresTarget(space: Space, nowMs: number, known: KnownDocs = {}): ScoresTarget | null {
+  const thisWeek = weekIdFor(nowMs, space.timezone)
+  const weekId = [thisWeek, addWeeks(thisWeek, -1)].find((id) => {
+    const doc = known.weeks?.[id]
+    return nowMs >= boundsFor(space, id, doc && doc.id === id ? doc : null).deadlineAt
+  })
+  if (!weekId) return null
+  const first = firstMonthOf(space)
+  const floor = first && first > FIRST_RESULTS_MONTH ? first : FIRST_RESULTS_MONTH
+  const monthId = monthIdForWeek(weekId)
+  return monthId < floor ? null : { weekId, monthId, floor }
+}
+
+/**
+ * A space's month as score entries (scores/{uid}.months.{M}.{spaceId}), from computeMonth: one for each person with
+ * a score that month (finalScore, the "So far" number), with the weeks they played and whether the month is
+ * complete. Nobody else gets one: someone who only judged, sat out, or joined after the lock has no score, and an
+ * entry without one would only change their ring to "No score yet this month" (statsOf ignores it), or keep the
+ * month from counting if it were never finished.
+ */
+export function scoreEntries(month: Record<UID, MemberMonthResult>): Record<UID, ScoreEntry> {
+  const out: Record<UID, ScoreEntry> = {}
+  for (const result of Object.values(month)) {
+    if (result.finalScore === null) continue
+    out[result.uid] = { score: result.finalScore, weeks: playedWeeks(result), final: result.complete }
+  }
+  return out
+}
+
+// ---------- Batch 3: the check-in push (SPEC §11.10) ----------
+
+const CHECKIN_TITLE = 'Time to check in'
+/** Windows open at most this long before their goal week ends (the UTC gate depends on it). */
+export const CHECKIN_LEAD_MS = 18 * HOUR
+
+export function checkinKey(goalId: string, weekId: WeekId, uid: UID): string {
+  return `${goalId}_${weekId}_checkin_${uid}`
+}
+
+/** Whether `zone` is one the runtime can compute with (an IANA zone, or a fixed one like "UTC+5:30"). */
+function usableZone(zone: unknown): zone is string {
+  return typeof zone === 'string' && zone !== '' && DateTime.fromMillis(0, { zone }).isValid
+}
+
+/** The zone a member's push follows: the one stored for them when the runtime knows it, else the goal's. */
+export function memberZone(goal: Pick<SharedGoal, 'timezone' | 'zones'>, uid: UID): string {
+  const zone = Object.hasOwn(goal.zones, uid) ? goal.zones[uid] : undefined
+  return usableZone(zone) ? zone : goal.timezone
+}
+
+/** `minutes` (0…1440) after the start of `day` on its own wall clock: a time in a gap moves forward, 1440 is the
+ *  next day's first instant (as momentAt). */
+function wallTime(day: DateTime, minutes: number): number {
+  if (minutes >= DAY) return day.plus({ days: 1 }).startOf('day').toMillis()
+  return day.set({ hour: Math.floor(minutes / 60), minute: minutes % 60, second: 0, millisecond: 0 }).toMillis()
+}
+
+export interface CheckinWindow {
+  opensAt: number
+  closesAt: number
+}
+
+/**
+ * One member's check-in push window for a goal week (SPEC §11.10), in `zone` (the member's): let G be the end of the
+ * goal's week (its next Monday 00:00 in the goal's zone) and L the time G shows on the member's clock, in minutes
+ * after the start of the local day it ends (1440 when G is their midnight). L ≥ 12:00: from max(L − 6 h, 08:00) that
+ * day until G; else (G falls in their night or morning) 18:00 → 24:00 the evening before. Then cut at the goal's end
+ * date. So it is 4–6 hours of their wall clock, never inside their 00:00–08:00, within the week's last 18 hours, and
+ * Sunday 18:00 → Monday 00:00 for a member in the goal's zone. None for a finished or reached goal, or once nothing
+ * is left before the end date.
+ */
+export function checkinWindow(goal: Pick<SharedGoal, 'timezone' | 'endsOn' | 'archivedAt' | 'reachedAt'>, weekId: WeekId, zone: string): CheckinWindow | null {
+  if (goal.archivedAt !== null || goal.reachedAt !== null) return null
+  const end = momentAt(weekId, goal.timezone, WEEK_MINUTES)
+  const local = DateTime.fromMillis(end, { zone })
+  let minutes = local.hour * 60 + local.minute
+  let day = local.startOf('day')
+  if (minutes === 0) {
+    // Their midnight: the day it ends is the one before.
+    minutes = DAY
+    day = day.minus({ days: 1 }).startOf('day')
+  }
+  let opensAt: number
+  let closesAt: number
+  if (minutes >= 720) {
+    opensAt = wallTime(day, Math.max(minutes - 360, 480))
+    closesAt = end
+  } else {
+    opensAt = wallTime(day.minus({ days: 1 }).startOf('day'), 1080)
+    closesAt = day.toMillis()
+  }
+  const endsAt = goalEndsAt(goal)
+  if (endsAt !== null) closesAt = Math.min(closesAt, endsAt)
+  return opensAt < closesAt ? { opensAt, closesAt } : null
+}
+
+export interface CheckinCandidate extends CheckinWindow {
+  uid: UID
+  /** The goal week (its Monday, in the goal's zone). */
+  weekId: WeekId
+  /** The sent-log key: `${goalId}_${weekId}_checkin_${uid}`. */
+  key: string
+}
+
+/**
+ * The members whose check-in push window is open now (SPEC §11.10): current members of a goal with a valid id who
+ * joined before their window opened (someone who joins later in it waits for next week). Each goal's windows come
+ * from its doc alone, so the job reads nothing more for a goal with none.
+ */
+export function checkinCandidates(goal: SharedGoal, nowMs: number): CheckinCandidate[] {
+  if (!isGoalId(goal.id)) return []
+  const weekId = goalWeek(goal, nowMs)
+  const out: CheckinCandidate[] = []
+  for (const uid of goal.memberIds) {
+    const window = checkinWindow(goal, weekId, memberZone(goal, uid))
+    if (!window || nowMs < window.opensAt || nowMs >= window.closesAt) continue
+    const joined = Object.hasOwn(goal.joinedAt, uid) ? goal.joinedAt[uid] : undefined
+    if (typeof joined === 'number' && joined >= window.opensAt) continue
+    out.push({ uid, weekId, key: checkinKey(goal.id, weekId, uid), ...window })
+  }
+  return out
+}
+
+/**
+ * Whether any check-in window can be open now: UTC Saturday 15:00 → Monday 13:00. Goal zones run from −12 to +14
+ * hours, so a goal week ends between Sunday 10:00 and Monday 12:00 UTC, and every window lies within the 18 hours
+ * before that. Outside it the job reads no goals at all.
+ */
+export function checkinGateOpen(nowMs: number): boolean {
+  const d = new Date(nowMs)
+  const minute = ((d.getUTCDay() + 6) % 7) * DAY + d.getUTCHours() * 60 + d.getUTCMinutes()
+  return minute >= 5 * DAY + 15 * 60 || minute < 13 * 60
+}
+
+export interface SharedInput {
+  goal: SharedGoal
+  /** The goal week's check-ins (`checkins where weekId == W`): absent until loaded, and then nothing is decided. */
+  checkins?: Checkin[]
+}
+
+/**
+ * The `checkin` pushes for one goal (SPEC §11.10): to each candidate (checkinCandidates) not yet in the sent log;
+ * someone who already checked in this week is final (logged as skipped). Copy: "Time to check in" · "Add your part to
+ * {Run 100 km} for this week. The team is at {64 of 100 km}." It expires when their window closes. A member without
+ * a device gets nothing and stays open (the job's delivery), so turning reminders on within the window still works.
+ */
+export function planShared(input: SharedInput, sent: ReadonlySet<string>, nowMs: number): PlanResult {
+  const { goal, checkins } = input
+  const result: PlanResult = { send: [], skipped: [] }
+  if (!checkins) return result
+  for (const c of checkinCandidates(goal, nowMs)) {
+    if (sent.has(c.key)) continue
+    if (checkins.some((x) => x.uid === c.uid && x.weekId === c.weekId)) {
+      result.skipped.push(c.key)
+      continue
+    }
+    result.send.push({
+      key: c.key,
+      kind: 'checkin',
+      spaceId: '',
+      goalId: goal.id,
+      uid: c.uid,
+      title: CHECKIN_TITLE,
+      body: `Add your part to ${goal.name} for this week. The team is at ${progressText(goal)}.`,
+      url: `./?goal=${encodeURIComponent(goal.id)}`,
+      tag: `checkin-${goal.id}`,
+      expiresAt: c.closesAt,
+    })
+  }
+  return result
 }

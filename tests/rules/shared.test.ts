@@ -7,10 +7,11 @@ import {
   arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, query, runTransaction, serverTimestamp,
   setDoc, Timestamp, updateDoc, where, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
-import { applyCheckin, checkinClosesAt, cleanNote, toHundredths } from '../../src/domain/shared.ts'
+import { applyCheckin, checkinClosesAt, cleanNote, goalProblem, toHundredths } from '../../src/domain/shared.ts'
+import { decodeSharedGoal } from '../../src/domain/decode.ts'
 import {
-  addDays, allDenied, allowed, anchorOf, DAY, denied, goalDoc, GOAL_ZONE, HOUR, newGoalDoc, offsetNow, pairEntry, profileDoc, ts,
-  useRulesEnv, weekOfClock,
+  addDays, allDenied, allowed, anchorOf, DAY, denied, goalDoc, GOAL_ZONE, HOUR, newGoalDoc, offsetNow, pairEntry, profileDoc,
+  PUBLISHED_RULES, ts, useRulesEnv, weekOfClock,
 } from './helpers.ts'
 
 const { db, seed, clear } = useRulesEnv()
@@ -22,7 +23,17 @@ const people = (): Record<string, DocumentData> => Object.fromEntries(PEOPLE.map
 /** `me` and each of `others` are friends. */
 const friendsOf = (me: string, others: string[]): Record<string, DocumentData> => Object.fromEntries(others.map((o) => pairEntry(me, o)))
 
-const OFF = offsetNow(GOAL_ZONE)
+/** The goals' stored offset (as if created in Berlin, see storedGoal): Berlin's own, or 6 hours less when now is
+ *  within 3 hours of a Monday 00:00 on that clock, so "last week" and "next week" are never inside the hour of slack
+ *  on either side of this week (a run near midnight on a Sunday would otherwise see them allowed, as designed). */
+const OFF = ((base: number) => {
+  const sinceMonday = (off: number) => {
+    const local = Date.now() + off * 60_000
+    return (local - Date.parse(`${weekOfClock(Date.now(), off)}T00:00:00Z`)) / 60_000
+  }
+  const m = sinceMonday(base)
+  return m >= 180 && m <= 7 * 1440 - 180 ? base : base - 360
+})(offsetNow(GOAL_ZONE))
 /** This week on the goals' clock, as the rules see it. */
 const W = weekOfClock(Date.now(), OFF)
 const LAST = addDays(W, -7)
@@ -31,6 +42,8 @@ const ago = (ms: number) => ts(Date.now() - ms)
 /** The day ('YYYY-MM-DD') on the goals' clock `ms` from now. */
 const localDay = (ms = 0) => new Date(Date.now() + ms + OFF * 60_000).toISOString().slice(0, 10)
 
+/** A shared goal as stored (helpers' goalDoc) on the offset OFF. */
+const storedGoal = (extra: DocumentData = {}): DocumentData => goalDoc({ utcOffsetMin: OFF, ...extra })
 const goalRef = (fs: Firestore, id = 'g1') => doc(fs, `sharedGoals/${id}`)
 const ciRef = (fs: Firestore, cid: string, goalId = 'g1') => doc(fs, `sharedGoals/${goalId}/checkins/${cid}`)
 const checkins = (fs: Firestore, goalId = 'g1') => collection(fs, `sharedGoals/${goalId}/checkins`)
@@ -88,7 +101,7 @@ async function offsetPutting(id: string, afterMs: number): Promise<number> {
 
 describe('reading goals', () => {
   test('members and invitees read a goal and list theirs; nobody else does', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc(), 'sharedGoals/g2': goalDoc({ memberIds: ['dan'], invited: [], ownerId: 'dan' }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal(), 'sharedGoals/g2': storedGoal({ memberIds: ['dan'], invited: [], ownerId: 'dan' }) })
     await allowed(getDoc(goalRef(db('alice'))))
     await allowed(getDoc(goalRef(db('bob'))))
     await allowed(getDoc(goalRef(db('cleo'))))
@@ -192,9 +205,67 @@ describe('creating a goal', () => {
   })
 })
 
+// "Not blank" for a goal's name and unit is JavaScript's trim(): the app's goalProblem and decodeSharedGoal use it.
+// The rules spell trim()'s characters out (shows()), so a name the rules take is never one every client drops (a
+// goal that vanished for its members while the rules kept it), and nothing the app sends is refused.
+describe('the rules, the app and the decoder agree on blank names and units', () => {
+  /** The rules' shows() regex, as a JavaScript one (RE2's \x{…} is \u{…}; (?s) is the s flag). */
+  const showsRegex = (): RegExp => {
+    const m = /function shows\(s\) \{\s*return s\.matches\('\(\?s\)(.*)'\);/.exec(PUBLISHED_RULES)
+    if (!m) throw new Error('shows() not found in firestore.rules')
+    return new RegExp(`^(?:${m[1]!.replaceAll('\\\\', '\\').replaceAll('\\x{', '\\u{')})$`, 'su')
+  }
+
+  test('the rules\' class is exactly the characters trim() keeps, over every code point', () => {
+    const re = showsRegex()
+    const disagree: string[] = []
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue
+      const c = String.fromCodePoint(cp)
+      if (re.test(c) !== (c.trim() !== '')) disagree.push(cp.toString(16))
+    }
+    expect(disagree).toEqual([])
+    // Something that shows anywhere is enough; only trim()'s characters, however many, are blank.
+    expect(re.test(' 　​﻿')).toBe(true)
+    expect(re.test('  　﻿\t\n')).toBe(false)
+  })
+
+  test('each of trim()\'s characters and its neighbours, as a name and as a unit, in the emulator', async () => {
+    await seed(people())
+    const trimmed = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0xa0, 0x1680, 0x2000, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]
+    const points = new Set<number>()
+    for (const cp of trimmed) for (const p of [cp - 1, cp, cp + 1]) if (p > 0) points.add(p)
+    // Lookalikes trim() keeps: next line, Mongolian vowel separator, zero-width space, word joiner, Hangul filler.
+    for (const p of [0x85, 0x180e, 0x200b, 0x2060, 0x3164]) points.add(p)
+    const alice = db('alice')
+    const toMs = (v: unknown) => (v instanceof Timestamp ? v.toMillis() : null)
+    const disagree: string[] = []
+    let n = 0
+    for (const cp of points) {
+      const c = String.fromCodePoint(cp)
+      for (const field of ['name', 'unit'] as const) {
+        const id = `b${n++}`
+        let ok = true
+        try {
+          await setDoc(goalRef(alice, id), newGoalDoc('alice', [], { [field]: c }))
+        } catch {
+          ok = false
+        }
+        const app = goalProblem({ name: field === 'name' ? c : 'Run', unit: field === 'unit' ? c : 'km', target: 100 }) === null
+        if (ok !== app) disagree.push(`${field} U+${cp.toString(16)}: rules ${ok ? 'accept' : 'refuse'}, app ${app ? 'accepts' : 'refuses'}`)
+        if (ok) {
+          const stored = (await getDoc(goalRef(alice, id))).data()
+          if (decodeSharedGoal(id, stored, toMs) === null) disagree.push(`${field} U+${cp.toString(16)}: the rules accept it, the decoder drops the goal`)
+        }
+      }
+    }
+    expect(disagree).toEqual([])
+  })
+})
+
 describe('checking in', () => {
   test('a member checks in: the check-in and the goal\'s totals in one batch, in either order', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc() })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal() })
     await allowed(checkinBatch(db('alice'), 'alice', 1250, { 'totals100.alice': 4250, total100: 6750 }, { note: 'Long run on Sunday' }))
     await allowed(checkinBatch(db('bob'), 'bob', 300, { 'totals100.bob': 2800, total100: 7050 }, { goalFirst: true }))
     const g = (await getDoc(goalRef(db('alice')))).data()!
@@ -204,7 +275,7 @@ describe('checking in', () => {
   })
 
   test('a first check-in with no part yet, a 0 and the largest amount', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ totals100: { alice: 3000 }, total100: 3000, target100: 100_000_000_000 }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ totals100: { alice: 3000 }, total100: 3000, target100: 100_000_000_000 }) })
     await allowed(checkinBatch(db('bob'), 'bob', 0, { 'totals100.bob': 0, total100: 3000 }))
     await allowed(checkinBatch(db('bob'), 'bob', 100_000_000_000, { 'totals100.bob': 100_000_000_000, total100: 100_000_003_000, reachedAt: now() }))
   })
@@ -212,7 +283,7 @@ describe('checking in', () => {
   test('editing this week\'s check-in replaces it: the totals move by the difference, down too', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc({ totals100: { alice: 4250, bob: 2500 }, total100: 6750 }),
+      'sharedGoals/g1': storedGoal({ totals100: { alice: 4250, bob: 2500 }, total100: 6750 }),
       [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 1250),
     })
     // A negative delta: 12.50 km becomes 10 km.
@@ -221,7 +292,7 @@ describe('checking in', () => {
   })
 
   test('the app\'s transaction: amounts with decimals stay exact', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ totals100: {}, total100: 0 }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ totals100: {}, total100: 0 }) })
     await allowed(checkInTx(db('alice'), 'alice', toHundredths(0.1)))
     await allowed(checkInTx(db('bob'), 'bob', toHundredths(0.2)))
     await allowed(checkInTx(db('alice'), 'alice', toHundredths(12.5), W, 'Edited'))
@@ -231,7 +302,7 @@ describe('checking in', () => {
   })
 
   test('the check-in that reaches the target sets reachedAt; later ones keep it; an edit back below clears it', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ totals100: { alice: 5000, bob: 4500 }, total100: 9500 }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ totals100: { alice: 5000, bob: 4500 }, total100: 9500 }) })
     const alice = db('alice')
     expect((await checkInTx(alice, 'alice', 600)).reached).toBe('now')
     const reachedAt = (await getDoc(goalRef(alice))).get('reachedAt') as Timestamp
@@ -243,12 +314,12 @@ describe('checking in', () => {
     expect((await getDoc(goalRef(alice))).get('reachedAt')).toBeNull()
     expect((await checkInTx(alice, 'alice', 500)).reached).toBe('now')
     // Exactly the target counts as reached.
-    await seed({ 'sharedGoals/g2': goalDoc({ totals100: { alice: 5000, bob: 4500 }, total100: 9500 }) })
+    await seed({ 'sharedGoals/g2': storedGoal({ totals100: { alice: 5000, bob: 4500 }, total100: 9500 }) })
     await allowed(checkinBatch(alice, 'alice', 500, { 'totals100.alice': 5500, total100: 10_000, reachedAt: now() }, { goalId: 'g2' }))
   })
 
   test('the note: one line of 0-80 characters, as the app\'s cleanNote leaves it', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc() })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal() })
     const alice = db('alice')
     const raw = ['Long run\non Sunday', 'Two\r\nlines', 'Line\u2028separator', 'Para\u2029graph', '  Tabs\tand\u0085NEL\u000bvt  \n']
     for (const note of raw) {
@@ -262,11 +333,11 @@ describe('checking in', () => {
   test('check-ins that aren\'t this week\'s part of a current member, with its totals, are refused', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc({ totals100: { alice: 4250, bob: 2500 }, total100: 6750, reachedAt: null }),
+      'sharedGoals/g1': storedGoal({ totals100: { alice: 4250, bob: 2500 }, total100: 6750, reachedAt: null }),
       [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 1250),
       [`sharedGoals/g1/checkins/${W}_bob`]: ciDoc('bob', 500),
-      'sharedGoals/done': goalDoc({ archivedAt: ago(HOUR) }),
-      'sharedGoals/ended': goalDoc({ endsOn: localDay(-2 * DAY) }),
+      'sharedGoals/done': storedGoal({ archivedAt: ago(HOUR) }),
+      'sharedGoals/ended': storedGoal({ endsOn: localDay(-2 * DAY) }),
     })
     const [alice, bob] = [db('alice'), db('bob')]
     const plus100 = { 'totals100.alice': 4350, total100: 6850 } // alice from 12.50 to 13.50
@@ -340,7 +411,7 @@ describe('checking in', () => {
   test('reachedAt can\'t be cleared or moved while the goal stays reached, nor kept below the target', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
+      'sharedGoals/g1': storedGoal({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
       [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 1000),
     })
     const alice = db('alice')
@@ -354,7 +425,7 @@ describe('checking in', () => {
   })
 
   test('a goal that ends today still takes check-ins', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ endsOn: localDay() }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ endsOn: localDay() }) })
     await allowed(checkinBatch(db('alice'), 'alice', 100, { 'totals100.alice': 3100, total100: 5600 }))
   })
 })
@@ -363,7 +434,7 @@ describe('the week\'s bounds on the real clock (stored offsets chosen for them)'
   const MIN = 60_000
   const seedAt = async (off: number, extra: DocumentData = {}) => {
     await clear()
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ utcOffsetMin: off, ...extra }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ utcOffsetMin: off, ...extra }) })
   }
   const once = () => checkinBatch(db('alice'), 'alice', 100, { 'totals100.alice': 3100, total100: 5600 }, { weekId: W })
 
@@ -397,7 +468,7 @@ describe('the week\'s bounds on the real clock (stored offsets chosen for them)'
 describe('check-ins: reading and deleting', () => {
   const setup = () => seed({
     ...people(),
-    'sharedGoals/g1': goalDoc({ leftAt: { dan: ago(HOUR) }, totals100: { alice: 3000, bob: 2500, dan: 700 }, total100: 6200 }),
+    'sharedGoals/g1': storedGoal({ leftAt: { dan: ago(HOUR) }, totals100: { alice: 3000, bob: 2500, dan: 700 }, total100: 6200 }),
     [`sharedGoals/g1/checkins/${W}_alice`]: ciDoc('alice', 1250, W, 'Long run'),
     [`sharedGoals/g1/checkins/${W}_bob`]: ciDoc('bob', 500),
     [`sharedGoals/g1/checkins/${W}_dan`]: ciDoc('dan', 700),
@@ -434,7 +505,7 @@ describe('check-ins: reading and deleting', () => {
 
 describe('joining and declining', () => {
   test('an invitee joins with their zone', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc() })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal() })
     const cleo = db('cleo')
     await allowed(updateDoc(goalRef(cleo), { invited: arrayRemove('cleo'), memberIds: arrayUnion('cleo'), 'joinedAt.cleo': now(), 'zones.cleo': 'Asia/Tokyo' }))
     const g = (await getDoc(goalRef(cleo))).data()!
@@ -443,7 +514,7 @@ describe('joining and declining', () => {
   })
 
   test('a former member re-joins: their part and leftAt stay, their zone may change or stay', async () => {
-    const goal = goalDoc({ memberIds: ['alice'], invited: ['bob', 'dan'], joinedAt: { alice: ago(20 * DAY) }, leftAt: { bob: ago(DAY), dan: ago(DAY) }, zones: { alice: GOAL_ZONE, bob: 'America/New_York', dan: 'Asia/Tokyo' }, totals100: { alice: 3000, bob: 2500, dan: 100 }, total100: 5600 })
+    const goal = storedGoal({ memberIds: ['alice'], invited: ['bob', 'dan'], joinedAt: { alice: ago(20 * DAY) }, leftAt: { bob: ago(DAY), dan: ago(DAY) }, zones: { alice: GOAL_ZONE, bob: 'America/New_York', dan: 'Asia/Tokyo' }, totals100: { alice: 3000, bob: 2500, dan: 100 }, total100: 5600 })
     await seed({ ...people(), 'sharedGoals/g1': goal })
     await allowed(updateDoc(goalRef(db('bob')), { invited: arrayRemove('bob'), memberIds: arrayUnion('bob'), 'joinedAt.bob': now(), 'zones.bob': 'America/Chicago' }))
     await allowed(updateDoc(goalRef(db('dan')), { invited: arrayRemove('dan'), memberIds: arrayUnion('dan'), 'joinedAt.dan': now() }))
@@ -456,10 +527,10 @@ describe('joining and declining', () => {
     const full = ['alice', 'bob', 'dan', 'eve', 'fay', 'gus', 'hal', 'ivy']
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc({ invited: ['cleo', 'dan'] }),
-      'sharedGoals/done': goalDoc({ archivedAt: ago(HOUR) }),
+      'sharedGoals/g1': storedGoal({ invited: ['cleo', 'dan'] }),
+      'sharedGoals/done': storedGoal({ archivedAt: ago(HOUR) }),
       // A broken state (members and invitations are 8 at most): the join's own size check still holds.
-      'sharedGoals/full': goalDoc({ memberIds: full, joinedAt: Object.fromEntries(full.map((u) => [u, ago(DAY)])), invited: ['cleo'] }),
+      'sharedGoals/full': storedGoal({ memberIds: full, joinedAt: Object.fromEntries(full.map((u) => [u, ago(DAY)])), invited: ['cleo'] }),
     })
     const cleo = db('cleo')
     const join = (extra: DocumentData = {}, id = 'g1', fs = cleo, me = 'cleo') => () =>
@@ -486,7 +557,7 @@ describe('joining and declining', () => {
   })
 
   test('an invitee declines; the owner cancels an invitation; an ended goal\'s invitation can still be declined', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ invited: ['cleo', 'dan', 'eve'] }), 'sharedGoals/ended': goalDoc({ endsOn: '2026-01-31' }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ invited: ['cleo', 'dan', 'eve'] }), 'sharedGoals/ended': storedGoal({ endsOn: '2026-01-31' }) })
     await allowed(updateDoc(goalRef(db('cleo')), { invited: arrayRemove('cleo') }))
     await allowed(updateDoc(goalRef(db('alice')), { invited: arrayRemove('dan') }))
     await allowed(updateDoc(goalRef(db('cleo'), 'ended'), { invited: arrayRemove('cleo') }))
@@ -494,7 +565,7 @@ describe('joining and declining', () => {
   })
 
   test('dropping invitations as anyone else, or swapping them, is refused', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ invited: ['cleo', 'dan'] }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ invited: ['cleo', 'dan'] }) })
     await allDenied({
       'a member who isn\'t the owner canceling an invitation': () => updateDoc(goalRef(db('bob')), { invited: arrayRemove('cleo') }),
       'an invitee declining for someone else': () => updateDoc(goalRef(db('cleo')), { invited: arrayRemove('dan') }),
@@ -517,8 +588,8 @@ describe('inviting', () => {
     // Bob is a member and Alice's friend: only membership stops his invitation.
     ...Object.fromEntries([pairEntry('alice', 'bob')]),
     ...Object.fromEntries([pairEntry('alice', 'kim', 'asked', 'alice'), pairEntry('alice', 'lou', 'declined', 'alice')]),
-    'sharedGoals/g1': goalDoc(),
-    'sharedGoals/done': goalDoc({ archivedAt: ago(HOUR) }),
+    'sharedGoals/g1': storedGoal(),
+    'sharedGoals/done': storedGoal({ archivedAt: ago(HOUR) }),
   })
 
   test('the owner invites friends, up to 8 people in all', async () => {
@@ -557,10 +628,10 @@ describe('leaving', () => {
   /** Eight members; hal joined right after alice, so he takes over. */
   const EIGHT = ['alice', 'bob', 'cleo', 'dan', 'eve', 'fay', 'gus', 'hal']
   const joined = Object.fromEntries(EIGHT.map((u, i) => [u, ago((u === 'alice' ? 30 : u === 'hal' ? 29 : 20 - i) * DAY)]))
-  const eight = (extra: DocumentData = {}) => goalDoc({ memberIds: EIGHT, invited: [], joinedAt: joined, ...extra })
+  const eight = (extra: DocumentData = {}) => storedGoal({ memberIds: EIGHT, invited: [], joinedAt: joined, ...extra })
 
   test('a member leaves; their part stays in the totals', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc() })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal() })
     await allowed(leave(db('bob'), 'bob'))
     const g = (await getDoc(goalRef(db('alice')))).data()!
     expect(g.memberIds).toEqual(['alice'])
@@ -581,8 +652,8 @@ describe('leaving', () => {
   test('the last member leaving finishes the goal and clears its invitations', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc({ memberIds: ['alice'], joinedAt: { alice: ago(20 * DAY) }, invited: ['cleo', 'dan'] }),
-      'sharedGoals/done': goalDoc({ memberIds: ['bob'], ownerId: 'bob', joinedAt: { bob: ago(20 * DAY) }, invited: [], archivedAt: ago(DAY) }),
+      'sharedGoals/g1': storedGoal({ memberIds: ['alice'], joinedAt: { alice: ago(20 * DAY) }, invited: ['cleo', 'dan'] }),
+      'sharedGoals/done': storedGoal({ memberIds: ['bob'], ownerId: 'bob', joinedAt: { bob: ago(20 * DAY) }, invited: [], archivedAt: ago(DAY) }),
     })
     const alice = db('alice')
     await allDenied({
@@ -598,7 +669,7 @@ describe('leaving', () => {
   })
 
   test('leaves that aren\'t a member taking only themselves out are refused', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc({ invited: ['cleo'] }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal({ invited: ['cleo'] }) })
     const bob = db('bob')
     await allDenied({
       'leaving without leftAt': () => updateDoc(goalRef(bob), { memberIds: arrayRemove('bob'), 'joinedAt.bob': deleteField() }),
@@ -621,8 +692,8 @@ describe('editing and finishing', () => {
   test('the owner edits the text, the target and the end date; reachedAt follows the target', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc(),
-      'sharedGoals/reached': goalDoc({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
+      'sharedGoals/g1': storedGoal(),
+      'sharedGoals/reached': storedGoal({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
     })
     const alice = db('alice')
     await allowed(updateDoc(goalRef(alice), { name: 'Run 120 km', unit: 'miles', target100: 12_000, endsOn: '2026-12-31' }))
@@ -632,16 +703,16 @@ describe('editing and finishing', () => {
     // Keep Going: raising the target past the total clears it.
     await allowed(updateDoc(goalRef(alice, 'reached'), { target100: 15_000, reachedAt: null }))
     // A text edit of a reached goal keeps it.
-    await seed({ 'sharedGoals/reached': goalDoc({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }) })
+    await seed({ 'sharedGoals/reached': storedGoal({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }) })
     await allowed(updateDoc(goalRef(alice, 'reached'), { name: 'Run 105 km' }))
   })
 
   test('edits by anyone but the owner, of a finished goal, or that break the goal are refused', async () => {
     await seed({
       ...people(),
-      'sharedGoals/g1': goalDoc(),
-      'sharedGoals/reached': goalDoc({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
-      'sharedGoals/done': goalDoc({ archivedAt: ago(HOUR) }),
+      'sharedGoals/g1': storedGoal(),
+      'sharedGoals/reached': storedGoal({ totals100: { alice: 6000, bob: 4500 }, total100: 10_500, reachedAt: ago(DAY) }),
+      'sharedGoals/done': storedGoal({ archivedAt: ago(HOUR) }),
     })
     const alice = db('alice')
     await allDenied({
@@ -667,7 +738,7 @@ describe('editing and finishing', () => {
   })
 
   test('the owner finishes a goal: for good, invitations gone', async () => {
-    await seed({ ...people(), 'sharedGoals/g1': goalDoc(), 'sharedGoals/done': goalDoc({ archivedAt: ago(HOUR), invited: [] }) })
+    await seed({ ...people(), 'sharedGoals/g1': storedGoal(), 'sharedGoals/done': storedGoal({ archivedAt: ago(HOUR), invited: [] }) })
     const alice = db('alice')
     await allDenied({
       'finishing as a non-owner': () => updateDoc(goalRef(db('bob')), { archivedAt: now(), invited: [] }),

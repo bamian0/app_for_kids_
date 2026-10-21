@@ -21,7 +21,7 @@ import {
   statsView,
   switchShowcase,
 } from './showcase.ts'
-import { weekBounds } from './time.ts'
+import { monthIdForWeek, weekBounds } from './time.ts'
 import type {
   Earning,
   Goal,
@@ -477,5 +477,89 @@ describe('playedWeeks', () => {
     const month = computeMonth(space, '2026-10', weeks, now)
     expect(playedWeeks(month.ana)).toEqual(['2026-09-28', '2026-10-05', '2026-10-19'])
     expect(playedWeeks(month.ben)).toEqual(['2026-09-28', '2026-10-19'])
+  })
+})
+
+// ---------- From computeMonth to the ring and stats, as the job publishes them ----------
+
+describe('ringOf and statsOf from computeMonth (the job’s chain)', () => {
+  // Ana plays in s1 (Paris; one October week paused) and only judges in s2 (New York). The job stores, per space and
+  // month, { score: finalScore, weeks: playedWeeks, final: complete } and publishes ringOf / statsOf of the months.
+  const PARIS = 'Europe/Paris'
+  const NY = 'America/New_York'
+  const space = (id: string, tz: string, memberIds: UID[], paused?: Record<string, WeekId>): Space => ({
+    id,
+    name: id,
+    reward: 'Dinner',
+    penalty: 'Coffee',
+    ownerId: memberIds[0],
+    memberIds,
+    joinedAt: Object.fromEntries(memberIds.map((u) => [u, 0])),
+    timezone: tz,
+    inviteCode: 'ABCD2345',
+    threshold: 90,
+    latePenalty: 5,
+    createdAt: 0,
+    ...(paused ? { paused } : {}),
+  })
+  const s1 = space('s1', PARIS, ['ana', 'ben'], { '2026-10': '2026-10-12' })
+  const s2 = space('s2', NY, ['ana', 'cleo'])
+  /** Everyone with a list marks every other list Done, except `half`: the reviewer → reviewee pairs marked Half. */
+  const week = (sp: Space, weekId: WeekId, players: UID[], judges: UID[] = [], half: [UID, UID][] = []): WeekData => ({
+    spaceId: sp.id,
+    weekId,
+    week: { id: weekId, spaceId: sp.id, ...weekBounds(weekId, sp.timezone), members: sp.memberIds, submittedBy: players, judges },
+    plans: Object.fromEntries(players.map((u) => [u, { uid: u, tasks: [{ id: `${u}1`, title: 'Task' }], updatedAt: 0 }])),
+    progress: {},
+    reviews: sp.memberIds.flatMap((r) =>
+      players
+        .filter((p) => p !== r)
+        .map((p) => ({ id: `${r}_${p}`, reviewerId: r, revieweeId: p, marks: { [`${p}1`]: half.some(([a, b]) => a === r && b === p) ? 0.5 : 1 }, submittedAt: 0 })),
+    ),
+  })
+  const OCT = ['2026-09-28', '2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26']
+  const s1Weeks = [...OCT.map((w) => week(s1, w, ['ana', 'ben'])), week(s1, '2026-11-02', ['ana', 'ben'], [], [['ben', 'ana']])]
+  const s2Weeks = [...OCT, '2026-11-02'].map((w) => week(s2, w, ['cleo'], ['ana']))
+
+  function scoresAt(nowMs: number): ScoreMonths {
+    const months: ScoreMonths = {}
+    for (const monthId of ['2026-10', '2026-11']) {
+      for (const [sp, weeks] of [[s1, s1Weeks], [s2, s2Weeks]] as const) {
+        // The job writes a space's month once one of its weeks has closed (its deadline passed).
+        if (!weeks.some((w) => monthIdForWeek(w.weekId) === monthId && w.week !== null && nowMs >= w.week.deadlineAt)) continue
+        const ana = computeMonth(sp, monthId, weeks, nowMs).ana
+        months[monthId] = { ...months[monthId], [sp.id]: { score: ana.finalScore, weeks: playedWeeks(ana), final: ana.complete } }
+      }
+    }
+    return months
+  }
+
+  it('early November, before its first week is scored: last month’s final score', () => {
+    const now = Date.parse('2026-11-03T12:00:00Z')
+    const months = scoresAt(now)
+    expect(months['2026-10']).toEqual({
+      s1: { score: 100, weeks: ['2026-09-28', '2026-10-05', '2026-10-19', '2026-10-26'], final: true },
+      s2: { score: null, weeks: [], final: true },
+    })
+    expect(months['2026-11']).toBeUndefined()
+    const ring = ringOf(months)
+    // The judge-only space adds nothing: one space averaged.
+    expect(ring).toEqual({ monthId: '2026-10', score: 100, final: true, spaces: 1 })
+    expect(ringLine(ringView({ uid: 'ana', ...ring, updatedAt: now }, now, BERLIN))).toBe('100% · October')
+    // The paused week isn't played; October is cleared.
+    expect(statsOf(months)).toEqual({ monthsCleared: 1, currentStreak: 1, bestStreak: 1, weeksPlayed: 4, finishedMonths: 1, since: '2026-10' })
+  })
+
+  it('once November’s first week is scored: November so far; its weeks count, the month doesn’t yet', () => {
+    const now = weekBounds('2026-11-02', NY).deadlineAt + H
+    const months = scoresAt(now)
+    expect(months['2026-11']).toEqual({
+      s1: { score: 50, weeks: ['2026-11-02'], final: false },
+      s2: { score: null, weeks: [], final: false },
+    })
+    const ring = ringOf(months)
+    expect(ring).toEqual({ monthId: '2026-11', score: 50, final: false, spaces: 1 })
+    expect(ringLine(ringView({ uid: 'ana', ...ring, updatedAt: now }, now, BERLIN))).toBe('50% · November so far')
+    expect(statsOf(months)).toEqual({ monthsCleared: 1, currentStreak: 1, bestStreak: 1, weeksPlayed: 5, finishedMonths: 1, since: '2026-10' })
   })
 })

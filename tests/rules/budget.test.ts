@@ -46,25 +46,28 @@
 //   setJudge, the space op of space + 4 periods                 283      717          10
 //   settlement, one of a group line of 7                        241      759           9
 //
-// Batch 3 (SPEC §11.5), measured 2026-10-20; every row above re-measured the same that day (batch 3 only
-// adds match blocks and functions that existing requests never call). Each must stay under 500 and 8
+// Batch 3 (SPEC §11.5), measured 2026-10-20 and again on 2026-10-21 with the final rules (goal names and
+// units checked against trim()'s characters, shows(): +5 on create and edit); every row above re-measured
+// the same both days (batch 3 only adds match blocks and functions that existing requests never call; the
+// house-stakes row's spare reads came out 8 once and 10 on a re-run). Each must stay under 500 and 8
 // reads (SPEC §11.5); the first showcase row is the exception (see its note):
 //   friend request (create, reads the other's profile)          147      853           9
 //   friend accept / decline / withdraw / re-ask / take over     79 / 110 / 105 / 136 / 152    10
 //   pair delete by the asker after deleting their profile        63      937           9
-//   showcase, 12 achieved + 8 goals + earnings, all three new   812      188          10   (a crafted write,
-//     or a sync that sends all three lists at once: allowed, but over 500)
+//   showcase, 12 achieved + 8 goals + earnings, all three new   812      188          10   (a crafted write
+//     only: the app's sync sends each changed list in its own update and a switch changes one list, so
+//     no app write checks more than one list; bounded by the list caps, so no data can push it further)
 //   showcase sync: 12 achieved changed, the others as stored    482      518          10   (only changed
 //   showcase switch (stats off) with every list stored          131      869          10    lists are checked)
 //   ring get by a friend / stats get (shown)                   58 / 52                 9
-//   shared goal create, 7 invitees (26 each; none: 288)         471      529           3   (7 reads)
+//   shared goal create, 7 invitees (about 26 each)              476      524           3   (7 reads)
 //   check-in batch: the check-in op, an edit / a first one    236 / 225               10
 //   check-in batch: the goal op (checksIn, 1st branch)          230      770           9   (get and getAfter
 //     of the same check-in count as one read)
 //   join, the 8th member (2nd branch)                           157      843          10
 //   invite 7 friends (4th branch)                               440      560           3   (7 reads)
 //   the owner leaves a goal of 8 (5th branch)                   356      644          10
-//   the owner edits, reaching the target (6th branch)           304      696          10
+//   the owner edits, reaching the target (6th branch)           309      691          10
 //   the owner finishes a goal (the last branch)                 246      754          10
 //   a week's check-ins query, 8 docs                             26      974          10
 //

@@ -100,15 +100,35 @@ export function formatGoalNumber(x: number): string {
   return NUMBER.format(Number.isFinite(x) ? x : 0).replace(/^-0$/, '0')
 }
 
-/** "1,250.5 km", "20 books"; a currency unit as money: "$4,200.50". */
-export function formatGoalAmount(x: number, unit: string): string {
-  return isCurrencyUnit(unit) ? formatMoney(x, unit) : `${formatGoalNumber(x)} ${unit}`
+/** Plural units whose singular isn't the word without its final "s". */
+const SINGULAR: Record<string, string> = {
+  times: 'time',
+  minutes: 'minute',
+  miles: 'mile',
+  pages: 'page',
+  pieces: 'piece',
+  games: 'game',
 }
 
-/** "64 of 100 km"; money: "$4,200 of $5,000". */
+/**
+ * The unit for an amount: "1 book", "1 hour", "1 time", "1 step", but "2 books", "1 km", "1.5 hours". Only plain
+ * lowercase plurals change ("books", "laps", "days"; not "glasses" or "boxes", which keep their "s").
+ */
+export function unitFor(x: number, unit: string): string {
+  if (x !== 1) return unit
+  if (Object.hasOwn(SINGULAR, unit)) return SINGULAR[unit]
+  return /^[a-z]*[^aeiousxzh]s$/.test(unit) ? unit.slice(0, -1) : unit
+}
+
+/** "1,250.5 km", "20 books", "1 book"; a currency unit as money: "$4,200.50". */
+export function formatGoalAmount(x: number, unit: string): string {
+  return isCurrencyUnit(unit) ? formatMoney(x, unit) : `${formatGoalNumber(x)} ${unitFor(x, unit)}`
+}
+
+/** "64 of 100 km", "0 of 1 book" (the unit agrees with the target); money: "$4,200 of $5,000". */
 export function progressText(goal: Pick<SharedGoal, 'total' | 'target' | 'unit'>): string {
   if (isCurrencyUnit(goal.unit)) return `${formatMoney(goal.total, goal.unit)} of ${formatMoney(goal.target, goal.unit)}`
-  return `${formatGoalNumber(goal.total)} of ${formatGoalNumber(goal.target)} ${goal.unit}`
+  return `${formatGoalNumber(goal.total)} of ${formatGoalAmount(goal.target, goal.unit)}`
 }
 
 export type GoalProblem = 'name' | 'name-long' | 'unit' | 'unit-long' | 'target' | 'target-big'

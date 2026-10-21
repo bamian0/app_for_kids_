@@ -25,35 +25,13 @@ const ENDS_SOON_DAYS = 14
 /** Invitations a new goal can send: everyone but you. */
 export const MAX_INVITES = SHARED_MAX_PEOPLE - 1
 
-/** Plural units whose singular isn't the word without its final "s". */
-const SINGULAR: Record<string, string> = {
-  times: 'time',
-  minutes: 'minute',
-  miles: 'mile',
-  pages: 'page',
-  pieces: 'piece',
-  games: 'game',
-}
+export { unitFor } from '../../domain/shared.ts'
 
-/**
- * The unit for an amount: "1 book", "1 hour", "1 time", "1 step", but "2 books", "1 km", "1.5 hours". Only plain
- * lowercase plurals change ("books", "laps", "days"; not "glasses" or "boxes", which keep their "s").
- */
-export function unitFor(x: number, unit: string): string {
-  if (x !== 1) return unit
-  if (Object.hasOwn(SINGULAR, unit)) return SINGULAR[unit]
-  return /^[a-z]*[^aeiousxzh]s$/.test(unit) ? unit.slice(0, -1) : unit
-}
+/** "12.5 km", "1 book", "$4,200.50": the domain's formatGoalAmount (the unit agrees with the number). */
+export const amountText = formatGoalAmount
 
-/** "12.5 km", "1 book", "$4,200.50": the domain's formatGoalAmount with the unit's number agreeing. */
-export function amountText(x: number, unit: string): string {
-  return isCurrencyUnit(unit) ? formatGoalAmount(x, unit) : `${formatGoalNumber(x)} ${unitFor(x, unit)}`
-}
-
-/** "64 of 100 km", "$4,200 of $5,000", "0 of 1 book": the domain's progressText with the unit agreeing with the target. */
-export function progressLine(goal: Pick<SharedGoal, 'total' | 'target' | 'unit'>): string {
-  return isCurrencyUnit(goal.unit) ? progressText(goal) : `${formatGoalNumber(goal.total)} of ${amountText(goal.target, goal.unit)}`
-}
+/** "64 of 100 km", "$4,200 of $5,000", "0 of 1 book": the domain's progressText (the push says the same). */
+export const progressLine = progressText
 
 const formats = new Map<string, Intl.DateTimeFormat>()
 function format(tz: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {

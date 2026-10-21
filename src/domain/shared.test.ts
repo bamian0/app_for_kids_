@@ -31,6 +31,7 @@ import {
   openInvites,
   parseGoalAmount,
   progressText,
+  unitFor,
   toHundredths,
   waitingFor,
   weekProgress,
@@ -185,6 +186,24 @@ describe('amount wording', () => {
     expect(progressText({ total: 12.5, target: 100, unit: 'km' })).toBe('12.5 of 100 km')
     expect(progressText({ total: 4200, target: 5000, unit: 'USD' })).toBe('$4,200 of $5,000')
     expect(progressText({ total: 104, target: 100, unit: 'books' })).toBe('104 of 100 books')
+    expect(progressText({ total: 0, target: 1, unit: 'books' })).toBe('0 of 1 book')
+    expect(progressText({ total: 1, target: 20, unit: 'books' })).toBe('1 of 20 books')
+  })
+  it('unitFor: the unit agrees with the number', () => {
+    expect(formatGoalAmount(1, 'books')).toBe('1 book')
+    expect(formatGoalAmount(1, 'hours')).toBe('1 hour')
+    expect(formatGoalAmount(1, 'times')).toBe('1 time')
+    expect(formatGoalAmount(1, 'km')).toBe('1 km')
+    expect(formatGoalAmount(2, 'books')).toBe('2 books')
+    expect(formatGoalAmount(1.5, 'hours')).toBe('1.5 hours')
+    expect(formatGoalAmount(1, 'USD')).toBe('$1')
+    expect(unitFor(1, 'glasses')).toBe('glasses')
+    expect(unitFor(1, 'boxes')).toBe('boxes')
+    expect(unitFor(1, 'Books')).toBe('Books')
+    expect(unitFor(1, 'laps')).toBe('lap')
+    expect(unitFor(1, 'days')).toBe('day')
+    expect(unitFor(0, 'books')).toBe('books')
+    expect(unitFor(1, 'toString')).toBe('toString')
   })
 })
 

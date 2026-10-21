@@ -10,7 +10,7 @@ import { usePress } from '../../ui/press.ts'
 import { ErrorText } from '../components/Bits.tsx'
 import { personOf } from '../components/people.ts'
 import type { Person } from '../components/people.ts'
-import { dayText, NO_FRIENDS, unitChips } from './copy.ts'
+import { dayText, unitChips } from './copy.ts'
 
 export function errorText(e: unknown, fallback = 'Couldn’t do that. Try again.'): string {
   return e instanceof Error && e.message ? e.message : fallback
@@ -142,8 +142,6 @@ export function FriendPicker({
   )
 }
 
-export const NO_FRIENDS_TEXT = NO_FRIENDS
-
 // ---------- The goal form ----------
 
 export interface GoalDraft {
@@ -207,7 +205,7 @@ export function GoalFields({
       <Section header="Target" footer={targetError ? <ErrorText>{targetError}</ErrorText> : targetFooter}>
         <TextFieldRow
           className="sg-field-end"
-          label="Target"
+          label="Amount"
           labelWidth={72}
           value={draft.target}
           onChange={(target) => set({ target })}
@@ -240,20 +238,23 @@ export function GoalFields({
         />
         <div className="sg-chips" role="group" aria-label="Units">
           {chips.map((u) => (
-            <button key={u} type="button" className={cx('sg-chip', draft.unit.trim() === u && 'is-on')} aria-pressed={draft.unit.trim() === u} onClick={() => set({ unit: u })}>
+            <button
+              key={u}
+              type="button"
+              className={cx('sg-chip', draft.unit.trim() === u && 'is-on')}
+              aria-pressed={draft.unit.trim() === u}
+              onClick={() => set({ unit: u })}
+            >
               {u}
             </button>
           ))}
         </div>
       </Section>
 
-      <Section header="End date" footer="Optional. Check-ins stop after this day.">
+      <Section footer="Optional. Check-ins stop after this day.">
         <Row title="End Date" toggle={draft.ends} onToggle={(ends) => set({ ends, endsOn: ends && !draft.endsOn ? minDay : draft.endsOn })} />
         {draft.ends && (
-          <Row
-            title="Last Day"
-            accessory={<DateField value={draft.endsOn || minDay} min={minDay} nowMs={nowMs} onChange={(endsOn) => set({ endsOn })} />}
-          />
+          <Row title="Last Day" accessory={<DateField value={draft.endsOn || minDay} min={minDay} nowMs={nowMs} onChange={(endsOn) => set({ endsOn })} />} />
         )}
       </Section>
     </>

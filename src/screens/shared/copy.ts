@@ -25,6 +25,36 @@ const ENDS_SOON_DAYS = 14
 /** Invitations a new goal can send: everyone but you. */
 export const MAX_INVITES = SHARED_MAX_PEOPLE - 1
 
+/** Plural units whose singular isn't the word without its final "s". */
+const SINGULAR: Record<string, string> = {
+  times: 'time',
+  minutes: 'minute',
+  miles: 'mile',
+  pages: 'page',
+  pieces: 'piece',
+  games: 'game',
+}
+
+/**
+ * The unit for an amount: "1 book", "1 hour", "1 time", "1 step", but "2 books", "1 km", "1.5 hours". Only plain
+ * lowercase plurals change ("books", "laps", "days"; not "glasses" or "boxes", which keep their "s").
+ */
+export function unitFor(x: number, unit: string): string {
+  if (x !== 1) return unit
+  if (Object.hasOwn(SINGULAR, unit)) return SINGULAR[unit]
+  return /^[a-z]*[^aeiousxzh]s$/.test(unit) ? unit.slice(0, -1) : unit
+}
+
+/** "12.5 km", "1 book", "$4,200.50": the domain's formatGoalAmount with the unit's number agreeing. */
+export function amountText(x: number, unit: string): string {
+  return isCurrencyUnit(unit) ? formatGoalAmount(x, unit) : `${formatGoalNumber(x)} ${unitFor(x, unit)}`
+}
+
+/** "64 of 100 km", "$4,200 of $5,000", "0 of 1 book": the domain's progressText with the unit agreeing with the target. */
+export function progressLine(goal: Pick<SharedGoal, 'total' | 'target' | 'unit'>): string {
+  return isCurrencyUnit(goal.unit) ? progressText(goal) : `${formatGoalNumber(goal.total)} of ${amountText(goal.target, goal.unit)}`
+}
+
 const formats = new Map<string, Intl.DateTimeFormat>()
 function format(tz: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   const key = `${tz}|${JSON.stringify(options)}`
@@ -94,7 +124,7 @@ export function bigNumber(goal: Pick<SharedGoal, 'total' | 'unit'>): string {
 
 /** Under the big number: "of 100 km", "of $5,000". */
 export function ofTarget(goal: Pick<SharedGoal, 'target' | 'unit'>): string {
-  return `of ${formatGoalAmount(goal.target, goal.unit)}`
+  return `of ${amountText(goal.target, goal.unit)}`
 }
 
 /** The goal ends within 14 days (and hasn't yet). */
@@ -114,9 +144,9 @@ export function statusLine(goal: SharedGoal, nowMs: number, tz: string = deviceZ
     case 'ended':
       return `Ended ${dayText(goal.endsOn ?? '', nowMs, tz)}`
     case 'reached':
-      return goal.reachedAt !== null ? `Reached ${monDay(goal.reachedAt, nowMs, tz)} · ${progressText(goal)}` : `Reached · ${progressText(goal)}`
+      return goal.reachedAt !== null ? `Reached ${monDay(goal.reachedAt, nowMs, tz)} · ${progressLine(goal)}` : `Reached · ${progressLine(goal)}`
     case 'active': {
-      const left = `${formatGoalAmount(goalProgress(goal).left, goal.unit)} to go`
+      const left = `${amountText(goalProgress(goal).left, goal.unit)} to go`
       return goal.endsOn ? `${left} · Ends ${dayText(goal.endsOn, nowMs, tz)}` : left
     }
   }
@@ -124,7 +154,7 @@ export function statusLine(goal: SharedGoal, nowMs: number, tz: string = deviceZ
 
 /** A goal's row in Shared Goals: "64 of 100 km · 3 people" (+ " · Ends Dec 31" within 14 days); "Reached · …". */
 export function rowSubtitle(goal: SharedGoal, nowMs: number, tz: string = deviceZone()): string {
-  const parts = [progressText(goal), peopleText(goal.memberIds.length)]
+  const parts = [progressLine(goal), peopleText(goal.memberIds.length)]
   if (goal.endsOn && endsSoon(goal, nowMs)) parts.push(`Ends ${dayText(goal.endsOn, nowMs, tz)}`)
   const line = parts.join(' · ')
   return goalStatus(goal, nowMs) === 'reached' ? `Reached · ${line}` : line
@@ -132,7 +162,7 @@ export function rowSubtitle(goal: SharedGoal, nowMs: number, tz: string = device
 
 /** An invitation's row: "Lena invited you · 64 of 100 km". */
 export function inviteSubtitle(inviter: string, goal: SharedGoal): string {
-  return `${firstName(inviter)} invited you · ${progressText(goal)}`
+  return `${firstName(inviter)} invited you · ${progressLine(goal)}`
 }
 
 /** The invitee view's line: "Lena invited you." */
@@ -143,7 +173,7 @@ export function invitedYou(inviter: string): string {
 /** A row in Finished: "104 of 100 km · Finished Oct 30", or "· Ended Dec 31". */
 export function finishedSubtitle(goal: SharedGoal, nowMs: number, tz: string = deviceZone()): string {
   const when = goal.archivedAt !== null ? `Finished ${monDay(goal.archivedAt, nowMs, tz)}` : `Ended ${dayText(goal.endsOn ?? '', nowMs, tz)}`
-  return `${progressText(goal)} · ${when}`
+  return `${progressLine(goal)} · ${when}`
 }
 
 /** When a goal finished or ended, for sorting Finished newest first. */
@@ -193,15 +223,17 @@ export const NO_FRIENDS = 'Add friends first, then invite them here.'
 export const KEEP_GOING_FOOTER = 'Raise the target to keep going.'
 export const FORMER_MEMBER = 'A former member'
 export const MOMENT_TITLE = 'You did it together'
+/** The data layer's refusal of a week that just ended (the sheet then moves to the new week). */
+export const WEEK_ENDED = 'That week just ended. Check in for this week instead.'
 
 /** The moment's card: "Run 100 km: 104 of 100 km." */
 export function momentText(goal: SharedGoal): string {
-  return `${goal.name}: ${progressText(goal)}.`
+  return `${goal.name}: ${progressLine(goal)}.`
 }
 
 /** The moment's card for everyone but the owner: "Keep checking in, or Lena can finish it." */
-export function momentOthers(owner: string): string {
-  return `Keep checking in, or ${firstName(owner)} can finish it.`
+export function momentOthers(owner: string | null): string {
+  return `Keep checking in, or ${owner ? firstName(owner) : 'the owner'} can finish it.`
 }
 
 /** New Shared Goal's invite footer: "3 of 7 spots. They can join or decline." */
@@ -238,11 +270,11 @@ export function teamTotal(goal: Pick<SharedGoal, 'total'>, old: number, next: nu
  */
 export function checkinFooter(goal: SharedGoal, existing: Checkin | null, amount: number | null, tz: string = deviceZone()): string {
   const first = existing
-    ? `You checked in ${formatGoalAmount(existing.amount, goal.unit)} ${format(tz, { weekday: 'long' }).format(existing.at)}. Saving replaces it.`
+    ? `You checked in ${amountText(existing.amount, goal.unit)} ${format(tz, { weekday: 'long' }).format(existing.at)}. Saving replaces it.`
     : 'Your part this week. Missed a week? Add it here.'
   if (amount === null) return first
   const total = teamTotal(goal, existing?.amount ?? 0, amount)
-  return `${first} The team will be at ${progressText({ ...goal, total })}.`
+  return `${first} The team will be at ${progressLine({ ...goal, total })}.`
 }
 
 export interface ToastCopy {
@@ -252,12 +284,18 @@ export interface ToastCopy {
 
 /** After saving a check-in that didn't reach the target: "Checked in" · "The team is at 76 of 100 km." */
 export function checkedInToast(goal: Pick<SharedGoal, 'target' | 'unit'>, total: number): ToastCopy {
-  return { title: 'Checked in', message: `The team is at ${progressText({ ...goal, total })}.` }
+  return {
+    title: 'Checked in',
+    message: `The team is at ${progressLine({ ...goal, total })}.`,
+  }
 }
 
 /** Join: "You joined Run 100 km" · "Check in your part each week." */
 export function joinedToast(name: string): ToastCopy {
-  return { title: `You joined ${name}`, message: 'Check in your part each week.' }
+  return {
+    title: `You joined ${name}`,
+    message: 'Check in your part each week.',
+  }
 }
 
 export interface Confirm {
@@ -287,7 +325,12 @@ export function leaveConfirm(goal: SharedGoal, me: UID, nextOwnerName: string | 
   const others = goal.memberIds.filter((uid) => uid !== me)
   if (!finished && others.length === 0) message += ' You’re the last one, so it moves to Finished.'
   else if (!finished && goal.ownerId === me && nextOwnerName) message += ` ${firstName(nextOwnerName)} becomes the owner.`
-  return { title: `Leave ${goal.name}?`, message, confirmLabel: 'Leave', cancelLabel: 'Cancel' }
+  return {
+    title: `Leave ${goal.name}?`,
+    message,
+    confirmLabel: 'Leave',
+    cancelLabel: 'Cancel',
+  }
 }
 
 /**
@@ -306,7 +349,11 @@ export function editTargetFooter(goal: Pick<SharedGoal, 'total' | 'reachedAt'>, 
 
 /** Today on the device's calendar, 'YYYY-MM-DD' (the end date's earliest choice). */
 export function todayId(nowMs: number, tz: string = deviceZone()): string {
-  const parts = format(tz, { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(nowMs)
+  const parts = format(tz, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(nowMs)
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
   return `${get('year')}-${get('month')}-${get('day')}`
 }

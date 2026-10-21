@@ -1,0 +1,415 @@
+/* Shared goals (SPEC §11.9.5): the team bar, a goal's hero card and its reached moment, rows with their own
+   controls, the goal form (unit chips, the compact date), the check-in's big number and the friend picker's
+   circles. Existing tokens only. */
+
+/* ---------- Rows with their own controls ---------- */
+
+/* The whole row opens the goal; the trailing and lower buttons sit above that target and act on their own. */
+.sg-open {
+  isolation: isolate;
+}
+.sg-open__target {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sg-open__target:focus-visible {
+  outline: 2px solid var(--tint);
+  outline-offset: -3px;
+  border-radius: inherit;
+}
+.sg-open > .ui-row__main {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+.sg-open .sg-open__trailing,
+.sg-open .sg-open__below {
+  pointer-events: auto;
+}
+.sg-open__below {
+  display: flex;
+  margin: 8px 0 4px;
+}
+
+/* Join and Decline side by side, equal width (as a friend request's Accept and Decline). */
+.sg-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: min(100%, 236px);
+}
+
+/* The thin team bar between a goal's name and its line. */
+.sg-row-bar {
+  margin: 7px 0 4px;
+}
+
+/* A row that reads, not acts ("Add friends first…"). */
+.sg-quiet-row .ui-row__title {
+  color: var(--secondary-label);
+}
+
+.sg-amount-detail {
+  color: var(--label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- The team bar ---------- */
+
+.sg-bar {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  background: var(--system-fill);
+  isolation: isolate;
+}
+.sg-bar--hero {
+  height: 12px;
+  gap: 2px;
+  border-radius: 6px;
+}
+.sg-bar--row {
+  height: 6px;
+  gap: 1.5px;
+  border-radius: 3px;
+}
+.sg-bar__seg {
+  flex: none;
+  height: 100%;
+  background: var(--sg-seg, var(--system-gray2));
+}
+.sg-bar__seg.is-former {
+  background: var(--system-gray2);
+}
+/* Past the target: full, and the prism (a funded goal's bar), cut where each part ends. */
+.sg-bar__sheen {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--iris-stops));
+  pointer-events: none;
+}
+.sg-bar__cut {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--secondary-system-grouped-background);
+  pointer-events: none;
+}
+.sg-bar-shimmer {
+  border-radius: 6px;
+}
+
+/* ---------- A goal's hero card ---------- */
+
+.sg-hero {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(var(--gutter) + var(--ui-safe-right)) 30px calc(var(--gutter) + var(--ui-safe-left));
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-group);
+  background: var(--secondary-system-grouped-background);
+  box-shadow: var(--card-shadow);
+}
+.sg-hero__numbers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  margin-bottom: 12px;
+}
+.sg-hero__value {
+  font: 700 44px/52px var(--font);
+  letter-spacing: -0.026em;
+  overflow-wrap: anywhere;
+}
+.sg-hero__of {
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  color: var(--secondary-label);
+}
+.sg-hero__status {
+  margin-top: 10px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+}
+.sg-hero__action {
+  margin-top: 16px;
+}
+
+/* ---------- The reached moment ---------- */
+
+.sg-moment,
+.sg-invite {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0 calc(var(--gutter) + var(--ui-safe-right)) 30px calc(var(--gutter) + var(--ui-safe-left));
+  padding: 20px 20px 18px;
+  border-radius: var(--radius-group);
+  background: var(--secondary-system-grouped-background);
+  box-shadow: var(--card-shadow);
+  text-align: center;
+  isolation: isolate;
+}
+/* A hairline of the prism around the card, as on the iridescent pill. */
+.sg-moment::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: linear-gradient(120deg, var(--iris-stops));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+.sg-moment__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--iris-2), var(--iris-3) 45%, var(--iris-5));
+  color: #fff;
+}
+.sg-moment__title {
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.017em;
+}
+.sg-moment__text,
+.sg-moment__note,
+.sg-invite__text {
+  max-width: 300px;
+  margin-top: 4px;
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.006em;
+  color: var(--secondary-label);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+.sg-moment__note {
+  margin-top: 12px;
+}
+.sg-invite__text {
+  margin-top: 0;
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.012em;
+  color: var(--label);
+}
+.sg-moment__actions,
+.sg-invite__actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-self: stretch;
+  margin-top: 16px;
+}
+.sg-moment__actions .ui-button,
+.sg-invite__actions .ui-button {
+  padding: 0 12px;
+}
+
+/* ---------- The goal form ---------- */
+
+.sg-field-end .ui-field__input {
+  text-align: right;
+}
+
+/* The unit chips under the unit field, like Mail's filter capsules. */
+.sg-chips {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px 12px;
+}
+.sg-chip {
+  min-width: 44px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 15px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+  font: 400 15px/30px var(--font);
+  letter-spacing: -0.006em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease;
+}
+.sg-chip:active {
+  transform: scale(0.96);
+}
+.sg-chip.is-on {
+  background: var(--label);
+  color: var(--on-label);
+  font-weight: 600;
+}
+.sg-chip:focus-visible {
+  outline: 2px solid var(--tint);
+  outline-offset: 2px;
+}
+
+/* The compact date: the day in a gray capsule, the native picker over it. */
+.sg-date {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.sg-date__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.sg-date__input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.sg-date:focus-within {
+  outline: 2px solid var(--tint);
+  outline-offset: 1px;
+}
+
+/* ---------- Check In's big number ---------- */
+
+.sg-amount {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  min-height: 96px;
+  padding: 18px 16px 16px;
+  cursor: text;
+}
+.sg-amount__sizer {
+  position: relative;
+  display: block;
+  min-width: 0;
+  max-width: calc(100% - 80px);
+}
+.sg-amount__sizer::after,
+.sg-amount__input {
+  padding: 0 2px 0 0;
+  font: 600 48px/58px var(--font-rounded);
+  letter-spacing: -0.02em;
+}
+/* The input is as wide as its text, so the unit sits right after the digits (a hidden copy sizes the box). */
+.sg-amount__sizer::after {
+  content: attr(data-text);
+  display: block;
+  height: 58px;
+  visibility: hidden;
+  white-space: pre;
+  overflow: hidden;
+}
+.sg-amount__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 58px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--label);
+  text-align: right;
+  outline: none;
+  caret-color: var(--tint);
+}
+.sg-amount__input::placeholder {
+  color: var(--tertiary-label);
+  opacity: 1;
+}
+.sg-amount__unit {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 22px/28px var(--font-rounded);
+  color: var(--secondary-label);
+}
+.sg-amount__unit--before {
+  font: 600 48px/58px var(--font-rounded);
+  color: var(--label);
+}
+.sg-amount.is-invalid .sg-amount__input,
+.sg-amount.is-invalid .sg-amount__unit--before {
+  color: var(--system-red);
+}
+
+.sg-footer-error {
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* ---------- The friend picker ---------- */
+
+.sg-select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--tertiary-label);
+  color: var(--on-label);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sg-select.is-on {
+  background: var(--label);
+  box-shadow: none;
+}
+.sg-select.is-dim {
+  opacity: 0.4;
+}
+.sg-pick .ui-row__leading {
+  min-width: 32px;
+  margin-right: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sg-chip,
+  .sg-select {
+    transition: none;
+  }
+}

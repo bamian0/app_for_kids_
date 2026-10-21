@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Checkin, SharedGoal } from '../../domain/types.ts'
 import {
+  amountText,
   bigNumber,
   checkedInToast,
   checkinFooter,
@@ -21,6 +22,7 @@ import {
   newInviteFooter,
   ofTarget,
   peopleText,
+  progressLine,
   rowSubtitle,
   sectionGoals,
   shareSubtitle,
@@ -31,6 +33,7 @@ import {
   thisWeekHeader,
   todayId,
   unitChips,
+  unitFor,
   weekRange,
   weeksFooter,
 } from './copy.ts'
@@ -68,7 +71,15 @@ function goal(over: Partial<SharedGoal> = {}): SharedGoal {
 }
 
 function checkin(over: Partial<Checkin> = {}): Checkin {
-  return { id: '2026-10-19_ana', uid: 'ana', weekId: '2026-10-19', amount: 12, note: '', at: Date.UTC(2026, 9, 21, 16), ...over }
+  return {
+    id: '2026-10-19_ana',
+    uid: 'ana',
+    weekId: '2026-10-19',
+    amount: 12,
+    note: '',
+    at: Date.UTC(2026, 9, 21, 16),
+    ...over,
+  }
 }
 
 describe('dates', () => {
@@ -98,7 +109,11 @@ describe('status lines', () => {
   it('reads active, reached, ended and finished', () => {
     expect(statusLine(goal(), NOW, BERLIN)).toBe('36 km to go')
     expect(statusLine(goal({ endsOn: '2026-12-31' }), NOW, BERLIN)).toBe('36 km to go · Ends Dec 31')
-    const reached = goal({ totals: { ana: 60, ben: 44 }, total: 104, reachedAt: Date.UTC(2026, 9, 20, 7) })
+    const reached = goal({
+      totals: { ana: 60, ben: 44 },
+      total: 104,
+      reachedAt: Date.UTC(2026, 9, 20, 7),
+    })
     expect(statusLine(reached, NOW, BERLIN)).toBe('Reached Oct 20 · 104 of 100 km')
     expect(statusLine(goal({ endsOn: '2026-10-18' }), NOW, BERLIN)).toBe('Ended Oct 18')
     expect(statusLine(goal({ archivedAt: Date.UTC(2026, 9, 19, 12) }), NOW, BERLIN)).toBe('Finished Oct 19')
@@ -107,7 +122,13 @@ describe('status lines', () => {
   })
 
   it('shows money as money', () => {
-    const money = goal({ name: 'Trip fund', unit: 'USD', target: 5000, totals: { ana: 4200.5 }, total: 4200.5 })
+    const money = goal({
+      name: 'Trip fund',
+      unit: 'USD',
+      target: 5000,
+      totals: { ana: 4200.5 },
+      total: 4200.5,
+    })
     expect(bigNumber(money)).toBe('$4,200.50')
     expect(ofTarget(money)).toBe('of $5,000')
     expect(statusLine(money, NOW, BERLIN)).toBe('$799.50 to go')
@@ -135,9 +156,39 @@ describe('status lines', () => {
   it('subtitles invitations and finished goals', () => {
     expect(inviteSubtitle('Lena Park', goal())).toBe('Lena invited you · 64 of 100 km')
     expect(invitedYou('Lena Park')).toBe('Lena invited you.')
-    const finished = goal({ total: 104, archivedAt: Date.UTC(2026, 9, 19, 12) })
+    const finished = goal({
+      total: 104,
+      archivedAt: Date.UTC(2026, 9, 19, 12),
+    })
     expect(finishedSubtitle(finished, NOW, BERLIN)).toBe('104 of 100 km · Finished Oct 19')
     expect(finishedSubtitle(goal({ endsOn: '2026-10-18' }), NOW, BERLIN)).toBe('64 of 100 km · Ended Oct 18')
+  })
+})
+
+describe('units', () => {
+  it('agree with the number', () => {
+    expect(amountText(1, 'books')).toBe('1 book')
+    expect(amountText(1, 'hours')).toBe('1 hour')
+    expect(amountText(1, 'times')).toBe('1 time')
+    expect(amountText(1, 'km')).toBe('1 km')
+    expect(amountText(2, 'books')).toBe('2 books')
+    expect(amountText(1.5, 'hours')).toBe('1.5 hours')
+    expect(amountText(1, 'USD')).toBe('$1')
+    expect(amountText(1250.5, 'km')).toBe('1,250.5 km')
+    // Only plain plurals: these keep their "s".
+    expect(unitFor(1, 'glasses')).toBe('glasses')
+    expect(unitFor(1, 'boxes')).toBe('boxes')
+    expect(unitFor(1, 'Books')).toBe('Books')
+    expect(unitFor(1, 'laps')).toBe('lap')
+    expect(unitFor(1, 'days')).toBe('day')
+  })
+
+  it('reads progress with the target’s number', () => {
+    expect(progressLine({ total: 64, target: 100, unit: 'km' })).toBe('64 of 100 km')
+    expect(progressLine({ total: 1, target: 20, unit: 'books' })).toBe('1 of 20 books')
+    expect(progressLine({ total: 0, target: 1, unit: 'books' })).toBe('0 of 1 book')
+    expect(progressLine({ total: 4200, target: 5000, unit: 'USD' })).toBe('$4,200 of $5,000')
+    expect(statusLine(goal({ unit: 'books', target: 20, totals: { ana: 19 }, total: 19 }), NOW, BERLIN)).toBe('1 book to go')
   })
 })
 
@@ -148,7 +199,11 @@ describe('lists', () => {
     const c = goal({ id: 'c', name: 'Cycle' })
     const done = goal({ id: 'd', name: 'Done', archivedAt: NOW - DAY })
     const ended = goal({ id: 'e', name: 'Ended', endsOn: '2026-10-01' })
-    const order = sectionGoals([a, b, c, done, ended], 'ana', NOW, { a: true, b: true, c: false })
+    const order = sectionGoals([a, b, c, done, ended], 'ana', NOW, {
+      a: true,
+      b: true,
+      c: false,
+    })
     expect(order.map((g) => g.id)).toEqual(['c', 'b', 'a'])
     // Unknown yet: by name.
     expect(sectionGoals([a, b, c], 'ana', NOW, {}).map((g) => g.id)).toEqual(['b', 'a', 'c'])
@@ -187,8 +242,14 @@ describe('check-in', () => {
   })
 
   it('toasts', () => {
-    expect(checkedInToast(goal(), 76)).toEqual({ title: 'Checked in', message: 'The team is at 76 of 100 km.' })
-    expect(joinedToast('Run 100 km')).toEqual({ title: 'You joined Run 100 km', message: 'Check in your part each week.' })
+    expect(checkedInToast(goal(), 76)).toEqual({
+      title: 'Checked in',
+      message: 'The team is at 76 of 100 km.',
+    })
+    expect(joinedToast('Run 100 km')).toEqual({
+      title: 'You joined Run 100 km',
+      message: 'Check in your part each week.',
+    })
   })
 })
 
@@ -235,6 +296,7 @@ describe('confirms and footers', () => {
     const reached = goal({ total: 104, reachedAt: NOW })
     expect(momentText(reached)).toBe('Run 100 km: 104 of 100 km.')
     expect(momentOthers('Lena Park')).toBe('Keep checking in, or Lena can finish it.')
+    expect(momentOthers(null)).toBe('Keep checking in, or the owner can finish it.')
   })
 
   it('names the goal’s clock and the unit chips', () => {

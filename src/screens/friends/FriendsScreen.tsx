@@ -95,7 +95,11 @@ function FriendsContent({ onAddFriend }: { onAddFriend: () => void }) {
   const friends = byName(shown(view.friends), profiles)
   const sent = shown(view.sent)
   const goals = shared.data ? shared.data.goals.length + shared.data.invites.length : 0
-  const empty = view.friends.length + view.incoming.length + view.sent.length === 0 && goals === 0
+  const noPairs = view.friends.length + view.incoming.length + view.sent.length === 0
+  // With no pairs, whether the tab is empty depends on shared goals: wait for them rather than flash the empty
+  // state (an error there counts as none; the section says so itself).
+  if (noPairs && shared.data === undefined && !shared.error) return <Loading />
+  const empty = noPairs && goals === 0
 
   const peopleSection = people.length > 0 && <PeopleSection people={people} profiles={spaceProfiles} onSeeAll={onAddFriend} onOpen={openShowcase} />
 
@@ -234,7 +238,7 @@ function PeopleSection({
             person={person}
             subtitle={spacesSubtitle(p.spaces)}
             onOpen={() => onOpen(p.uid, person.name)}
-            trailing={<RelationAction uid={p.uid} name={person.name} rel={relationTo(view, me, p.uid, nowMs)} actions={actions} />}
+            trailing={<RelationAction uid={p.uid} name={person.name} rel={relationTo(view, me, p.uid, nowMs)} actions={actions} quiet />}
           />
         )
       })}
@@ -256,7 +260,7 @@ function SentSection({ sent, profiles, onOpen }: { sent: Friendship[]; profiles:
     setBusy(uid)
     try {
       await cancelFriendRequest(uid)
-      toast({ title: 'Request canceled' })
+      toast({ title: 'Request canceled', icon: 'xmark' })
     } catch (e) {
       toast({ title: 'Couldn’t cancel', message: errorText(e), tone: 'error' })
     } finally {

@@ -150,6 +150,12 @@ export function fakePush() {
   return { sent, send, lines }
 }
 
+/** Marks weeks' scores as already written (the scores writer's markers, SPEC §11.10), so a run reads just the one
+ *  marker per space for them: for tests about other reads. */
+export async function scoresWritten(db: Firestore, spaceId: string, weekIds: string[]) {
+  for (const weekId of weekIds) await db.doc(`_private/sent/log/${spaceId}_${weekId}_scores`).set({ kind: 'scores', spaceId, at: ts(at('2026-09-01T00:00:00Z')) })
+}
+
 /** The sent log: key → the title sent, or 'skipped'. */
 export async function sentLog(db: Firestore): Promise<Record<string, string>> {
   const snap = await db.collection('_private/sent/log').get()

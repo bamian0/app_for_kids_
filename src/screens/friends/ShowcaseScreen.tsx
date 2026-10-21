@@ -220,7 +220,7 @@ function Actions({ uid, name, rel }: { uid: UID; name: string; rel: Relation }) 
     try {
       await removeFriend(uid)
       nav.pop()
-      toast({ title: `Removed ${firstName(name)}` })
+      toast({ title: `Removed ${firstName(name)}`, icon: 'person' })
     } catch (e) {
       toast({ title: 'Couldn’t remove', message: errorText(e), tone: 'error' })
     } finally {
@@ -235,7 +235,7 @@ function Actions({ uid, name, rel }: { uid: UID; name: string; rel: Relation }) 
     setBusy(true)
     try {
       await cancelFriendRequest(uid)
-      toast({ title: 'Request canceled' })
+      toast({ title: 'Request canceled', icon: 'xmark' })
     } catch (e) {
       toast({ title: 'Couldn’t cancel', message: errorText(e), tone: 'error' })
     } finally {

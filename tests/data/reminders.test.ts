@@ -4,7 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { FieldValue } from 'firebase-admin/firestore'
 import { runReminders } from '../../scripts/reminders.ts'
 import { weekBounds } from '../../src/domain/time.ts'
-import { allReviews, at, clear, connect, device, fakePush, profile, quiet, recording, seedList, seedSpace, seedStakes, seedWeek, sentLog, ts } from './reminders-fixtures.ts'
+import { allReviews, at, clear, connect, device, fakePush, profile, quiet, recording, scoresWritten, seedList, seedSpace, seedStakes, seedWeek, sentLog, ts } from './reminders-fixtures.ts'
 
 const { db, close } = connect('reminders-test')
 afterAll(close)
@@ -220,10 +220,12 @@ describe('reminders job, batch 2', () => {
     await seedWeek(db, 's1', '2026-10-12', { members: ['a', 'b'] })
     await device(db, 'a')
     await device(db, 'b')
+    await scoresWritten(db, 's1', ['2026-10-05', '2026-10-12'])
     const push = fakePush()
     for (const iso of ['2026-10-12T18:17:00Z', '2026-10-14T18:17:00Z', '2026-10-16T09:17:00Z', '2026-10-16T20:17:00Z', '2026-10-17T09:17:00Z']) {
-      // Just the spaces, and the daytime query for changed stakes (the one window open): no week, no sent log.
-      expect(await runReminders({ db, send: push.send, nowMs: at(iso), log: quiet })).toMatchObject({ windows: 1, reads: 2, sent: 0 })
+      // Just the spaces, and the daytime query for changed stakes (the one window open): no week, no sent log. Plus
+      // the scores writer's marker for the last closed week (batch 3, SPEC §11.10), written already.
+      expect(await runReminders({ db, send: push.send, nowMs: at(iso), log: quiet })).toMatchObject({ windows: 1, reads: 3, sent: 0 })
     }
     expect(push.sent).toEqual([])
   })
@@ -371,9 +373,11 @@ describe('reminders job, batch 2', () => {
     await space('s1', ['a', 'b'])
     await seedWeek(db, 's1', '2026-10-12', { members: ['a', 'b'], plans: { a: 1, b: 1 }, submittedBy: ['a', 'b'], reviews: allReviews(['a', 'b']) })
     await device(db, 'a')
+    await scoresWritten(db, 's1', ['2026-10-12'])
     const push = fakePush()
-    // Sunday 03:17: the weekend results window is open.
-    expect(await runReminders({ db, send: push.send, nowMs: at('2026-10-18T03:17:00Z'), log: quiet })).toMatchObject({ sent: 0, reads: 1 })
+    // Sunday 03:17: the weekend results window is open. Read: the spaces; batch 3 (SPEC §11.10): the scores writer's
+    // marker, and the shared goals query (none), as it is the weekend.
+    expect(await runReminders({ db, send: push.send, nowMs: at('2026-10-18T03:17:00Z'), log: quiet })).toMatchObject({ sent: 0, reads: 3 })
     await runReminders({ db, send: push.send, nowMs: at('2026-10-18T08:17:00Z'), log: quiet })
     expect(push.lines()).toEqual(['a | Results are in | You scored 100%. See how s1 did this week.'])
   })

@@ -11,7 +11,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { addMonths, monthIdForWeek, utcOffsetMinutes, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { createAccount, db, moneyDoc, resetEmulators, setEarning, setMoneyState, setSpace, ts } from './emulator.ts'
 import { addBoughtGoal, friendCodeOf, leftovers, readPair, readShowcase, setFriendCode, setPair, setRing, setStats } from './friends-seed.ts'
-import { phone, sheet, shown, snap } from './helpers.ts'
+import { centerOn, phone, sheet, shown, snap } from './helpers.ts'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -27,7 +27,7 @@ const COLORS: Record<string, string> = { Ana: '#AF52DE', Ben: '#34C759', Cleo: '
 
 const ANA_CODE = 'ANAS2345'
 const BEN_CODE = 'BENC6789'
-const CLEO_CODE = 'CLEO4567'
+const CLEO_CODE = 'CLEA4567'
 const SPACE_ID = 'film-club'
 const SPACE = { name: 'Film Club', reward: 'Dinner on them', penalty: 'Coffee for everyone' }
 const SPACE_CODE = 'FCLB2345'
@@ -242,6 +242,10 @@ test('a friend link: Welcome, sign-up, Add Friend on the link; a space invite is
     await snap(cleo.page, 'fr11-space-invite')
     await field.fill('ZZZZ-ZZZZ')
     await expect(shown(add, 'No one has that code. Check it and try again.', true)).toBeVisible()
+    // A code with a letter codes never use says which.
+    await field.fill('anao2345')
+    await expect(field).toHaveValue('ANAO-2345')
+    await expect(shown(add, 'Codes never use “O”. Check the code with your friend.', true)).toBeVisible()
     await add.getByRole('button', { name: 'Done', exact: true }).click()
   })
 
@@ -423,6 +427,7 @@ test('the showcase: switches, what friends and strangers see, offline', async ({
     await expect(shown(section(ben.page, 'Achieved'), 'Road bike', true)).toBeVisible()
     await expect(shown(section(ben.page, 'Last Month'), `Earned in ${last}`, true)).toBeVisible()
     await expect(shown(section(ben.page, 'Last Month'), '$321.50', true)).toBeVisible()
+    await centerOn(section(ben.page, 'Achieved'))
     await snap(ben.page, 'fr18-showcase-money')
   })
 

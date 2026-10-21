@@ -26,7 +26,7 @@ export function useCopyToast(): (copy: ToastCopy) => void {
   const toast = useToast()
   return (copy) => {
     if (copy.success) haptic()
-    toast({ title: copy.title, message: copy.message, tone: copy.success ? 'success' : 'default', icon: copy.success ? 'checkmark' : undefined })
+    toast({ title: copy.title, message: copy.message, tone: copy.success ? 'success' : 'default', icon: copy.icon ?? (copy.success ? 'checkmark' : undefined) })
   }
 }
 
@@ -200,11 +200,14 @@ export function RelationAction({
   name,
   rel,
   actions,
+  quiet,
 }: {
   uid: UID
   name: string
   rel: Relation
   actions: ReturnType<typeof useFriendActions>
+  /** A gray Add, for a list of many (People in Your Spaces), like the App Store's Get buttons; else prominent. */
+  quiet?: boolean
 }) {
   const nowMs = useNow()
   if (rel.relation === 'friend') return <span className="fr-detail">Friends</span>
@@ -219,7 +222,14 @@ export function RelationAction({
   if (rel.relation === 'none' && rel.askAgain !== null) return <span className="fr-detail">{askAgainText(rel.askAgain, nowMs)}</span>
   if (rel.relation === 'none') {
     return (
-      <Button size="small" loading={actions.busy === `ask:${uid}`} disabled={!!actions.busy} onClick={() => void actions.ask(uid, name)} aria-label={`Add ${name}`}>
+      <Button
+        size="small"
+        variant={quiet ? 'gray' : undefined}
+        loading={actions.busy === `ask:${uid}`}
+        disabled={!!actions.busy}
+        onClick={() => void actions.ask(uid, name)}
+        aria-label={`Add ${name}`}
+      >
         Add
       </Button>
     )

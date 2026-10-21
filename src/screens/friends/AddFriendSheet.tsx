@@ -11,7 +11,7 @@ import { ErrorText } from '../components/Bits.tsx'
 import { useNow } from '../components/clock.ts'
 import { personOf } from '../components/people.ts'
 import { copyText, shareOrCopy } from '../components/share.ts'
-import { PEOPLE_SHEET_FOOTER, RESET_CONFIRM, shareLinkData, spacesSubtitle } from './copy.ts'
+import { PEOPLE_SHEET_FOOTER, RESET_CONFIRM, badCodeText, formatFriendInput, shareLinkData, spacesSubtitle } from './copy.ts'
 import { PersonRow, RelationAction, errorText, personFor, relationTo, useFriendActions, usePeopleInSpaces, useView } from './parts.tsx'
 import { ShowcaseScreen } from './ShowcaseScreen.tsx'
 
@@ -23,16 +23,6 @@ interface Props {
 
 export function AddFriendSheet(props: Props) {
   return <NavigationStack root={<AddFriendHome {...props} />} />
-}
-
-/** What the field shows: a pasted friend link becomes its code; anything else is kept as typed, in capitals. */
-export function formatFriendInput(value: string): string {
-  if (/friend=|:\/\//i.test(value)) {
-    const code = normalizeFriendCode(value)
-    if (code) return formatInviteCode(code)
-    return value
-  }
-  return value.toUpperCase()
 }
 
 type Lookup = { code: string; found: FriendLookup | null; error: string | null }
@@ -61,8 +51,10 @@ function AddFriendHome({ close, initialCode }: Props) {
   const { people, profiles } = usePeopleInSpaces(view, true)
   const open = (uid: string, name: string) => nav.push(<ShowcaseScreen uid={uid} name={name} />, { title: name })
 
+  const badCode = code ? null : badCodeText(value)
   let hint: ReactNode = undefined
   if (spaceInvite) hint = <ErrorText>That’s a space invite. Join it from Spaces.</ErrorText>
+  else if (badCode) hint = <ErrorText>{badCode}</ErrorText>
   else if (result?.error) hint = <ErrorText>{result.error}</ErrorText>
 
   return (
@@ -138,7 +130,7 @@ function PersonInSpacesRow({
       person={personFor(profiles, uid)}
       subtitle={subtitle}
       onOpen={() => onOpen(uid, name)}
-      trailing={<RelationAction uid={uid} name={name} rel={relationTo(view, me, uid, nowMs)} actions={actions} />}
+      trailing={<RelationAction uid={uid} name={name} rel={relationTo(view, me, uid, nowMs)} actions={actions} quiet />}
     />
   )
 }

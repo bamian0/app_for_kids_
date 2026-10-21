@@ -5,11 +5,13 @@ import {
   addResultToast,
   acrossSpaces,
   askAgainText,
+  badCodeText,
   byName,
   cancelConfirm,
   declinedToast,
   earnedIn,
   emptyMessage,
+  formatFriendInput,
   friendsToast,
   longDay,
   nothingSharedText,
@@ -99,13 +101,13 @@ describe('requests and relations', () => {
   })
 
   it('says what Add did', () => {
-    expect(addResultToast('asked', 'Lena Fischer', null, NOW, BERLIN)).toEqual({ title: 'Request sent', message: 'Lena sees it next time they open Stakes.' })
+    expect(addResultToast('asked', 'Lena Fischer', null, NOW, BERLIN)).toEqual({ title: 'Request sent', message: 'Lena sees it next time they open Stakes.', icon: 'personPlus' })
     expect(addResultToast('friends', 'Lena Fischer', null, NOW, BERLIN)).toEqual({ title: 'You and Lena are friends', success: true })
-    expect(addResultToast('too-soon', 'Lena', Date.UTC(2026, 10, 19, 12), NOW, BERLIN)).toEqual({ title: 'You can ask Lena again on Nov 19' })
+    expect(addResultToast('too-soon', 'Lena', Date.UTC(2026, 10, 19, 12), NOW, BERLIN)).toEqual({ title: 'You can ask Lena again on Nov 19', icon: 'clock' })
     expect(addResultToast('already-asked', 'Lena', null, NOW, BERLIN)).toBeNull()
     expect(addResultToast('already-friends', 'Lena', null, NOW, BERLIN)).toBeNull()
     expect(friendsToast('Lena')).toEqual({ title: 'You and Lena are friends', success: true })
-    expect(declinedToast('Lena Fischer')).toEqual({ title: 'Request declined', message: 'Lena won’t be told.' })
+    expect(declinedToast('Lena Fischer')).toEqual({ title: 'Request declined', message: 'Lena won’t be told.', icon: 'xmark' })
   })
 
   it('has both empty states', () => {
@@ -198,6 +200,27 @@ describe('showcase copy', () => {
     expect(nothingSharedText('Lena Fischer')).toBe('Lena hasn’t shared anything yet.')
     expect(acrossSpaces(1)).toBeNull()
     expect(acrossSpaces(2)).toBe('Across 2 spaces')
+  })
+})
+
+describe('the Add Friend field', () => {
+  it('formats a typed code as XXXX-XXXX and a pasted friend link as its code', () => {
+    expect(formatFriendInput('abcd')).toBe('ABCD')
+    expect(formatFriendInput('abcd2')).toBe('ABCD-2')
+    expect(formatFriendInput('abcd 2345')).toBe('ABCD-2345')
+    expect(formatFriendInput('ABCD-23456')).toBe('ABCD-2345')
+    expect(formatFriendInput('https://stakes.test/?friend=abcd2345')).toBe('ABCD-2345')
+    // A space invite link stays as pasted, so the sheet can say what it is.
+    expect(formatFriendInput('https://stakes.test/?join=ABCD2345')).toBe('https://stakes.test/?join=ABCD2345')
+    expect(formatFriendInput('https://stakes.test/')).toBe('https://stakes.test/')
+  })
+
+  it('names the characters a whole code can’t hold', () => {
+    expect(badCodeText('CLEO-4567')).toBe('Codes never use “O”. Check the code with your friend.')
+    expect(badCodeText('I0O1-2345')).toBe('Codes never use “I”, “0”, “O” and “1”. Check the code with your friend.')
+    expect(badCodeText('ABCD-2345')).toBeNull()
+    expect(badCodeText('CLEO')).toBeNull()
+    expect(badCodeText('https://stakes.test/?join=CLEO4567')).toBeNull()
   })
 })
 

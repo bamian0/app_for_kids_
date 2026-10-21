@@ -1069,9 +1069,18 @@ export function checkinKey(goalId: string, weekId: WeekId, uid: UID): string {
   return `${goalId}_${weekId}_checkin_${uid}`
 }
 
+/** Zones checked so far: a goal's members share a handful of them. */
+const zoneOk = new Map<string, boolean>()
+
 /** Whether `zone` is one the runtime can compute with (an IANA zone, or a fixed one like "UTC+5:30"). */
 function usableZone(zone: unknown): zone is string {
-  return typeof zone === 'string' && zone !== '' && DateTime.fromMillis(0, { zone }).isValid
+  if (typeof zone !== 'string' || zone === '') return false
+  let ok = zoneOk.get(zone)
+  if (ok === undefined) {
+    ok = DateTime.fromMillis(0, { zone }).isValid
+    zoneOk.set(zone, ok)
+  }
+  return ok
 }
 
 /** The zone a member's push follows: the one stored for them when the runtime knows it, else the goal's. */
@@ -1103,7 +1112,11 @@ export interface CheckinWindow {
  */
 export function checkinWindow(goal: Pick<SharedGoal, 'timezone' | 'endsOn' | 'archivedAt' | 'reachedAt'>, weekId: WeekId, zone: string): CheckinWindow | null {
   if (goal.archivedAt !== null || goal.reachedAt !== null) return null
-  const end = momentAt(weekId, goal.timezone, WEEK_MINUTES)
+  return windowBefore(momentAt(weekId, goal.timezone, WEEK_MINUTES), goalEndsAt(goal), zone)
+}
+
+/** checkinWindow for a week ending at `end` (G), cut at `endsAt` (the goal's end, or null). */
+function windowBefore(end: number, endsAt: number | null, zone: string): CheckinWindow | null {
   const local = DateTime.fromMillis(end, { zone })
   let minutes = local.hour * 60 + local.minute
   let day = local.startOf('day')
@@ -1121,7 +1134,6 @@ export function checkinWindow(goal: Pick<SharedGoal, 'timezone' | 'endsOn' | 'ar
     opensAt = wallTime(day.minus({ days: 1 }).startOf('day'), 1080)
     closesAt = day.toMillis()
   }
-  const endsAt = goalEndsAt(goal)
   if (endsAt !== null) closesAt = Math.min(closesAt, endsAt)
   return opensAt < closesAt ? { opensAt, closesAt } : null
 }
@@ -1140,11 +1152,14 @@ export interface CheckinCandidate extends CheckinWindow {
  * from its doc alone, so the job reads nothing more for a goal with none.
  */
 export function checkinCandidates(goal: SharedGoal, nowMs: number): CheckinCandidate[] {
-  if (!isGoalId(goal.id)) return []
+  if (!isGoalId(goal.id) || goal.archivedAt !== null || goal.reachedAt !== null) return []
   const weekId = goalWeek(goal, nowMs)
+  // The week's end and the goal's end once; each member's window from them (as checkinWindow).
+  const end = momentAt(weekId, goal.timezone, WEEK_MINUTES)
+  const endsAt = goalEndsAt(goal)
   const out: CheckinCandidate[] = []
   for (const uid of goal.memberIds) {
-    const window = checkinWindow(goal, weekId, memberZone(goal, uid))
+    const window = windowBefore(end, endsAt, memberZone(goal, uid))
     if (!window || nowMs < window.opensAt || nowMs >= window.closesAt) continue
     const joined = Object.hasOwn(goal.joinedAt, uid) ? goal.joinedAt[uid] : undefined
     if (typeof joined === 'number' && joined >= window.opensAt) continue

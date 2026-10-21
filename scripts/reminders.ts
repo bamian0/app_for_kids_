@@ -1,4 +1,4 @@
-// Hourly reminders job (run by .github/workflows/reminders.yml). See docs/SPEC.md §4 and §9.11.
+// Hourly reminders job (run by .github/workflows/reminders.yml). See docs/SPEC.md §4, §9.11 and §11.10.
 //
 //   FIREBASE_SERVICE_ACCOUNT='<service account JSON>' APP_URL=https://… node scripts/reminders.ts
 //
@@ -9,17 +9,20 @@
 // Firestore reads stay small on the free plan: outside a reminder window a run reads only the spaces and each
 // space's newest month results doc, and a window's data is loaded only while someone with a device still waits
 // for it. The midweek nudges read only the week doc and those people's plans, and progress for the ones with
-// tasks. Each run first writes the month results (streaks) of months that are complete (ensureResults), and the
-// summary it logs counts every doc it read.
+// tasks. Each run first writes the month results (streaks) of months that are complete (ensureResults) and, once a
+// week's deadline has passed, each member's scores, ring and stats (ensureScores, batch 3); between Saturday 15:00 and
+// Monday 13:00 UTC it also sends the shared goals' weekly check-in push. The summary it logs counts every doc it read.
 import { pathToFileURL } from 'node:url'
 import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app'
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore, type Query } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
 import { decodeTasks } from '../src/data/tasks.ts'
-import { decodeMemberStakes, decodeMonthResults, decodeSpaceExtras, decodeWeekExtras } from '../src/domain/decode.ts'
+import { decodeCheckin, decodeMemberStakes, decodeMonthResults, decodeScores, decodeSharedGoal, decodeSpaceExtras, decodeWeekExtras } from '../src/domain/decode.ts'
 import { boundsFor } from '../src/domain/schedule.ts'
-import { computeMonth, judgesOf, monthEndsAtFor } from '../src/domain/scoring.ts'
+import { computeMonth, judgesOf, monthEndsAt, monthEndsAtFor } from '../src/domain/scoring.ts'
+import { isGoalId } from '../src/domain/shared.ts'
+import { ringOf, statsOf } from '../src/domain/showcase.ts'
 import { buildMonthResults, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
 import { addMonths, addWeeks, firstMonthOf, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
 import type {
@@ -32,6 +35,9 @@ import type {
   Progress,
   Review,
   ReviewMark,
+  ScoreEntry,
+  ScoreMonths,
+  SharedGoal,
   Space,
   UID,
   Week,
@@ -39,16 +45,25 @@ import type {
   WeekId,
 } from '../src/domain/types.ts'
 import {
+  checkinCandidates,
+  checkinGateOpen,
   dueWindows,
   isMuted,
   isNudge,
   offsetToStore,
+  planShared,
   planSpace,
   planWindows,
   resultsTarget,
+  scoreEntries,
+  SCORES_PER_RUN,
+  SCORES_PER_SPACE,
+  scoresKey,
+  scoresTarget,
   stakesCandidates,
   stakesWindow,
   weekLoad,
+  statsKey,
   windowKeys,
   type DueWindow,
   type FrozenStakes,
@@ -95,6 +110,9 @@ export const RESULTS_PER_RUN = 6
 const MAX_RESULTS_WALK = 24
 /** How far back the `stakes` push looks for changed stakes. */
 const STAKES_RECENT_MS = 7 * DAY_MS
+/** A space everyone has left still gets its scores written this long after the last one left, so the month they
+ *  left in (and its list) is written as final for them (SPEC §11.10): at most ~6 weeks to the month's end, plus a week. */
+export const EMPTIED_SCORES_MS = 60 * DAY_MS
 
 /** Delivers one push; rejects with an error carrying `statusCode` when the push service refuses it. */
 export type SendPush = (subscription: PushKeys, payload: string, options: SendOptions) => Promise<unknown>
@@ -125,6 +143,13 @@ export interface RunSummary {
   errors: number
   /** Month results docs written (in a dry run: that would have been). */
   results: number
+  /** rings/{uid} and stats/{uid} docs written by the scores writer (in a dry run: that would have been). */
+  rings: number
+  stats: number
+  /** Uids without a profile whose scores, ring and stats were deleted. */
+  cleaned: number
+  /** Shared goals looked at for the check-in push (only between Saturday 15:00 and Monday 13:00 UTC). */
+  goals: number
   /** Docs read, as Firestore bills them: each doc fetched, one for a missing doc or an empty query. */
   reads: number
 }
@@ -375,11 +400,20 @@ export async function runReminders({
 }: RunOptions): Promise<RunSummary> {
   const summary: RunSummary = {
     spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0, results: 0, reads: 0,
+    rings: 0, stats: 0, cleaned: 0, goals: 0,
   }
   const deviceCache = new Map<UID, Promise<Device[]>>()
   const profiles: PlanInput['profiles'] = {}
   /** Month results docs this run may still write, across all spaces. */
   let resultsLeft = RESULTS_PER_RUN
+  /** Score months this run may still load, across all spaces. */
+  let scoresLeft = SCORES_PER_RUN
+  /** Whether users/{uid} exists, read at most once per run (with the name the planner uses, into `profiles`). */
+  const hasProfile = new Map<UID, boolean>()
+  /** scores/{uid}.months as this run last read or wrote them: later spaces build on the same copy. */
+  const scoresCache = new Map<UID, ScoreMonths>()
+  /** Uids without a profile whose batch-3 docs this run already deleted. */
+  const cleaned = new Set<UID>()
 
   // Every read goes through these, so the summary can say what a run cost.
   const readDoc = async (ref: DocumentReference): Promise<DocumentSnapshot> => {
@@ -410,7 +444,21 @@ export async function runReminders({
     const missing = uids.filter((uid) => !(uid in profiles))
     if (missing.length === 0) return
     const snaps = await readAll(missing.map((uid) => db.doc(`users/${uid}`)))
-    for (const snap of snaps) profiles[snap.id] = { name: str(snap.get('name')) }
+    for (const snap of snaps) {
+      profiles[snap.id] = { name: str(snap.get('name')) }
+      hasProfile.set(snap.id, snap.exists)
+    }
+  }
+
+  /** Whether each of `uids` has a profile: users/{uid} read once per run, its name kept for the planner. */
+  const knowProfiles = async (uids: UID[]) => {
+    const missing = uids.filter((uid) => !hasProfile.has(uid))
+    if (missing.length === 0) return
+    const snaps = await readAll(missing.map((uid) => db.doc(`users/${uid}`)))
+    for (const snap of snaps) {
+      hasProfile.set(snap.id, snap.exists)
+      if (!(snap.id in profiles)) profiles[snap.id] = { name: str(snap.get('name')) }
+    }
   }
 
   const deliver = async (reminder: Reminder) => {
@@ -423,7 +471,7 @@ export async function runReminders({
       summary.sent++
       return
     }
-    const record = { kind: reminder.kind, spaceId: reminder.spaceId, uid: reminder.uid, title: reminder.title }
+    const record = { kind: reminder.kind, spaceId: reminder.spaceId, uid: reminder.uid, title: reminder.title, ...(reminder.goalId ? { goalId: reminder.goalId } : {}) }
     if (!(await claim(db, keys[0], record))) return
     // A push that carries two parts (a week and its month's list) logs both, so neither goes out again.
     const claimed = [keys[0]]
@@ -682,11 +730,110 @@ export async function runReminders({
     }
   }
 
+  /** Writes each uid's new entries into their scores doc and publishes their ring and stats (one batch per space). A
+   *  uid without a profile gets its three docs deleted instead (once per run). */
+  const writeScores = async (space: Space, months: { monthId: MonthId; entries: Record<UID, ScoreEntry> }[]) => {
+    const uids = [...new Set(months.flatMap((m) => Object.keys(m.entries)))].sort()
+    if (uids.length === 0) return
+    await knowProfiles(uids)
+    const gone = uids.filter((uid) => hasProfile.get(uid) !== true && !cleaned.has(uid))
+    const live = uids.filter((uid) => hasProfile.get(uid) === true)
+    const fresh = live.filter((uid) => !scoresCache.has(uid))
+    for (const snap of await readAll(fresh.map((uid) => db.doc(`scores/${uid}`)))) scoresCache.set(snap.id, decodeScores(snap.data(), toMs))
+    const batch = db.batch()
+    for (const uid of gone) {
+      cleaned.add(uid)
+      summary.cleaned += 1
+      for (const coll of ['scores', 'rings', 'stats']) batch.delete(db.doc(`${coll}/${uid}`))
+    }
+    for (const uid of live) {
+      const all: ScoreMonths = { ...scoresCache.get(uid) }
+      for (const { monthId, entries } of months) if (uid in entries) all[monthId] = { ...all[monthId], [space.id]: entries[uid] }
+      scoresCache.set(uid, all)
+      const ring = ringOf(all)
+      const stats = statsOf(all)
+      summary.rings += 1
+      summary.stats += 1
+      if (dryRun) {
+        log(`[dry run] would write scores, ring and stats of ${uid} for space ${space.id}: ${JSON.stringify(ring)} ${JSON.stringify(stats)}`)
+        continue
+      }
+      const updatedAt = FieldValue.serverTimestamp()
+      batch.set(db.doc(`scores/${uid}`), { months: all, updatedAt })
+      batch.set(db.doc(`rings/${uid}`), { ...ring, updatedAt })
+      batch.set(db.doc(`stats/${uid}`), { ...stats, updatedAt })
+    }
+    if (dryRun) {
+      if (gone.length > 0) log(`[dry run] would delete the scores, ring and stats of ${gone.join(', ')} (no profile)`)
+      return
+    }
+    await batch.commit()
+  }
+
+  /**
+   * The scores writer (SPEC §11.10), after the results writer: once a week's deadline has passed (W, M = its month), the
+   * space's month so far goes into each player's scores doc, and their ring and stats are published from it. The
+   * marker `${space}_${W}_scores` makes it once per week; when M is complete (and when the previous month P, complete,
+   * has no `${space}_${P}_stats` marker yet: a month whose end the job missed) the entries are final. At most
+   * SCORES_PER_SPACE month loads per space and SCORES_PER_RUN per run; a space that can't have all it needs waits for
+   * the next run. Writes nothing but scores, rings, stats and its markers.
+   */
+  const ensureScores = async (space: Space, load: Loader, stored: Record<WeekId, Week>) => {
+    const target = scoresTarget(space, nowMs, { weeks: stored })
+    if (!target || scoresLeft <= 0) return
+    const { weekId, monthId, floor } = target
+    if ((await readDoc(logRef(db, scoresKey(space.id, weekId)))).exists) return
+    // Its stored deadline decides (a change of times can make it later than computed); the month load reuses the doc.
+    if (nowMs < boundsFor(space, weekId, await load.period('weeks', weekId)).deadlineAt) return
+    const prev = addMonths(monthId, -1)
+    let withPrev = false
+    if (prev >= floor && !(await readDoc(logRef(db, statsKey(space.id, prev)))).exists) {
+      const ids = weekIdsInMonth(prev)
+      const [lastWeek, list] = await Promise.all([load.period('weeks', ids[ids.length - 1]), load.period('monthly', prev)])
+      withPrev = nowMs >= monthEndsAtFor(space, prev, lastWeek, list)
+    }
+    const loads = withPrev ? 2 : 1
+    if (loads > Math.min(SCORES_PER_SPACE, scoresLeft)) return
+    scoresLeft -= loads
+
+    // M so far: its weeks up to W (later ones haven't closed), and its list once W is its last week.
+    const all = weekIdsInMonth(monthId)
+    const ids = all.filter((id) => id <= weekId)
+    const isLast = ids[ids.length - 1] === all[all.length - 1]
+    const weeks = await Promise.all(ids.map((id) => load.week(id)))
+    const monthly = isLast ? await load.monthly(monthId) : undefined
+    const complete = isLast && nowMs >= monthEndsAt(space, monthId, weeks, monthly)
+    const months = [{ monthId, entries: scoreEntries(computeMonth(space, monthId, weeks, nowMs, monthly)) }]
+    if (withPrev) {
+      const prevWeeks = await Promise.all(weekIdsInMonth(prev).map((id) => load.week(id)))
+      const entries = scoreEntries(computeMonth(space, prev, prevWeeks, nowMs, await load.monthly(prev)))
+      // Complete: every entry is final, whatever the rest of the doc says.
+      for (const entry of Object.values(entries)) entry.final = true
+      months.unshift({ monthId: prev, entries })
+    }
+    await writeScores(space, months)
+
+    // A dry run leaves the markers unclaimed (and doesn't log them: they are bookkeeping, not content).
+    if (dryRun) return
+    const markers = [scoresKey(space.id, weekId), ...(complete ? [statsKey(space.id, monthId)] : []), ...(withPrev ? [statsKey(space.id, prev)] : [])]
+    for (const key of markers) await claim(db, key, { kind: 'scores', spaceId: space.id })
+  }
+
   const runSpace = async (space: Space) => {
     const load = makeLoader(space.id)
     const members = space.memberIds
-    // A space everyone has left has nobody to read its results or get its pushes.
-    if (members.length === 0) return
+    // A space everyone has left has nobody to read its results or get its pushes. Its last members' scores still
+    // get their month finished, for a while after the last one left.
+    if (members.length === 0) {
+      const lastLeft = Math.max(0, ...Object.values(space.leftAt ?? {}))
+      if (nowMs - lastLeft < EMPTIED_SCORES_MS) {
+        await ensureScores(space, load, {}).catch((e: unknown) => {
+          summary.errors++
+          log(`space ${space.id} scores failed: ${message(e)}`)
+        })
+      }
+      return
+    }
     // After a recent change of times, stored timelines decide the windows: read last, this and next week first.
     const stored: Record<WeekId, Week> = {}
     const note = space.scheduleNote
@@ -705,6 +852,11 @@ export async function runReminders({
     await ensureResults(space, load, stored).catch((e: unknown) => {
       summary.errors++
       log(`space ${space.id} results failed: ${message(e)}`)
+    })
+    // The same for the scores writer (batch 3), which sends nothing either.
+    await ensureScores(space, load, stored).catch((e: unknown) => {
+      summary.errors++
+      log(`space ${space.id} scores failed: ${message(e)}`)
     })
 
     // Nothing is sent between 00:00 and 08:00 local: the windows stay open for a later run.
@@ -796,6 +948,58 @@ export async function runReminders({
     for (const reminder of plan.send) await deliver(reminder)
   }
 
+  /** One goal's `checkin` pushes: the sent log of the members whose window is open now, then the week's check-ins
+   *  only if one of those still waiting has a device. */
+  const runGoal = async (goal: SharedGoal): Promise<void> => {
+    const candidates = checkinCandidates(goal, nowMs)
+    if (candidates.length === 0) return
+    const sent = new Set<string>()
+    for (const s of await readAll(candidates.map((c) => logRef(db, c.key)))) if (s.exists) sent.add(s.id)
+    const waiting = candidates.filter((c) => !sent.has(c.key))
+    if (waiting.length === 0) return
+    const devices = await Promise.all(waiting.map((c) => devicesOf(c.uid)))
+    if (!devices.some((d) => d.length > 0)) return
+    const week = await readQuery(db.collection(`sharedGoals/${goal.id}/checkins`).where('weekId', '==', candidates[0].weekId))
+    const checkins = week.docs.flatMap((d) => decodeCheckin(d.id, d.data(), toMs) ?? [])
+    const plan = planShared({ goal, checkins }, sent, nowMs)
+    if (!dryRun) {
+      for (const key of plan.skipped) {
+        if (await claim(db, key, { skipped: true, kind: 'checkin', goalId: goal.id, uid: uidOfKey(key) })) summary.skipped++
+      }
+    }
+    for (const reminder of plan.send) await deliver(reminder)
+  }
+
+  /**
+   * The `checkin` push (SPEC §11.10): one query for the goals that aren't finished; each goal's windows come from its
+   * doc alone, so a goal with no member window open now costs nothing more. Each goal has the spaces' time budget.
+   */
+  const runGoals = async (): Promise<void> => {
+    const snap = await readQuery(db.collection('sharedGoals').where('archivedAt', '==', null))
+    for (const doc of snap.docs) {
+      if (!isGoalId(doc.id)) {
+        log(`goal ${JSON.stringify(doc.id)} skipped: not a goal id`)
+        continue
+      }
+      const goal = decodeSharedGoal(doc.id, doc.data(), toMs)
+      if (!goal) {
+        log(`goal ${doc.id} skipped: malformed`)
+        continue
+      }
+      summary.goals += 1
+      try {
+        const outcome = await withTimeout(runGoal(goal).then(() => 'done' as const), spaceBudgetMs, `goal ${goal.id}`).catch((e: unknown) => {
+          if (e instanceof Error && e.message.startsWith(`goal ${goal.id} timed out`)) return 'slow' as const
+          throw e
+        })
+        if (outcome === 'slow') log(`goal ${goal.id} skipped: over its ${spaceBudgetMs} ms budget`)
+      } catch (e) {
+        summary.errors++
+        log(`goal ${goal.id} failed: ${message(e)}`)
+      }
+    }
+  }
+
   const spaces = await readQuery(db.collection('spaces'))
   summary.spaces = spaces.size
   for (const snap of spaces.docs) {
@@ -821,6 +1025,14 @@ export async function runReminders({
       summary.errors++
       log(`space ${snap.id} failed: ${message(e)}`)
     }
+  }
+
+  // Batch 3: the shared goals' check-in push, only while some window can be open; a failure costs no space anything.
+  if (checkinGateOpen(nowMs)) {
+    await runGoals().catch((e: unknown) => {
+      summary.errors++
+      log(`shared goals failed: ${message(e)}`)
+    })
   }
   return summary
 }

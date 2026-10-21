@@ -4,7 +4,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { Timestamp } from 'firebase-admin/firestore'
 import { runReminders } from '../../scripts/reminders.ts'
-import { allReviews, at, clear, connect, device, fakePush, profile, quiet, seedList, seedSpace, seedStakes, seedWeek, ts } from './reminders-fixtures.ts'
+import { allReviews, at, clear, connect, device, fakePush, profile, quiet, scoresWritten, seedList, seedSpace, seedStakes, seedWeek, ts } from './reminders-fixtures.ts'
 
 const { db, close } = connect('reminders-results-test')
 afterAll(close)
@@ -201,7 +201,9 @@ describe('results writer', () => {
   it('costs a steady-state run one read per space for the newest results doc', async () => {
     await seedSpace(db, 's1', ['a'])
     await db.doc('spaces/s1/results/2026-10').set({ monthId: '2026-10', completeAt: ts(at('2026-10-31T00:00:00Z')), createdAt: ts(at('2026-11-02T00:17:00Z')), members: {} })
-    // Wednesday Nov 11, 12:00: no window open in a one-person space (no stakes push without friends).
-    expect(await runReminders({ db, send: noPush, nowMs: at('2026-11-11T12:00:00Z'), log: quiet })).toMatchObject({ reads: 2, results: 0, windows: 0 })
+    await scoresWritten(db, 's1', ['2026-11-02'])
+    // Wednesday Nov 11, 12:00: no window open in a one-person space (no stakes push without friends). Read: the spaces,
+    // the results doc, and the scores writer's marker for the last closed week (batch 3, SPEC §11.10).
+    expect(await runReminders({ db, send: noPush, nowMs: at('2026-11-11T12:00:00Z'), log: quiet })).toMatchObject({ reads: 3, results: 0, windows: 0 })
   })
 })

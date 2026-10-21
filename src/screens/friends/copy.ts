@@ -1,9 +1,11 @@
 // The Friends tab's wording (SPEC §11.9.1–§11.9.4), kept pure so Node tests it. Dates read on the device's
 // calendar (`tz`, the device's zone by default): "{when}" is "today", "yesterday" or "Oct 18" (with the year once
 // it isn't this year), "{Mon d}" is "Oct 18" likewise, "{Month d}" is "October 12".
-import { ASK_AGAIN_DAYS } from '../../domain/friends.ts'
+import { ASK_AGAIN_DAYS, normalizeFriendCode } from '../../domain/friends.ts'
+import { INVITE_ALPHABET, INVITE_CODE_LENGTH, formatInviteCode } from '../../domain/ids.ts'
 import type { AskResult, FriendsView, ShowKey, Space, UID, UserProfile } from '../../domain/types.ts'
-import { firstName } from '../components/people.ts'
+import type { IconName } from '../../ui/icons.tsx'
+import { firstName, listNames } from '../components/people.ts'
 import { deviceZone } from '../components/zone.ts'
 
 const DAY = 86_400_000
@@ -173,6 +175,8 @@ export interface ToastCopy {
   title: string
   message?: string
   success?: boolean
+  /** The banner's glyph when it isn't the default (success: the check). */
+  icon?: IconName
 }
 
 /** "You and Lena are friends". */
@@ -183,15 +187,16 @@ export function friendsToast(name: string): ToastCopy {
 /** What Add says afterwards (askFriend's result); null when the row's detail says it all ('already-…'). */
 export function addResultToast(result: AskResult, name: string, askAgain: number | null, nowMs: number, tz?: string): ToastCopy | null {
   const first = firstName(name)
-  if (result === 'asked') return { title: 'Request sent', message: `${first} sees it next time they open Stakes.` }
+  if (result === 'asked') return { title: 'Request sent', message: `${first} sees it next time they open Stakes.`, icon: 'personPlus' }
   if (result === 'friends') return friendsToast(name)
-  if (result === 'too-soon') return { title: askAgain === null ? `You can ask ${first} again soon` : `You can ask ${first} again on ${shortDay(askAgain, nowMs, tz)}` }
+  if (result === 'too-soon')
+    return { title: askAgain === null ? `You can ask ${first} again soon` : `You can ask ${first} again on ${shortDay(askAgain, nowMs, tz)}`, icon: 'clock' }
   return null
 }
 
 /** Decline (no confirm): the toast says it stays quiet. */
 export function declinedToast(name: string): ToastCopy {
-  return { title: 'Request declined', message: `${firstName(name)} won’t be told.` }
+  return { title: 'Request declined', message: `${firstName(name)} won’t be told.`, icon: 'xmark' }
 }
 
 /** "Lena hasn’t shared anything yet." */
@@ -250,6 +255,32 @@ export function showConfirm(key: ShowKey, month: string): Confirm | null {
 export const EDITOR_NOTE = 'Anyone signed in to Stakes can see your showcase.'
 export const EDITOR_FOOTER = 'Money stays private unless you switch it on here. Your ring is for friends only.'
 export const PROFILE_SHOWCASE_FOOTER = 'Choose what anyone on Stakes can see on your profile.'
+
+/**
+ * What the Add Friend field shows: a pasted link (a friend link becomes its code; anything else, such as a space
+ * invite link, stays as pasted so the sheet can say what it is); else the typed code in capitals as XXXX-XXXX, like
+ * Join with Code, without the characters a code can't hold.
+ */
+export function formatFriendInput(value: string): string {
+  if (/friend=|join=|:\/\//i.test(value)) {
+    const code = normalizeFriendCode(value)
+    return code ? formatInviteCode(code) : value
+  }
+  const raw = value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, INVITE_CODE_LENGTH)
+  return raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw
+}
+
+/** A whole code with characters codes never use ("O", "1"): "Codes never use “O”. Check the code with your friend." */
+export function badCodeText(value: string): string | null {
+  if (/friend=|join=|:\/\//i.test(value)) return null
+  const typed = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+  if (typed.length !== INVITE_CODE_LENGTH) return null
+  const bad = [...new Set([...typed].filter((c) => !INVITE_ALPHABET.includes(c)))]
+  return bad.length === 0 ? null : `Codes never use ${listNames(bad.map((c) => `“${c}”`))}. Check the code with your friend.`
+}
 
 /** The friend link's share sheet (shareOrCopy). */
 export function shareLinkData(url: string): { title: string; text: string; url: string } {

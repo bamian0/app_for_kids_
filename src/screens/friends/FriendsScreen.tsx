@@ -45,6 +45,7 @@ export function FriendsScreen() {
   const { present } = sheet
 
   const addFriend = useCallback((code?: string) => present((close) => <AddFriendSheet close={close} initialCode={code} />), [present])
+  const openAddFriend = useCallback(() => addFriend(), [addFriend])
 
   // A friend link that arrived before (or with) sign-in opens Add Friend on its code; a check-in push opens its
   // goal. Either way on the Friends tab.
@@ -58,13 +59,13 @@ export function FriendsScreen() {
 
   const menu = async () => {
     const choice = await actionSheet({ actions: [{ label: 'Add Friend' }, { label: 'New Shared Goal' }] })
-    if (choice === 'Add Friend') addFriend()
+    if (choice === 'Add Friend') openAddFriend()
     if (choice === 'New Shared Goal') newSharedGoal()
   }
 
   return (
     <Screen title="Friends" leading={<HelpButton />} trailing={<GlassButton icon="plus" aria-label="Add friend or new shared goal" onClick={() => void menu()} />}>
-      <FriendsContent onAddFriend={() => addFriend()} />
+      <FriendsContent onAddFriend={openAddFriend} />
     </Screen>
   )
 }
@@ -78,7 +79,8 @@ function FriendsContent({ onAddFriend }: { onAddFriend: () => void }) {
   const pairUids = [...view.friends, ...view.incoming, ...view.sent].map((p) => p.uid)
   const profiles = useProfiles(pairUids)
   const { people, profiles: spaceProfiles } = usePeopleInSpaces(view)
-  const share = useShareMyLink()
+  // Should the share sheet no longer open (see useShareMyLink), Add Friend shows the link with its own Share Link.
+  const share = useShareMyLink(onAddFriend)
 
   const openShowcase = useCallback(
     (uid: UID, name?: string) => nav.push(<ShowcaseScreen uid={uid} name={name} />, { title: name }),
@@ -295,8 +297,10 @@ function SentSection({ sent, profiles, onOpen }: { sent: Friendship[]; profiles:
 /**
  * Share My Link: the code is fetched (or created) only once someone asks for it (SPEC §11.6), then shared at once;
  * later taps share straight away. `runner` is the hidden piece that holds the code while the screen lives.
+ * Safari opens the share sheet only right after a tap: when creating the code took longer than that, `fallback`
+ * (Add Friend, which shows the link with its own Share Link) opens instead of a share that would fail.
  */
-function useShareMyLink(): { busy: boolean; start: () => void; runner: ReactNode } {
+function useShareMyLink(fallback: () => void): { busy: boolean; start: () => void; runner: ReactNode } {
   const toast = useToast()
   const [wanted, setWanted] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -330,9 +334,10 @@ function useShareMyLink(): { busy: boolean; start: () => void; runner: ReactNode
       if (!pending.current) return
       pending.current = false
       setBusy(false)
-      void shareCode(c)
+      if (tapExpired()) fallback()
+      else void shareCode(c)
     },
-    [shareCode],
+    [shareCode, fallback],
   )
   const onError = useCallback(
     (e: Error) => {
@@ -355,4 +360,10 @@ function CodeRunner({ onCode, onError }: { onCode: (code: string) => void; onErr
     else if (live.error) onError(live.error)
   }, [live.data, live.error, onCode, onError])
   return null
+}
+
+/** The tap that asked to share no longer counts as one (browsers that can tell; others just try). */
+function tapExpired(): boolean {
+  const activation = (navigator as Navigator & { userActivation?: UserActivation }).userActivation
+  return activation !== undefined && !activation.isActive
 }

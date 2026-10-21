@@ -180,7 +180,7 @@ function StatsSection({ uid }: { uid: UID }) {
   if (nothing) {
     return (
       <Section header="Stats">
-        <Row title="No finished months yet." />
+        <Row className="fr-empty-row" title="No finished months yet." />
       </Section>
     )
   }

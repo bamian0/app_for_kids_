@@ -131,7 +131,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       paragraphs: [
         'Add friends with your link or code. Their ring shows their month so far.',
         'Your profile shows only what you switch on, to anyone on Stakes.',
-        'Shared goals are targets you fill together, like 100 km. Check in your part each week.',
+        'Shared goals are targets you fill together, like 100\u00a0km. Check in your part each week.',
       ],
     },
     {

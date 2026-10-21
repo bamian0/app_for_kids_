@@ -88,8 +88,12 @@
 }
 .fr-code__actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+/* Two equal halves at 375 points: a little less side padding than a lone button. */
+.fr-code__actions .ui-button {
+  padding: 0 12px;
 }
 .fr-code__wait {
   padding: 18px 0 14px;
@@ -193,6 +197,11 @@
 }
 .fr-stats[aria-busy] .fr-stat__value {
   color: var(--tertiary-label);
+}
+
+/* A placeholder row ("No finished months yet."): read, not tapped, so it's secondary like Health's "No Data". */
+.fr-empty-row .ui-row__title {
+  color: var(--secondary-label);
 }
 
 /* Achieved: the filled check with the check cut out in the card's own color. */

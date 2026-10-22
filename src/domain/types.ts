@@ -425,30 +425,33 @@ export interface MonthResults {
 // spaces/{spaceId}/deals/{uid}_{seq}. A deal is what friends owe a member who keeps every week (or month) of it at
 // 90% or more, what the member owes them on the first one under, and how many weeks or months it runs. One deal in
 // play per member per space; it ends on the first miss, or with the last period's result. Nothing is at stake
-// between deals. October 2026's open-ended stakes (§9.7) settle as agreed; from DEALS_FROM_MONTH on months have none.
+// between deals. October 2026's open-ended stakes (§9.7) settle as agreed; from `dealsFrom` (DEALS_FROM_MONTH unless
+// the reminders job recorded a later month in public/config, SPEC §12.3) on, months have none. Never deleted.
 
 /** What a deal counts: weekly scores (minus missed reviews that week) or monthly scores. */
 export type DealUnit = 'week' | 'month'
 
-/** How a deal ended. 'withdrawn': its person took it back before everyone agreed (it never ran). 'won': every
- *  period it needed was at 90% or more. 'lost': a period was under. 'off': called off by everyone in it, or its
- *  person left, or everyone else in it left (nothing owed). Only the reminders job writes 'won', 'lost' and 'off'. */
+/** How a deal ended. 'withdrawn': taken back before everyone agreed, by its person (or, for them, by the reminders job
+ *  once they left), so it never ran. 'won': every period it needed was at 90% or more. 'lost': a period was a miss:
+ *  under 90%, judged, or one its person wasn't in (they left). 'off': called off by everyone in it, or everyone else in
+ *  it left (nothing owed). Only the reminders job writes 'won', 'lost' and 'off'. */
 export type DealOutcome = 'withdrawn' | 'won' | 'lost' | 'off'
 
-/** Why a deal is off: everyone tapped Call Off, its person left the space, or every friend in it left. */
-export type DealOffReason = 'called-off' | 'left' | 'alone'
+/** Why a deal is off: everyone tapped Call Off, or every friend in it left. (Its person leaving is a miss: lost.) */
+export type DealOffReason = 'called-off' | 'alone'
 
 /** The stored `ended` of a deal (§12.4). */
 export interface DealEnd {
   outcome: DealOutcome
-  /** When it ended: the missed or last period's final time (lost, won), the lock it ended at (off: left, alone),
-   *  the last Call Off tap (off: called-off), or the server time of the withdrawal. */
+  /** When it ended: the missed or last period's final time (lost, won), the lock of the week its person wasn't in
+   *  (lost, 'left'), the lock it ended at (off: alone), the last Call Off tap or a party's later leave (off:
+   *  called-off), or the withdrawal's time (the server's, or the person's leftAt when the job withdrew it). */
   at: number
-  /** Withdrawn: who withdrew (always the deal's person). */
+  /** Withdrawn: who withdrew (always the deal's person, also when the job withdrew it for them). */
   by?: UID
   /** Won: the last period; lost: the missed one (a WeekId or MonthId). */
   period?: string
-  /** Lost: the missed period's deal score (null when it was missed by judging it). */
+  /** Lost: the missed period's deal score (null when it was missed by judging it or by not being in it). */
   score?: number | null
   /** Off only. */
   reason?: DealOffReason
@@ -458,9 +461,10 @@ export interface DealEnd {
  *  period longer ('skip'). */
 export type DealResult = 'pass' | 'miss' | 'skip'
 
-/** Why a period is a skip, or a miss without a score: paused (§9.3), friends excused every task (§10.4), the person
- *  wasn't in the week or it had no doc, judged it (a miss, §9.4), a month without a score, zero tasks (a miss at 0%). */
-export type DealNote = 'paused' | 'excused' | 'missing' | 'judge' | 'no-score' | 'empty'
+/** Why a period is a skip, or a miss without a score. Skips: paused (§9.3), friends excused every task (§10.4), the
+ *  week had no doc ('missing': nobody opened it before its lock), a month without a score. Misses: judged it (§9.4),
+ *  wasn't in it because they left ('left', SPEC §12.2), zero tasks ('empty', 0%). */
+export type DealNote = 'paused' | 'excused' | 'missing' | 'judge' | 'left' | 'no-score' | 'empty'
 
 /** One finished period of a running deal, as the reminders job records it in `track` (in order from `start`). */
 export interface DealPeriod {
@@ -468,7 +472,7 @@ export interface DealPeriod {
   id: string
   result: DealResult
   /** The deal score: a week's score minus latePenalty per review missed that week (floor 0); a month's finalScore.
-   *  null for a skip or a judged period. */
+   *  null for a skip, a judged period or one its person wasn't in. */
   score: number | null
   /** Reviews missed in the period (already taken off `score`). */
   missed?: number
@@ -500,7 +504,7 @@ export interface DealTerms {
 /** What the deal editor proposes (proposeDeal): the terms and the length. */
 export interface DealInput extends DealTerms {
   unit: DealUnit
-  /** 1–12 (DEAL_COUNTS in domain/deals.ts lists what the picker offers). */
+  /** 1–12, any whole number (DEAL_COUNTS in domain/deals.ts lists what the picker offers: all of them). */
   count: number
 }
 
@@ -518,7 +522,8 @@ export interface Deal extends DealInput {
   friends: UID[]
   /** Each friend's Agree, server time (written by that friend only). */
   agreed: Record<UID, number>
-  /** Call Off taps (the person and friends in the deal), server time. It's off once everyone still in it tapped. */
+  /** Call Off taps (the person and friends in the deal), server time. It's off once the person and every party still
+   *  in the space tapped, with at least one party still in it (SPEC §12.2). */
   off: Record<UID, number>
   /** Settled marks per friend, after it's won or lost. */
   settled: Record<UID, DealMark>
@@ -528,11 +533,12 @@ export interface Deal extends DealInput {
   // Written only by the reminders job (admin); absent until it first sees the deal fully agreed.
   /** When everyone needed had agreed. */
   agreedAt?: number
-  /** The first period (WeekId or MonthId): the first one whose lists lock after `agreedAt`. */
+  /** The first period (WeekId or MonthId): the first one whose lists lock at least DEAL_NOTICE_MS (a day) after
+   *  `agreedAt`. */
   start?: string
   /** Finished periods from `start`, in order. */
   track?: DealPeriod[]
-  /** The job's last look at it (freshness). */
+  /** The job's last change to it (written only together with another change, never on its own). */
   checkedAt?: number
 }
 

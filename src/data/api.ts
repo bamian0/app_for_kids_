@@ -301,6 +301,20 @@ export type { StakesInput } from './stakes.ts'
 // messages. Every deal write but settleDeal fails at once offline (MSG.offline); settleDeal queues like settlePairs.
 
 const NOT_BUILT = 'Deals aren’t ready yet.'
+/** DEALS_FROM_MONTH (src/domain/stakes.ts, added by the domain builder): the stub's answer until then. */
+const DEALS_FROM_DEFAULT: MonthId = '2026-11'
+
+/**
+ * The cutover month in force, `dealsFrom` (SPEC §12.3): the first month with no month stakes. One getDoc of
+ * public/config per session (store key `config|dealsFrom`): its `dealsFrom` when it is a valid 'YYYY-MM' at or after
+ * DEALS_FROM_MONTH (the reminders job records it once, from the first deal), else DEALS_FROM_MONTH, which is also the
+ * answer while it loads, offline (unless the cache has the doc) and on an error. Screens pass it to the domain's
+ * stakesDebts, monthHasStakes and oldStakesMonth.
+ */
+export function useDealsFrom(): MonthId {
+  // deals: TODO
+  return DEALS_FROM_DEFAULT
+}
 const NO_DEALS: Live<DealsView> = Object.freeze({ data: Object.freeze({ open: {}, ended: [] }) as DealsView, loading: false, error: null })
 const NO_DEAL_HISTORY: Live<Deal[]> = Object.freeze({ data: Object.freeze([]) as unknown as Deal[], loading: false, error: null })
 
@@ -335,22 +349,25 @@ export async function proposeDeal(_space: Space, _input: DealInput, _opts?: { re
 }
 
 /** Takes back your deal while some friend still has to agree (SPEC §12.2): `ended = { outcome: 'withdrawn', at, by }`.
- *  Once everyone agreed: "Everyone agreed, so it can’t be withdrawn. Ask everyone to call it off." Fails at once offline. */
+ *  Once everyone agreed: "Everyone agreed, so it can’t be withdrawn. Ask everyone to call it off." Already ended:
+ *  resolves (a retry). Fails at once offline. */
 export async function withdrawDeal(_space: Space, _dealId: string): Promise<void> {
   // deals: TODO
   throw new Error(NOT_BUILT)
 }
 
 /** Your Agree to a friend's waiting deal, stamped with the server time (`agreed.{me}`); resolves without writing when
- *  you already agreed. Deals never change after they are proposed, so there is nothing to compare. Fails at once offline. */
+ *  you already agreed. Deals never change after they are proposed, so there is nothing to compare. Refuses with
+ *  "{Lena} has left, so this deal won’t start." when its person isn't a member, and "This deal already started
+ *  without you." once the job stamped its start (SPEC §12.9). Fails at once offline. */
 export async function agreeToDeal(_space: Space, _dealId: string): Promise<void> {
   // deals: TODO
   throw new Error(NOT_BUILT)
 }
 
-/** Your Call Off tap on a deal everyone agreed to (its person or a friend in it): `off.{me}` = server time, never
- *  taken back. It's off once everyone still in it tapped (the job confirms). Resolves without writing when you
- *  already tapped. Fails at once offline. */
+/** Your Call Off tap on a deal everyone agreed to (its person or one of its parties): `off.{me}` = server time,
+ *  never taken back. It's off once everyone still in it tapped, with at least one party still in the space (the job
+ *  confirms, SPEC §12.2). Resolves without writing when you already tapped. Fails at once offline. */
 export async function callOffDeal(_space: Space, _dealId: string): Promise<void> {
   // deals: TODO
   throw new Error(NOT_BUILT)
@@ -365,9 +382,10 @@ export async function settleDeal(_space: Space, _dealId: string, _friends: UID[]
 
 /**
  * Saves your streak rewards (SPEC §12.2, §9.8) in your stakes doc: the tiers (sorted, validated with the stakes
- * editor's messages) with both lines set to the house stakes, Same for everyone (from DEALS_FROM_MONTH they no
- * longer count; this keeps every friend able to agree). Friends agree with agreeToStakes as before. The screens offer
- * it only outside the October window (oldStakesMonth); it has no date rule of its own. Fails at once offline.
+ * editor's messages) with both lines set to the house stakes, Same for everyone (from `dealsFrom` they no longer
+ * count; this keeps every friend able to agree). Friends agree with agreeToStakes as before. The screens offer it
+ * only outside the October window (oldStakesMonth with useDealsFrom()); it has no date rule of its own. Fails at once
+ * offline.
  */
 export async function saveStreakRewards(_space: Space, _tiers: StreakTier[]): Promise<void> {
   // deals: TODO

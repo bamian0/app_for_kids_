@@ -123,6 +123,7 @@ public/config                                { vapidPublicKey }              # w
 _private/*                                   admin only (VAPID private key, sent-notification log)
 friends/{pairId}, friendCodes/{code}, showcases/{uid}, scores/{uid}, rings/{uid}, stats/{uid},
 sharedGoals/{goalId}, sharedGoals/{goalId}/checkins/{weekId}_{uid}   # batch 3: new collections only (§11.3)
+spaces/{spaceId}/deals/{uid}_{seq}           # deals: stakes with a length (§12.4); + spaces/{spaceId}.hasDeals?: true
 ```
 
 Limits: space name 1–40 chars; reward/penalty 1–120 chars; user name 1–40 chars; ≤25 tasks per plan; task title 1–120 chars; ≤8 steps per task, step title 1–120 chars on one line; task ids `[A-Za-z0-9_-]{1,64}` (also as review mark keys and check-off keys); ≤8 members per space (judges included); profile color `#RRGGBB`; profile photo ≤ 60,000 characters. Batch 2: schedule minutes `0 ≤ lock < reviewOpen`, `reviewOpen + 180 ≤ deadline ≤ 10080` (§9.2); a monthly list's caps are a week's; own stakes texts ≤ 120, ≤ 7 `per` entries, ≤ 5 streak rewards of 2–36 months, ≤ 6 agreements kept per friend (§9.7). Batch 2.5: a cross-out reason is 1–120 characters on one line with at least one character that shows (`WHY_BLANK`, §10.3); a task changes at most 5 times (2 undos), so a `cancels` log has ≤ 125 entries; a monthly list grows to ≤ 25 tasks by adds (§10.2). Every new field is optional and reads as "as before" when missing.
@@ -222,6 +223,7 @@ Known limits:
 | `public/sw.js`, `public/manifest.webmanifest`, `public/icons/**`, `src/push/**`, `vite.config.ts`, `src/stubs/**`, `scripts/**`, `.github/workflows/**` | platform | PWA, push, reminders job, deploy. `scripts/reminders.ts` (the job: loading, results writer, sending), `scripts/reminders-plan.ts` (pure: windows, decisions, copy), `scripts/reminders-legacy-oracle.ts` (a frozen copy of the windows from before batch 2, the test oracle, §9.11). Batch 2.5: `scripts/reminders-batch25.test.ts` (§10.8). |
 | `tests/data/**`, `vitest.data.config.ts` | data | Data layer and reminders job against the emulators. Batch 2 adds `schedule`, `pause`, `judges`, `monthly`, `stakes` and `reminders-results` suites, with `reminders-fixtures.ts`. Batch 2.5 adds `cancel.test.ts` (monthly adds, cross-outs and undos, ticks, fair votes). |
 | Batch 3 (§11.13) | rules, domain, data, screens (friends), screens (shared), platform | `src/domain/friends.ts`, `showcase.ts`, `shared.ts` (+ their decoders in `decode.ts`); `src/data/friends.ts`, `showcase.ts`, `shared.ts` (+ `auth.ts`'s `deleteMyAccount`); `src/screens/friends/**`, `src/screens/shared/**`; the Friends tab and its badge in `App.tsx` and `TabBar.tsx`; `scripts/reminders.ts` (the scores writer and the check-in loop) with `reminders-plan.ts` (`checkinWindow`, `planShared`, `scoreEntries`). Tests: `tests/rules/friends`, `showcase`, `shared`, `shared-clock` (+ `budget` rows); `tests/data/friends`, `showcase`, `shared`, `reminders-batch3`; `scripts/reminders-batch3.test.ts` (with the check-in window sweep); `tests/e2e/batch3-friends.spec.ts`, `batch3-shared.spec.ts` (with `friends-seed.ts`, `shared-seed.ts`). |
+| Deals (§12.14) | contract, rules, domain, data (with the reminders job), screens | `src/domain/deals.ts`; `src/data/deals.ts`; `firestore.rules`' deals block and `marksDeals`; `scripts/reminders*.ts` (`ensureDeals`, the `deal` and `deal-end` pushes); `src/screens/stakes/**` (the deal card, Stakes screen, `DealScreen`, `DealEditorSheet`, `DealHistoryScreen`, `StreakRewardsSheet`). Tests: `tests/rules/deals.test.ts`, `src/domain/deals.test.ts`, `tests/data/deals.test.ts`, `tests/data/reminders-deals.test.ts`, `scripts/reminders-deals.test.ts`, `tests/e2e/deals.spec.ts`. |
 | `tests/e2e/**`, `playwright.config.ts` | integration | Emulator-backed end-to-end + screenshots. `flow.spec.ts`: the game (sign up, join, plan, review, verdict). `features.spec.ts`: steps and revenue, a task added after the lock, Overview, Goals, the tab bar and money privacy. `batch1.spec.ts`: the intro (signed out and as a cover), Help on every tab, and a profile photo end to end. `batch2.spec.ts`: the batch-2 flows. `batch25.spec.ts`: monthly adds, crossing out and undo, the vote and a skipped week (§10.5). `screens.spec.ts`: seeded batch-2 states for screenshots only (runs only with `E2E_SCREENSHOTS`). `helpers.ts` (browser helpers; `phone()` marks the intro as seen unless asked for a new phone, and can be the installed app or another kind of phone), `emulator.ts` (admin seeding). |
 
 ### Checks
@@ -358,7 +360,7 @@ Agreed with the owner, who said "go batch 2". Built on `claude/task-rating-app-f
 - **Owner's answers after the critique** (they override the first draft of §9; §9.16): stakes count **right away once agreed**, for the month in progress, and a month's terms are fixed when it is complete; the house stakes work the same way. The reward line and the penalty line each have their own **Same for everyone / Different per friend** switch; streak rewards stay one list. Judged weeks in a month you also play count as 0%. The Space screen always shows the stakes that count right now and anything pending; no stakes change shows only in Settings (the owner's bug report: an edit in Settings didn't change the Space screen, because the month had frozen).
 - Later (batch 3): friends list with score rings, profile showcase (achieved and current goals, stats, a switch to show last month's earnings), shared goals with weekly check-ins (reminders need notifications set up). Proof uploads are on hold.
 
-**Since then.** Batch 2 went live on 2026-10-17 (§9.14). Batch 2.5 (monthly adds, crossing out with the friends' vote, §10) went live on 2026-10-20 (`55db07a`, §10.11). **Batch 3 is built** (friends by friend request with score rings, a profile showcase anyone signed in can read, shared goals with weekly check-ins, §11): on `claude/task-rating-app-feasibility-abixvp`, October 2026, every check green; it ships when the owner publishes the rules and deploys by hand (§11.14). Later, not batch 3: time-limited "deals" on stakes; proof uploads.
+**Since then.** Batch 2 went live on 2026-10-17 (§9.14). Batch 2.5 (monthly adds, crossing out with the friends' vote, §10) went live on 2026-10-20 (`55db07a`, §10.11). **Batch 3 is built** (friends by friend request with score rings, a profile showcase anyone signed in can read, shared goals with weekly check-ins, §11): on `claude/task-rating-app-feasibility-abixvp`, October 2026, every check green; it ships when the owner publishes the rules and deploys by hand (§11.14). Later, not batch 3: time-limited "deals" on stakes; proof uploads. **Deals** were decided next and are §12 (stakes with a length, replacing §9.7's open-ended monthly stakes from November 2026).
 
 ## 9. Batch 2: custom times, per-person stakes, pause, judges, monthly tasks, streaks
 
@@ -1741,3 +1743,573 @@ To check it shipped: on a phone with the new build the tab bar has four tabs; Fr
 18. **Help stays within 700 words**: the new section is three short paragraphs, paid for by trimming wording and two clauses the app shows anyway (§11.11); the 5-point review line stays.
 19. **No new pushes for requests or invitations** this batch: users have no timezone of their own for quiet hours, and the badge covers it in the app. Later, if the group asks.
 20. **Nothing deploys by accident**: `[skip ci]` on every push until the manual deploy, and job code reaches the app branch only after its emulator tests (§11.14).
+
+## 12. Deals: stakes with a length
+
+The owner decided deals after batch 3 was built ("when we agree on what we get, we have to also agree when we get it in that space, and after we get it we can set new things that we would get from each other"). This section is the contract for them. Where it and §1–§11 disagree, this one wins; §12.1 lists every such change. Batches 1, 2, 2.5 and 3 are live with real users, so, as before, nothing here may break data written before: deals live in **their own docs** (`spaces/{id}/deals/{uid}_{seq}`) with their own rules, the only change to an existing doc is one optional flag on the space (`hasDeals`, set once by the app's first deal there), the 25 × 8 plan save (895), the add after the lock (325) and the cross-out (482) don't get more expensive, and the reminders job behaves exactly as before on every space without deals (§12.11).
+
+Owner's decisions (verbatim in substance):
+1. A **deal** is what someone gets if they hit the bar, what they owe if they miss, **and a length**: N weeks or N months (the person picks N and the unit). Every period of the deal must be 90% or more (the weekly score for a weeks deal, the monthly score for a months deal).
+2. The deal **ends on the first miss**, and the penalty is owed then. If every period is 90%+, the reward is owed when the last period's result is final.
+3. After a deal ends (either way), **nothing is at stake** for that person until a **new** deal is agreed. **Same Again** repeats the last deal's terms, but friends must still tap Agree.
+4. Deals keep today's agreement model: the person writes the terms (reward and penalty, each **Same for Everyone** or **Different per Friend**, as §9.7), every friend taps **Agree**, until then it shows "Waiting for …". Settling stays per pair ("Lena owes you dinner, settled").
+5. Deals are usable **as soon as this ships**. A new deal starts with the next period that hasn't started being scored (§12.2 says exactly which).
+6. **Migration**: the stakes agreed for the month in progress when this ships (October 2026) keep their promise: October settles exactly as agreed, as a one-month deal would. After that the old open-ended monthly stakes don't renew: only deals.
+7. No cap on how often friends can excuse crossed-out tasks (§10): unchanged.
+8. Streak rewards (§9.8) keep working.
+
+Refinements made in this contract, each with its reason in §12.17: a weeks deal's week counts the week's score **minus 5 points per friend you didn't review that week** (otherwise reviewing would cost nothing for anyone in a weeks deal, since month stakes are gone); paused weeks, excused (skipped) periods and weeks without a doc **don't count and add one more period**, while a week you **judge** counts as a **miss** (judging can't pause a deal on your own); once everyone agreed, ending a deal early needs **everyone in it** to tap **Call Off** (before that, the person can **Withdraw** or **Edit** alone); a friend who leaves stays in the deal, the person leaving calls it off; the **reminders job** decides every result and end, so nothing owed can be faked, and a new deal can be proposed only once it has confirmed the last one's end.
+
+Words: **deal** (noun; "make a deal", "your deal"), **Make a Deal**, **Same Again**, **Agree**, **Withdraw** (before everyone agreed), **Call Off** (after), **made it** / **won** (every period at 90%+; "won" only in code and Past Deals), **ended** (a miss), **off** (called off, or people left), **week N of M**. "Stakes" stays the umbrella word (the card, the screen, house stakes, streak rewards); "per-person stakes" disappear from copy.
+
+### 12.1 What changes in §1–§11
+
+- §1 Spaces, **Stakes per month** (already superseded by §9.7): from `DEALS_FROM_MONTH` (`'2026-11'`, §12.3) on, a month has no reward or penalty of its own: neither the house stakes nor anyone's own stakes lines count by themselves. The house stakes become **what new deals start from** (the editor's prefill, the invite and the join preview); only the owner changes them, as before.
+- §1 Monthly score, "When complete": from `DEALS_FROM_MONTH` on, passing or missing a month owes nothing by itself. A month's score still decides streaks and streak rewards (§9.8) and every months deal (§12.2). October 2026 and earlier are unchanged.
+- §1 Settlements: deals settle per pair on the deal doc (`settled`, §12.4). The month settlements (§9.7) stay for months before `DEALS_FROM_MONTH` and for streak rewards.
+- §2 Data model: new `spaces/{id}/deals/{uid}_{seq}` and the space's optional `hasDeals: true` (§12.4). Security rules: a new `deals` match block and one new space branch, `marksDeals`, last in the space's update chain (§12.7). Data layer: §12.9; `deleteMyAccount` cleans up deals (§12.13).
+- §3 Module map: §12.14.
+- §4 Reminders: the job evaluates deals (only in spaces with `hasDeals`) and writes their results and ends; two new event pushes, `deal` and `deal-end`; from `DEALS_FROM_MONTH` the verdict push quotes no stakes, the `house` push stops and the `stakes` push is about streak rewards (§12.11). Nothing changes for any space or month before that.
+- §6.5 Overview: unchanged. The Spaces card's verdict line, from `DEALS_FROM_MONTH`, says how the month went instead of who owes whom (§12.10).
+- §7.1, §9.12, §10.9, §11.11 Help and the intro: §12.12 (696 words on the usual times, 699 on the test's custom ones; cap 700).
+- **§9.7 is replaced** for every month from `DEALS_FROM_MONTH` on: own stakes lines (Same for Everyone / Different per Friend on the stakes doc), agreeing to them, `memberTerms`' lines, the reward and penalty debt lines of a month and the stakes card's "what counts now" rows all stop; deals take their place. What stays of §9.7: the house stakes (fields, the owner-only edit and its month freeze, unchanged in code and rules), the stakes doc as the **store of streak rewards** with its Agree (unchanged rules), per-pair month settlements for October and earlier, and everything about October 2026 (§12.3).
+- **§9.8 stays**: streak rewards, month results docs, streaks and tier runs are unchanged (the results doc still stores `terms`; from `DEALS_FROM_MONTH` only their `tiers` matter). Streak rewards are edited on their own from November (§12.10, Streak Rewards) and are owed on top of any deal.
+- §9.11: verdict copy from `DEALS_FROM_MONTH` (§12.11); the `house` push stops from then; `stakes` becomes "New streak rewards from Lena".
+- §9.15: the limits about agreeing late to soften a month's stakes, the 6 kept agreements and friends who never agree holding back a shared line stop mattering after October (they still describe October).
+- §10: unchanged. A period friends excused (skipped) doesn't count toward a deal and adds one more (§12.2).
+- §11: unchanged (rings and stats come from scores, not stakes).
+
+### 12.2 Rules of the game
+
+**Making a deal**
+- Any member who doesn't judge (§9.4) can propose **one deal at a time** per space: a unit (**Weeks** or **Months**), a length (1–12; the picker offers 1, 2, 3, 4, 6, 8, 12 weeks and 1, 2, 3, 4, 6, 12 months), the **reward line** ("If you make it, they owe you…") and the **penalty line** ("If you miss, you owe them…"), each **Same for Everyone** or **Different per Friend** exactly as §9.7's lines (one text the friends owe together / give the group; or one text per friend).
+- The deal is **with every other member who doesn't judge** when it is proposed (`friends`, 1–7 people). Nobody can be left out; a judge isn't asked and has nothing at stake with you (§9.4); someone who joins later isn't in it ("Your next deal will include Kim").
+- With nobody else playing (alone, or everyone else judges), there's no deal to make: "Deals need a friend who plays. Invite one first."
+- A judge can't propose (a judged week would be a miss at once): "You’re judging, so there’s no deal to make. Turn off Only Rate Friends to play."
+- A new deal can be proposed only once your previous deal has **ended** (won, lost, off, withdrawn) and the reminders job has recorded it (§12.6). Settled marks don't gate it: a friend who never taps Settled can't block your next deal.
+
+**Agreeing**
+- Every friend in the deal who is still in the space taps **Agree** (stored with the server time). There is no decline: not agreeing keeps it waiting. Deals never change after they're proposed, so an Agree can never be stale.
+- **Fully agreed** = every friend in `friends` who is a current member has agreed, and at least one has. A friend who leaves before agreeing stops holding it up (they aren't in the deal); if they come back before it's fully agreed, they're asked again. `agreedAt` = when it became fully agreed: the latest Agree of those still needed, or the leave (`leftAt`) of the last friend who left without agreeing, whichever is later.
+- **When it starts** (owner's decision 5): with the first period **whose lists lock after `agreedAt`**, on the stored lock when the week doc exists, else the computed one (`boundsFor`):
+  - **weeks**: this week if its lists haven't locked yet (agreed on Monday at 3 PM, lock Monday at midnight: this week), else next week;
+  - **months**: the month of the week holding `agreedAt` if that month's **first week** hasn't locked yet, else the next month. So a months deal agreed mid-month starts with next month (a month counts from its first week's lock, the moment its first lists commit), and one agreed on the weekend before a month's first lock starts with that month. With the usual times, November 2026's first lock is Monday Nov 2 at midnight: agreed by then, November is month 1; agreed on Nov 3, December is.
+  - Until everyone has agreed, the start slides: each lock that passes without every Agree moves it to the next period. The screens say so: "Starts this week if Kim agrees before Monday at midnight."
+- A friend who still hasn't agreed when the deal would start doesn't break anything: it simply starts with the next period after their Agree. There's no expiry; the person can withdraw it.
+
+**What counts, period by period** (from `start`, in order; `track` records each one, §12.4)
+- A **weeks deal** counts each week by its **deal score** = the week's score (§1, §10.4) minus `latePenalty` (5) for each friend you didn't review that week (`missedReviewsOf`, §1), at least 0. It is final at the week's stored deadline (the reveal happens then at the latest). **Pass**: deal score ≥ 90 (−1e-9, as everywhere). **Miss**: under 90, including a week with nothing planned (0%) and a week you **judge** (no score; a miss, so switching to judge can't hide a week). **Skip** (doesn't count; the deal runs one week longer): a **paused** week (§9.3), a week friends **excused** every task of yours (`skipped`, §10.4), and a week with no doc or without you in it (nobody opened the app before its lock). Your monthly list plays no part in a weeks deal (it still counts in your month's score and streaks).
+- A **months deal** counts each month by its `finalScore` (§1, §9.6: the average of its weeks and monthly list, minus 5 per missed review), final when the month is complete (`monthEndsAt`). **Pass**: `passed`. **Miss**: not passed; also a month with no score in which you **judged** a week that wasn't paused (`judged` non-empty: judging can't stall a deal). **Skip**: a month with no score otherwise (every week paused or excused, or no week doc).
+- Pauses need everyone's OK (one a month) and excusals need most reviewers' fair votes (no cap, owner's decision 7), so skips are never one-sided; a deal can grow by any number of them.
+- **Won**: the `count`-th pass; the reward is owed at that period's final time. **Lost**: the first miss; the penalty is owed at its final time. A deal never has more than `count` passes.
+
+**Who's in it, and leaving**
+- The deal's **parties** are the friends who agreed and were in the space when its first period locked (`membersAt(space, lockOf(start))`). A friend who agreed but left before the start isn't a party.
+- **A friend who leaves** mid-deal stays a party: they still owe or are owed when it ends (as a former member owes for a locked week, §1). The deal doesn't wait for them in anything (Call Off counts only parties still in the space).
+- **You leave** (or are removed, or delete your account): periods you were in at their lock still count (the lock rule, §1); the deal is **off** at the lock of the first period it needs that you're no longer in (nothing owed), unless a period before that already ended it (a miss: lost; the last pass: won).
+- **Everyone else in it leaves**: off at the lock of the first period the deal needs at which no party is in the space anymore ("alone"; nothing owed).
+
+**Changing your mind**
+- **Before everyone agreed** (waiting): the person can **Withdraw** it (nothing was agreed; nothing owed), or **Edit** it, which withdraws it and proposes the edited one in one step (everyone agrees again).
+- **After everyone agreed** (scheduled or running), nobody can change or withdraw it alone. **Call Off**: the person and every party still in the space each tap Call Off (a tap is final; no take-backs). It's **off** from the last tap (`completeAt`): nothing is owed, unless a period that ended before that already ended it (a miss before the last tap stands). A period in progress at that moment doesn't count.
+- No pushes for Call Off: the card and the Stakes screen show it to everyone in the deal.
+
+**Settling**
+- **Won**: each party owes the person the reward line: a Same-for-Everyone reward is owed by all parties together ("Sam, Kim and Ana owe you: Dinner, on us"), a per-friend one by each ("Sam owes you: Lunch"). **Lost**: the person owes each party the penalty line: together ("You owe Sam, Kim and Ana: Coffee for a week") or per friend. **Off** and **withdrawn**: nothing.
+- Per pair, honor system, as §9.7: whoever was owed taps **Settled** (one tap per line; a together line marks every pair); when everyone owed on a line has left the space, the people who owe can mark it (`canSettleLine`). Nothing is paid in the app.
+
+**House stakes** (§9.7) from `DEALS_FROM_MONTH`: the space's `reward`/`penalty` are the starting point of every new deal (the editor prefills them on Same for Everyone) and what the invite and join preview show; they don't count between anyone by themselves. The owner edits them as before (Settings), with the month freeze unchanged.
+
+**Same Again**: available when you have no deal in play and your latest deal that ran (won, lost or off; not a withdrawn one) exists. It copies its unit, length, modes and texts, and the per-friend texts of friends who are still members and don't judge (`sameAgain`, §12.8). It proposes a new deal with today's friends; they all agree again. When a line is per friend and some friend has no text from last time (a newcomer), it opens the editor prefilled instead, asking for the missing ones.
+
+**Streak rewards** (§9.8) stay as they are: a list on the stakes doc, agreed by every friend, counted on monthly scores, owed on top of any deal (a months deal's reward and a streak reward can fall due the same month; both are owed: they were agreed separately). They don't conflict with deals: a streak reward rewards a run of good months whatever deals you make; a months deal is a bet you can lose. From `DEALS_FROM_MONTH` they're edited on their own (Streak Rewards, §12.10).
+
+**Judges, pauses, monthly lists, cross-outs** in one place: a week you judge = a miss (weeks) and a month you only judged = a miss (months); a paused week = a skip (weeks), and in a months deal it's simply not averaged (§9.6); monthly lists count only in months deals (one extra week of the month, §9.5); a skipped period = a skip; missed reviews cost 5 points of the week's deal score (weeks) or of the month's score (months).
+
+### 12.3 Migration: October 2026, and the cutover month
+
+- `DEALS_FROM_MONTH = '2026-11'` (`src/domain/stakes.ts`, next to `FIRST_RESULTS_MONTH`, re-exported by `deals.ts`): the first month that has **no month stakes**. It must be the month after the month whose terms count when the app ships (`termsMonth` at the deploy). Shipping before October 31 (October completes Saturday Oct 31 at 00:00 on the usual times) keeps `'2026-11'`; if the deploy slips past October's completion, change it to the month after the one whose terms count on the deploy day, with the tests that pin it, before deploying (§12.15).
+- **October keeps its promise**: October 2026's terms are computed exactly as today (§9.7, `memberTerms` with the agreements made before October was complete and October's house stakes), written into `results/2026-10` by the job at completion, and settled per pair in the month view as today. Nothing about October changes in code: the job's results writer, `monthTerms`, `monthDebts` and the month view are untouched for months before `DEALS_FROM_MONTH`. That is "each agreed stakes line as a one-month deal for October", with no new docs and no data migration (§12.17).
+- **The October window** (from the deploy until October is complete, `oldStakesMonth(space, now, thisWeek, monthly) !== null`, §12.8): October's stakes are **read-only** in the new app: no stakes Edit, no Agree to a friend's pending stakes change, no streak-reward edit or Agree, no house-stakes edit (the owner sees them read-only). The screens enforce it; the data layer and the rules don't (they keep accepting old clients, and the data tests run on the real clock). What was agreed when the app updated is October's deal. (Old clients can still edit and agree for about 30 minutes; those agreements count for October as before. The rules don't change for stakes.) Deals can already be made: a weeks deal agreed in late October starts with the week of Oct 26 if agreed before its lock, so October's last week can count for both (two separate promises); a months deal agreed then starts in November.
+- From November on (October complete, `termsMonth ≥ DEALS_FROM_MONTH`): only deals and streak rewards. Pending stakes changes nobody agreed to in October lapse. Stakes docs stay (they hold streak rewards and October's agreements).
+- What each person sees on the Space screen's stakes card (§12.10 has the exact copy):
+  - **Someone with old stakes, in the October window**: "October’s stakes" with the two rows that count for them in October (as today's card, read-only, what was agreed), and below "Nothing at stake after October" · "From November, stakes don’t renew on their own. Make a deal: what you get for hitting 90%, what you owe if you miss, and for how long." with **Make a Deal**. (Everyone has October stakes: at least the house stakes.) After October completes, the October rows go; October's debts appear in its month view as today.
+  - **Someone with a deal**: the deal block (waiting, starting, "Week 2 of 4 · all 90%+ so far", ended), plus in the October window the October rows with "October’s stakes count too, for October."
+  - **Someone with nothing at stake** (November on, no deal in play): "Nothing at stake" · "Make a deal: what you get for hitting 90%, what you owe if you miss, and for how long." with **Make a Deal** and, after a deal, **Same Again**.
+
+### 12.4 Data model
+
+```
+spaces/{spaceId}                + hasDeals?: true          # set with the space's first deal, never removed (§12.7 marksDeals)
+spaces/{spaceId}/deals/{uid}_{seq}
+  { uid,                                                   # the person whose bar it is
+    seq,                                                   # int 1–9999: 1 for a person's first deal here, then +1 each
+    unit: 'week' | 'month', count,                         # int 1–12
+    rewardMode, penaltyMode: 'group' | 'each',
+    reward, penalty,                                       # 1–120, not blank, when the line is 'group'; ≤ 120 ('' kept) when 'each'
+    per: { [friend]: { reward, penalty } },                # exactly `friends` while a line is 'each' (that line's text 1–120,
+                                                           #   not blank; the other ≤ 120); {} while neither is
+    friends: [uid…],                                       # every member but uid who didn't judge, when proposed (1–7, no repeats)
+    agreed: { [friend]: ts },                              # each friend's Agree (server time), by that friend
+    off: { [uid]: ts },                                    # Call Off taps (uid and friends who agreed), server time
+    settled: { [friend]: { settled, by, at: ts } },        # per pair, once won or lost
+    createdAt: ts,
+    ended: null                                            # in play
+         | { outcome: 'withdrawn', at: ts, by: uid }       # the person, before everyone agreed (client)
+         | { outcome: 'won' | 'lost' | 'off', at: ts, period?, score?, reason? },   # the reminders job (admin)
+    # written only by the reminders job (admin); absent until it first sees the deal fully agreed:
+    agreedAt?: ts, start?: 'YYYY-MM-DD' | 'YYYY-MM',
+    track?: [{ id, result: 'pass' | 'miss' | 'skip', score: number | null, missed?: int, why?: string }],
+    checkedAt?: ts }
+```
+
+- **Ids**: `${uid}_${seq}` (uids have no `_`). The chain proves there's at most one deal in play per person: `seq` 1 needs nothing before it; any other needs the previous one ended (`getAfter`, so the Edit's withdraw and the new create can share a transaction); a doc is created only once.
+- **Who writes what**: the person creates it and may set `ended` to withdrawn; each friend writes only `agreed.{self}`; the person and parties write only `off.{self}`; any member writes `settled.{friend}` entries (honor system); the job (admin, bypassing the rules) writes `agreedAt`, `start`, `track`, `checkedAt` and `ended` won/lost/off, each with field updates in a transaction that re-reads the doc, so no client field is ever overwritten. Every client time is `serverTimestamp()` (`request.time` in the rules). The job's times: `agreedAt` = the computed moment (an agreement's server time or a `leftAt`), `ended.at` = the event's time (a deadline, a lock, the last Call Off tap), `checkedAt` = its run's clock.
+- `ended.period`: won → the last period, lost → the missed one; `ended.score`: lost → that period's deal score (null when judged); `ended.reason`: off → `'called-off' | 'left' | 'alone'`. `track[].why`: `'paused' | 'excused' | 'missing' | 'no-score'` (skips), `'judge' | 'empty'` (misses without a real score; `empty` scores 0), absent otherwise; `track[].missed`: reviews missed in it (weeks: that week's; months: the month's), already taken off `score`.
+- **Never deleted**, except your own ended deals once your profile is gone (account deletion, §12.13) and, by the job, the deals of a person without a profile.
+- **Reads** (all members, `allow read: if isMember`): the app's two queries `where('ended', '==', null)` (≤ 8 docs) and `where('ended.at', '>=', now − 60 days)`, Past Deals' whole collection, and your own `where('uid', '==', me)` when proposing; the job's `ended == null` and `ended.at >= now − 3 days`. All single-field: `firestore.indexes.json` stays empty.
+- **Size**: a doc is under 6 KB (7 per-friend texts of 120, a 12-period track twice over with skips, 7 marks).
+- `Space.hasDeals`: decoded by `decodeSpaceExtras` (true only for `true`). With it absent nothing reads any deal (the app's hooks and the job), which is how the job stays exactly as before on every space without deals.
+
+### 12.5 The lifecycle
+
+States (derived by `dealState`, §12.8, from the doc, the space and the time; the job's fields make it final):
+
+| State | Meaning | Stored |
+|---|---|---|
+| draft | the editor, not saved | — |
+| waiting | proposed; some friend still in the space hasn't agreed (or nobody is left to agree) | `ended == null`, no `start`, not fully agreed |
+| scheduled | fully agreed; its first period hasn't locked | `ended == null`; `agreedAt`/`start` once the job stamped them |
+| running | fully agreed; its first period has locked | `ended == null` |
+| won / lost / off | over (the job confirmed it) | `ended.outcome` |
+| withdrawn | taken back before everyone agreed | `ended.outcome == 'withdrawn'` |
+| settled | won or lost, and every pair marked Settled | `settled` (a display state) |
+
+Transitions, and who may make each:
+
+| From | To | When | Who | Write |
+|---|---|---|---|---|
+| — | waiting | Propose, Same Again, Edit (with the withdraw below) | the person (a member, not judging, previous deal ended) | create, + `space.hasDeals` the first time |
+| waiting | waiting | an Agree that isn't the last needed | a friend in `friends`, still a member, not yet agreed | `agreed.{me}` |
+| waiting | scheduled or running | the last needed Agree, or the last friend not agreeing leaves | that friend (or the leave) | — (derived); the job stamps `agreedAt`, `start` |
+| waiting | withdrawn | Withdraw, Edit, leaving the space or deleting the account | the person | `ended` withdrawn |
+| scheduled | running | the first period's lock passes | time | — |
+| scheduled, running | off | everyone still in it tapped Call Off | the person and each party still in the space | `off.{me}` each; the job writes `ended` off `'called-off'` at the last tap |
+| scheduled, running | off | a period it needs locks without the person (`'left'`), or with no party left (`'alone'`) | time | the job |
+| running | running | a period passes or is skipped | time | the job appends to `track` |
+| running | lost | a period it needs misses | time (its final time) | the job: `track`, `ended` lost |
+| running | won | the `count`-th pass | time | the job: `track`, `ended` won |
+| won, lost | settled | each pair marked | whoever was owed (any member, honor system) | `settled.{friend}` |
+
+Between a period's final time and the job's next run the app shows the end as **provisional** (§12.6): "The week of Nov 16 was 84%, under 90%. That ends your deal once it’s confirmed, within a few hours." A new deal, Same Again and the settle rows wait for the job's `ended`.
+
+### 12.6 Who decides, and how fresh
+
+- **The reminders job decides everything owed** (§12.11): it stamps `agreedAt`/`start`, records each finished period in `track` and writes `ended` won/lost/off with admin rights. Clients can't write any of those (the rules), so no client can mark itself won, erase a loss, or end a deal it's losing (withdrawing needs a friend still to agree and no `start` stamp; a crafted client can only harm its own waiting deal).
+- **Freshness**: the job looks at every open deal in a space with `hasDeals` on every run, night included (like the results writer). GitHub starts the hourly schedule every 1–4 hours in practice, so a period's result and a deal's end are confirmed **within a few hours** of the period's final time (a week's stored deadline; a month's completion). Until then the app shows the provisional state from what it can compute (`dealState` with the stored `track`, and, for the week the Space screen already loads, that week's own result). After **24 hours** without confirmation (`DEAL_LATE_MS`) it says "Deal results are running late. They’ll catch up." (the owner's sign to check the Actions tab, as for streaks).
+- The client and the job run the same pure `dealState` (`src/domain/deals.ts`); they can only differ when a week's stored lock or deadline differs from the computed one and the client lacks that doc (it has this week's and next week's), and then only in provisional text.
+
+### 12.7 Security rules
+
+Appended only: one function and one `||` at the end of the space's update chain, and a new `match /deals/{id}` block with its functions after the settlements block (inside `match /spaces/{spaceId}`, so it can reuse `lineText`, `keptText`, `validPer`, `isMember`, `spacePath`). Nothing else changes: every existing rule, helper and budget stays as it is (a function that isn't called costs nothing; the new space branch is evaluated only after every existing one has failed). Stakes, month and settlement rules are untouched, so old clients keep working for October exactly as today. The file's header comment gains §12 in its list of sections.
+
+**The space flag** (`marksDeals`, last in `allow update` of `match /spaces/{spaceId}`, after `finalizesPause()`):
+```
+function marksDeals() {
+  return changedOnly(['hasDeals']) && incoming().hasDeals == true && !('hasDeals' in existing())
+    && request.auth.uid in existing().memberIds;
+}
+```
+Every other branch lists the keys it may change, so none of them can touch `hasDeals`, and old clients' writes (field updates, never a whole-doc set) keep passing on a space that has it. `validNewSpace` is unchanged (a new space has no flag).
+
+**Deals** (sketch; the rules builder may restructure for cost, with the same meaning, as batch 2 did):
+```
+function dealPath(id) { return /databases/$(database)/documents/spaces/$(spaceId)/deals/$(id); }
+function dealIdOf(uid, seq) { return uid + '_' + string(seq); }
+
+// The lines as stakes' (§9.7): a 'group' line's text is used, an 'each' line's per-friend texts are; per-friend
+// entries for exactly the friends while either line is per friend.
+function validDealTerms(d) {
+  let rewardEach = d.rewardMode == 'each';
+  let penaltyEach = d.penaltyMode == 'each';
+  return d.rewardMode in ['group', 'each'] && d.penaltyMode in ['group', 'each']
+    && (rewardEach ? keptText(d.reward) : lineText(d.reward))
+    && (penaltyEach ? keptText(d.penalty) : lineText(d.penalty))
+    && d.per is map
+    && (rewardEach || penaltyEach
+        ? d.per.size() == d.friends.size() && validPer(d.per, d.uid, d.friends, rewardEach, penaltyEach)
+        : d.per.size() == 0);
+}
+
+// Proposed by its person, with every other member who doesn't judge, only once their previous deal ended
+// (getAfter: an Edit withdraws the old one in the same transaction).
+function newDeal(id) {
+  let d = incoming();
+  let space = get(spacePath(spaceId)).data;
+  let judges = space.get('judges', []);
+  let want = space.memberIds.toSet().difference([d.uid].toSet()).difference(judges.toSet());
+  return d.size() == 15
+    && d.keys().hasAll(['uid', 'seq', 'unit', 'count', 'rewardMode', 'penaltyMode', 'reward', 'penalty',
+                        'per', 'friends', 'agreed', 'off', 'settled', 'createdAt', 'ended'])
+    && isUser(d.uid) && d.uid in space.memberIds && !(d.uid in judges)
+    && d.seq is int && d.seq >= 1 && d.seq <= 9999 && id == dealIdOf(d.uid, d.seq)
+    && d.unit in ['week', 'month'] && d.count is int && d.count >= 1 && d.count <= 12
+    && d.friends is list && d.friends.size() >= 1 && d.friends.toSet().size() == d.friends.size()
+    && d.friends.size() == want.size() && want.hasAll(d.friends)
+    && validDealTerms(d)
+    && d.agreed == {} && d.off == {} && d.settled == {}
+    && d.createdAt == request.time && d.ended == null
+    && (d.seq == 1 || getAfter(dealPath(dealIdOf(d.uid, d.seq - 1))).data.ended != null);
+}
+
+// A friend in it agrees, once, for themselves, while it is in play and the job hasn't stamped its start.
+function agreesToDeal() {
+  let me = request.auth.uid;
+  let o = existing();
+  let d = incoming();
+  return o.ended == null && !('start' in o) && me in o.friends && !(me in o.agreed)
+    && changedOnly(['agreed']) && d.agreed.diff(o.agreed).affectedKeys().hasOnly([me])
+    && d.agreed[me] == request.time
+    && isMember(spaceId);
+}
+
+// Its person takes it back while some friend still in the space hasn't agreed (or none is left), and before the
+// job stamped its start (so a friend leaving and coming back can't reopen a running deal).
+function withdrawsDeal() {
+  let o = existing();
+  let members = get(spacePath(spaceId)).data.memberIds;
+  let need = o.friends.toSet().intersection(members.toSet());
+  return isUser(o.uid) && o.uid in members && o.ended == null && !('start' in o)
+    && changedOnly(['ended'])
+    && incoming().ended == {'outcome': 'withdrawn', 'at': request.time, 'by': o.uid}
+    && !(need.size() > 0 && o.agreed.keys().toSet().hasAll(need));
+}
+
+// Its person or a friend who agreed taps Call Off, once (no take-backs). Whether everyone did is the job's call.
+function callsOffDeal() {
+  let me = request.auth.uid;
+  let o = existing();
+  let d = incoming();
+  return o.ended == null && (me == o.uid || me in o.agreed) && !(me in o.off)
+    && changedOnly(['off']) && d.off.diff(o.off).affectedKeys().hasOnly([me])
+    && d.off[me] == request.time
+    && isMember(spaceId);
+}
+
+// Settled marks once it's won or lost, for friends who agreed (honor system: any member, as month settlements).
+// 7 slots: rules have no loops, and a set can't be indexed, so each agreed friend (a list) is checked in turn.
+function dealMark(m) { return m is map && m.size() == 3 && m.settled is bool && m.by == request.auth.uid && m.at == request.time; }
+function settlesDeal() {
+  let o = existing();
+  let d = incoming();
+  let ps = o.agreed.keys();
+  let n = ps.size();
+  let ch = d.settled.diff(o.settled).affectedKeys();
+  return o.ended != null && o.ended.outcome in ['won', 'lost'] && isMember(spaceId)
+    && changedOnly(['settled']) && ch.size() >= 1 && ch.hasOnly(ps)
+    && (n <= 0 || !(ps[0] in ch) || dealMark(d.settled[ps[0]]))
+    && (n <= 1 || !(ps[1] in ch) || dealMark(d.settled[ps[1]]))
+    && (n <= 2 || !(ps[2] in ch) || dealMark(d.settled[ps[2]]))
+    && (n <= 3 || !(ps[3] in ch) || dealMark(d.settled[ps[3]]))
+    && (n <= 4 || !(ps[4] in ch) || dealMark(d.settled[ps[4]]))
+    && (n <= 5 || !(ps[5] in ch) || dealMark(d.settled[ps[5]]))
+    && (n <= 6 || !(ps[6] in ch) || dealMark(d.settled[ps[6]]));
+}
+
+match /deals/{id} {
+  allow read: if isMember(spaceId);
+  allow create: if signedIn() && newDeal(id);
+  allow update: if signedIn() && (agreesToDeal() || withdrawsDeal() || callsOffDeal() || settlesDeal());
+  // Account deletion only: your own ended deal, once your profile is gone, newest first (so the chain stays whole).
+  allow delete: if signedIn() && isUser(existing().uid) && existing().ended != null
+    && !exists(/databases/$(database)/documents/users/$(existing().uid))
+    && !exists(dealPath(dealIdOf(existing().uid, existing().seq + 1)));
+}
+```
+- Clients can't write `agreedAt`, `start`, `track`, `checkedAt`, or an `ended` other than the withdrawal: every update branch lists what it changes. A deal's terms, length and friends never change after the create.
+- `ended.outcome` is read only after `ended != null` (an error in `&&` is false). Removing a `settled` entry is refused (`d.settled[k]` errors); unsettling writes `settled: false`.
+- **Budgets** (whole requests, measured in the emulator and recorded in `tests/rules/budget.test.ts`; estimates here, the rules builder records the measured values in the "As built" note):
+
+| Request (worst case) | Expected | Reads |
+|---|---|---|
+| Week plan 25 × 8 with the week fill / monthly plan 25 × 8 with `syncsPeriod` | **895 / 895, unchanged** (a test) | as today |
+| Add after the lock, the 25th full task, 120-entry log | **325, unchanged** | as today |
+| Cross-out, the 5th change of the 25th task | **482, unchanged** | as today |
+| Deal create: 7 friends, both lines per friend, previous deal through `getAfter` in an Edit's transaction (with the withdraw op) | ≈ 450–600 | 2 (+1 for the withdraw op) |
+| Space `marksDeals` (last in the chain, 8 members, a pause request in play) | ≈ 660–700 (the chain's other branches first, as `finalizesPause`'s 649) | ≤ 2 |
+| Agree (first branch) / Withdraw / Call Off (third branch) | ≈ 60 / ≈ 120 / ≈ 150 | 1 / 1 / 1 |
+| Settle, a together line of 7 in one write (fourth branch) | ≈ 250 | 1 |
+| Delete (your own ended deal, no profile) | ≈ 30 | 2 |
+
+  The propose transaction (space flag + create, or withdraw + create + flag) stays within 20 reads; every deal request leaves ≥ 7 spare reads.
+
+### 12.8 Domain (`src/domain/deals.ts`, `stakes.ts`, `decode.ts`)
+
+Pure, Node-runnable, explicit `.ts` imports. `deals.ts` imports `scoring.ts`, `schedule.ts`, `time.ts`, `pause.ts` and `stakes.ts` (for `DEALS_FROM_MONTH`); `stakes.ts` doesn't import `deals.ts` (no cycle).
+
+**Constants** (`deals.ts`): `DEALS_FROM_MONTH` (re-exported from `stakes.ts`, `'2026-11'`), `DEAL_MAX_COUNT = 12`, `DEAL_COUNTS = { week: [1, 2, 3, 4, 6, 8, 12], month: [1, 2, 3, 4, 6, 12] }`, `DEAL_MAX_SEQ = 9999`, `DEAL_RECENT_DAYS = 60`, `DEAL_NEWS_DAYS = 7`, `DEAL_PUSH_DAYS = 7`, `DEAL_LATE_MS = 24 h`, `DEAL_DEFAULT = { unit: 'week', count: 4 }`.
+
+**Ids and periods**
+- `dealId(uid, seq)` → `${uid}_${seq}`; `parseDealId(id) → { uid, seq } | null`; `dealPeriodKey(deal)` → `${uid}@${seq}` (the push keys' period: no `_`).
+- `nextPeriod(unit, id, n = 1)`: `addWeeks` / `addMonths`. `isPeriodId(unit, v)`: `YYYY-MM-DD` that is a Monday / `YYYY-MM`.
+- `DealClock { lockOf(periodId): number; finalOf(periodId): number }`; `dealClock(space, unit, known?: { weeks?: Record<WeekId, Week>; lists?: Record<MonthId, MonthlyList> })`: weeks: `boundsFor(space, id, known week).lockAt` / `.deadlineAt`; months: the lock of `weekIdsInMonth(id)[0]` (stored when known) / `monthEndsAtFor(space, id, known last week, known list)`.
+- `firstPeriodAfter(space, unit, t, clock)`: weeks: `w = weekIdFor(t, tz)`, `clock.lockOf(w) > t ? w : addWeeks(w, 1)`; months: `m = monthIdForWeek(weekIdFor(t, tz))`, `clock.lockOf(m) > t ? m : addMonths(m, 1)`.
+
+**Words shared by the app and the job** (en-US, pure): `dealLengthText(unit, count)` ("1 week", "4 weeks", "1 month", "3 months"); `periodLabel(unit, id)` ("the week of Nov 16" (`MMM d` of the Monday), "November" (`formatMonth`)); `positionText(unit, n, count)` ("Week 2 of 4", "Month 1 of 3"); `startPhrase(unit, start, nowMs, tz)` ("this week", "next week", "the week of Nov 9", "in December").
+
+**Terms**
+- `dealFriends(space, uid)`: current members but `uid` and `spaceJudges(space)`, in `memberIds` order (what `friends` must be).
+- `dealPairTerms(deal, friend) → { reward, penalty, rewardTogether, penaltyTogether } | null` (null when a line is per friend and `per[friend]` is missing).
+- `cleanDeal(input, friends) → DealInput` (texts trimmed, `per` only for `friends` with both texts, '' for a line that isn't per friend, `{}` when neither is) and `dealProblem(input, friends) → 'count' | 'fill-group' | 'fill-reward-each' | 'fill-penalty-each' | 'long' | 'no-friends' | null`; `dealProblemText(p)`: count "Pick how long: 1 to 12 weeks or months." · fill-group "Fill in what they owe you and what you owe them." · fill-reward-each "Fill in what each friend owes you, or make it the same for everyone." · fill-penalty-each "Fill in what you owe each friend, or make it the same for everyone." · long "Keep each one under 120 characters." · no-friends "Deals need a friend who plays. Invite one first." (the first three and the fifth are the stakes editor's texts, §9.7).
+- `lastPlayedDeal(deals, uid) → Deal | null`: the person's newest deal with outcome won, lost or off.
+- `sameAgain(last, friends) → { input: DealInput; missing: UID[] }`: `last`'s unit, count, modes and texts; `per` for `friends` that had an entry; `missing` = `friends` without one while a line is per friend (empty: Same Again proposes at once; else the editor opens on `input`).
+
+**State** (`dealState(deal, space, nowMs, clock, extra?: DealPeriod[]) → DealState`)
+```ts
+interface DealState {
+  phase: 'waiting' | 'scheduled' | 'running' | 'won' | 'lost' | 'off' | 'withdrawn'
+  needed: UID[]          // friends still in the space (who must agree)
+  waitingFor: UID[]      // waiting: needed friends without an Agree, in `friends` order
+  agreedAt: number | null
+  start: string | null   // the stamp, else firstPeriodAfter(agreedAt); waiting: firstPeriodAfter(now) (where it would start)
+  parties: UID[]         // scheduled on: agreed friends in membersAt(space, lockOf(start)) (before that lock: agreed and still members)
+  callOff: { asked: UID[]; waitingFor: UID[]; completeAt: number | null }
+  track: DealPeriod[]    // stored track, then `extra` periods that follow it (the job's new ones; the screen's live week)
+  passes: number
+  skips: number
+  current: string | null // running: the first period not yet in track; scheduled: start
+  position: number       // min(passes + 1, count)
+  end: DealEnd | null    // the stored `ended`, else what the walk determines (provisional)
+  provisional: boolean   // `end` comes from the walk, not from the job yet
+  pending: string | null // a period whose final time has passed but whose result isn't known (not in track or extra)
+  late: boolean          // pending for more than DEAL_LATE_MS
+}
+```
+- `needed` = `friends ∩ memberIds`. `agreedAt`: the stamp, else null unless `needed` is non-empty and all of `needed` agreed; then the latest of their Agrees and of `leftAt` of friends who left without agreeing after `createdAt`.
+- `callOff.asked` = the takers of `off`; the needed callers are the person and the parties who are current members; `completeAt` = the latest of their taps once all have tapped, else null.
+- **The walk** (only when agreed and not ended): for each period P from `start` (P1, P2, …): `L = lockOf(P)`; if `completeAt` and `completeAt < L` → off `'called-off'` at `completeAt`; if `nowMs < L` stop; if the person isn't in `membersAt(space, L)` → off `'left'` at `L`; if no party is in `membersAt(space, L)` → off `'alone'` at `L`; `F = finalOf(P)`; if `completeAt` and `completeAt < F` → off at `completeAt`; if `nowMs < F` stop; take P's result from `track` (or `extra`), else `pending = P` and stop; miss → lost (`period` P, its score) at `F`; pass → `passes + 1`, and at `count` → won (`period` P) at `F`; skip → next period. A period's final time is always before the next one's lock (§9.2 keeps every deadline at or before the next week's start), so this order is the order in time.
+- **Period results** (pure, from the scoring the app and the job already run):
+  - `weekDealPeriod(space, uid, data: WeekData, nowMs) → DealPeriod | null` (null before the stored deadline): no doc, or `uid` not in `week.members` → skip `missing`; paused → skip `paused`; `uid` judges it → miss, `score: null`, `why: 'judge'`; `computeWeek(…).members[uid]`: `skipped` → skip `excused`; else `score = round1e9(max(0, s − latePenalty × missedReviewsOf.length))`, `missed` = that count, pass when `score ≥ threshold − 1e-9`, `why: 'empty'` when `taskCount == 0`.
+  - `monthDealPeriod(uid, result: MemberMonthResult | undefined) → DealPeriod | null` (null while `!result.complete`): no result → skip `missing`; `finalScore != null` → pass/miss by `passed`, `score = finalScore`, `missed = missedReviews`; else `judged.length > 0` → miss, `why: 'judge'`; else skip `no-score`.
+- `dealPeriodsToLoad(deal, space, nowMs, clock) → string[]`: the periods the walk would need next, in order (after `track`, final, before any off at a lock), so the job loads only those.
+
+**Debts**
+- `DealDebtLine { dealId, subject, kind: 'reward' | 'penalty', what, together, debtors, creditors, keys: UID[] }` (shaped like §9.7's `DebtLine`, so `debtLineText`, `canSettleLine`, `settleLineHint` and `debtLineSubtitle` from `screens/components/month.ts` work on it); `dealDebtLines(deal, parties)`: won → reward lines (a group line: one line, every party a debtor; per friend: one line each), lost → penalty lines (likewise, parties as creditors), else []; `keys` = the parties on the line; `dealLineSettled(deal, line) → { settled; last?: DealMark }` (settled when every key's mark is `settled: true`; `last` the newest).
+
+**Month stakes cutover** (`stakes.ts`, additive; nothing existing changes)
+- `DEALS_FROM_MONTH = '2026-11'`; `monthHasStakes(monthId)` = `monthId < DEALS_FROM_MONTH`.
+- `stakesDebts(monthId, results, terms, tierRuns)`: `monthDebts(…)` for months before `DEALS_FROM_MONTH`; from it, only its `'tier'` debts (streak rewards). Every caller of `monthDebts` (the month view and the verdict) switches to it; `monthDebts` itself is unchanged.
+- `oldStakesMonth(space, nowMs, thisWeek?, monthly?) → MonthId | null`: `termsMonth(…)` while it is before `DEALS_FROM_MONTH` (the October window: October's stakes are read-only, §12.3), else null.
+
+**Decoding** (`decode.ts`): `decodeSpaceExtras` adds `hasDeals: true` when stored `true`. `decodeDeal(id, d, spaceId, toMs) → Deal | null`: null when `id` isn't `${uid}_${seq}` of the doc's own `uid` and `seq`, or `unit`, `count`, either mode, or `createdAt` is malformed; texts that aren't strings read ''; `per` entries without both strings, `friends` that aren't uids, and `agreed`/`off` entries without a time are dropped; a `settled` entry needs `{ settled: boolean, by: string, at: time }`; `ended`: `null`/absent → null, a valid withdrawn/won/lost/off shape → it, anything else non-null → `{ outcome: 'off', at: createdAt, reason: 'called-off' }` (over, nothing owed, so the chain still reads as ended); `agreedAt` a time, `start` per `isPeriodId`, `track` entries with a period id of the deal's unit, a known result and a number-or-null score (others dropped), `checkedAt` a time. Never throws (shared with the job).
+
+**Legacy oracles** (the job runs this branch's code on real data on every push):
+- `scoring.ts`, `stakes.ts`' existing exports, `schedule.ts`, `time.ts` and `pause.ts` don't change; `scoring.test.ts`' batch-2 oracle and every existing domain test pass unchanged.
+- New `stakes.test.ts` cases: `stakesDebts` equals `monthDebts` for 300 random months before `DEALS_FROM_MONTH` (the existing fixtures' generators), and keeps exactly the tier debts after.
+
+### 12.9 Data layer (`src/data/api.ts`, new `src/data/deals.ts`)
+
+The contract stubs are in `api.ts` (marked `// deals: TODO`); the data builder replaces them with the hooks and re-exports, keeping the signatures.
+
+**Hooks**
+- `useDeals(space): Live<DealsView>`: without `space.hasDeals`, `{ open: {}, ended: [] }` at once and no reads. With it, two listeners combined (`combine`, store key `${uid}|deals|${spaceId}`): `deals where ended == null` → `open` by `uid` (a person with two, which the rules prevent, keeps the higher `seq`; deals of people who aren't members any more are kept, the screens decide), and `deals where ended.at >= T` with T = the start of the day 60 days ago (so the key and query are stable for a day) → `ended`, without withdrawn ones, newest `ended.at` first. Decoded by `decodeDeal` (server timestamps as the SDK's estimate). A refusal (rules not published yet) is `error` with `MSG.noAccess`; the card then shows "Nothing at stake" without buttons and the Stakes screen's Your Deal section "Can’t load deals" · the message (§12.10).
+- `useDealHistory(space): Live<Deal[]>`: the whole collection while Past Deals is open (`${uid}|dealHistory|${spaceId}`), sorted by person then `seq` descending; none without `hasDeals`.
+- `forgetSpace` (leave, join) also drops `${uid}|deals|${spaceId}` and `${uid}|dealHistory|${spaceId}`.
+
+**Writes** (all but `settleDeal` first make one quick server read, `requireServer`, so they fail at once offline with `MSG.offline`; each re-checks what it can on the device first, then decides inside a transaction on fresh reads):
+- `proposeDeal(space, input, { replace? }) → Deal`:
+  1. `cleanDeal` + `dealProblem` → its text; you judge → "You’re judging, so there’s no deal to make. Turn off Only Rate Friends to play."; no friends → "Deals need a friend who plays. Invite one first."
+  2. One server query `deals where uid == me` (transactions can't query) → your latest `seq` L (0 when none) and doc.
+  3. A transaction: re-read the space (you a member, not a judge; `friends = dealFriends(space, me)`, recheck the problem against them), re-read `_{L}` and `_{L+1}`. `_{L+1}` exists → another device was quicker: run steps 2–3 once more, then `MSG.generic`. `_{L}` still in play: when it is `replace` and still waiting (`dealState` phase waiting, no `start`) → `update` its `ended = { outcome: 'withdrawn', at: serverTimestamp(), by: me }` in this transaction; else "Your last deal isn’t over yet. You can make a new one once its result is in." (in play, or the job hasn't confirmed its end). Then `set` `_{L+1}` = `{ uid, seq, unit, count, rewardMode, penaltyMode, reward, penalty, per, friends, agreed: {}, off: {}, settled: {}, createdAt: serverTimestamp(), ended: null }`, and `update(space, { hasDeals: true })` when the space lacks it.
+  4. Resolves with the new deal as written (`createdAt` the device's estimate). A refusal is re-checked once (your last deal in play → its message; you no longer a member → "You’re no longer in this space."), else "Couldn’t propose the deal. Try again."
+- `withdrawDeal(space, dealId)`: the deal is yours and in play; a transaction re-reads the space and the deal: already ended → resolves (a retry); `start` stamped or everyone needed agreed → "Everyone agreed, so it can’t be withdrawn. Ask everyone to call it off."; else `update` `ended` as above. Refused → "Couldn’t withdraw it. Try again."
+- `agreeToDeal(space, dealId)`: a transaction on the space and the deal: you're not in `friends` → "This deal isn’t with you."; withdrawn → "This deal was withdrawn."; otherwise ended → "This deal has ended."; already agreed → resolves without writing; `start` stamped → resolves (it's under way without you: you left and came back); else `update(ref, new FieldPath('agreed', me), serverTimestamp())`. Refused → re-read once and map as above, else "Couldn’t agree. Try again."
+- `callOffDeal(space, dealId)`: you're its person or a friend who agreed, it's in play and fully agreed (`dealState` scheduled or running); already tapped → resolves; else `update(ref, new FieldPath('off', me), serverTimestamp())`. Messages: "This deal has ended." · "You’re not in this deal." · "Couldn’t call it off. Try again."
+- `settleDeal(space, dealId, friends, settled)`: one `updateDoc` with `new FieldPath('settled', f)` = `{ settled, by: me, at: serverTimestamp() }` for each friend of the line (a together line is one tap). Queues offline like `settlePairs` (the check shows at once). Refused → `humanError(e, MSG.noAccess)`.
+- `saveStreakRewards(space, tiers)` (`src/data/stakes.ts`): tiers validated and sorted with `cleanStakes`' tier messages ("Up to 5 streak rewards." · "Each streak length can only be used once." · "A streak is 2 to 36 months." · "Fill in each streak reward." · "Keep each one under 120 characters."); a transaction re-reads the space and your stakes doc and writes `{ rewardMode: 'group', penaltyMode: 'group', reward: space.reward, penalty: space.penalty, per: {}, tiers, updatedAt }` (a create with `agreed: {}`, or an update of exactly those keys; nothing when it already holds exactly that). Lines no longer count from `DEALS_FROM_MONTH`, and plain house lines keep every friend able to agree (a per-friend line without your text for a newcomer would block their Agree). Friends agree with `agreeToStakes` (unchanged), which now only matters for streak rewards. The app offers both only outside the October window (§12.3, `oldStakesMonth` is the screens' check): the data layer has no date rule of its own, since the data tests run on the real clock and the rules don't check it either.
+- `saveMyStakes`: no longer called by the app (kept for its tests; the rules still accept it, as from old clients).
+- `leaveSpace` (`src/data/spaces.ts`): before the leave, best effort, withdraws your deal in that space if it is waiting (a failure is ignored; leaving never fails over it). An agreed deal ends by itself (`'left'`). `removeMember` doesn't touch the removed person's deals.
+- `updateSpace`: unchanged (the month freeze included). In the October window Settings shows the house stakes read-only (§12.10); the data layer and the rules still accept an owner's edit, as from old clients.
+- `convert.ts`: `toSpace` gets `hasDeals` through `decodeSpaceExtras`; `toDeal(snap)` = `decodeDeal(snap.id, snap.data(), spaceId, toMs)`.
+
+**Messages** (thrown as given; tests assert them): the `dealProblemText`s · "You’re judging, so there’s no deal to make. Turn off Only Rate Friends to play." · "Your last deal isn’t over yet. You can make a new one once its result is in." · "Everyone agreed, so it can’t be withdrawn. Ask everyone to call it off." · "This deal isn’t with you." · "This deal was withdrawn." · "This deal has ended." · "You’re not in this deal." · "You’re no longer in this space." · "Couldn’t propose the deal. Try again." · "Couldn’t withdraw it. Try again." · "Couldn’t agree. Try again." · "Couldn’t call it off. Try again." · `MSG.offline`.
+
+### 12.10 Screens and copy
+
+Copy is plain, warm, short, second person, curly apostrophes, sentence case for text, Title Case for buttons and rows; no pronouns for people (repeat the name). `{90}` is `space.threshold`; `{length}` is `dealLengthText` ("4 weeks"); `{when}` is `deadlineText` (§9.2); `{period}` is `periodLabel` ("the week of Nov 16", "November"; capitalised at a sentence start); `{who}` lists first names ("Sam", "Sam and Kim", "3 friends" from 4). New glyph `handshake` (`src/ui/icons.tsx`). All copy and models are pure in `src/screens/stakes/deals.ts` (unit-tested in `deals.test.ts`).
+
+**The Space screen's stakes card** (`StakesCard`, same place, the whole card still pushes the Stakes screen). It reads the space, `useDeals(space)` and, in the October window, `useStakes(space)` (for October's rows). It never waits: while deals load (or fail) it shows your block as "Nothing at stake" without buttons, then updates.
+
+*Your block* (`dealCard(...)`, first that applies):
+- **Alone** (no other member): "Stakes need witnesses. Invite at least one friend." + **Invite** (as today).
+- **Judging this week** and no deal in play: handshake · "Nothing at stake" · "You’re judging, so nothing’s at stake. Turn off Only Rate Friends to make a deal."
+- **No deal in play, none ended in the last 7 days**: handshake · "Nothing at stake" (October window: "Nothing at stake after October") · "Make a deal: what you get for hitting {90}%, what you owe if you miss, and for how long." (October window: "From November, stakes don’t renew on their own. Make a deal: …") · **Make a Deal** (prominent) and, when `lastPlayedDeal` exists, **Same Again** (small) with "Last time: {length} · {reward text or ‘Different per friend’}".
+- **Waiting**: handshake · "Your deal: waiting for {who}" · "{length} at {90}%+. Starts {startPhrase} if {Sam agrees | they agree} before {when(lock of that period)}." (months: "… Starts in December if {Sam agrees | they agree} before its first lists lock."), with an avatar stack (agreed people full, the rest at 40%). Everyone needed left: "Your deal: nobody left to agree" · "Withdraw it and make a new one."
+- **Scheduled**: handshake · "Your deal starts {startPhrase}" · "{length} at {90}%+ each. It counts from {when(lock)}." (months: "It counts from November’s first lists.")
+- **Running**: handshake · "Your deal" · "{Week 2 of 4} · all {90}%+ so far" (no pass yet: "{Week 1 of 4} · every week needs {90}%+", months "every month needs {90}%+"; with skips, " · 1 week added" / " · 2 weeks added" / " · 1 month added"). Then, at most one: pending "Results for {period} come in within a few hours." / late "Deal results are running late. They’ll catch up." / a provisional miss "{Period} was {84}%, under {90}%. That ends your deal once it’s confirmed, within a few hours." (from `track` + the Space screen's own week: when the pending period is this week and its deadline passed, `weekDealPeriod` on the loaded week) / a provisional win "That’s {4 weeks} at {90}%+. It’s confirmed within a few hours." / Call Off asked by you "You asked to call it off. Waiting for {who}." / asked by someone else "{Sam} asked to call it off. It’s off once everyone taps Call Off." + **Take a Look**.
+- Rows under the waiting, scheduled and running lines (as today's `StakesItems`): trophy "Make it, they owe you" · the reward (one text, or grouped "Sam and Kim: Lunch · Ana: Coffee", at most 3 groups, then "and 2 more"); flame "Miss one, you owe them" · the penalty, likewise.
+- **Won** (until 7 days after its end): handshake · "You made it: {length} at {90}%+" · "{Sam and Kim} owe you: {Dinner, on us}" (per friend: "Collect from Sam and Kim"); everything settled: "All settled". **Same Again** and **New Deal**.
+- **Lost**: handshake · "Your deal ended: {84}% in {period}" (judged: "Your deal ended: you judged {period}"; 0% with nothing planned reads "0% in {period}") · "You owe {Sam and Kim}: {Coffee for a week}" (per friend: "Pay up to Sam and Kim"); all settled: "All settled". **Same Again** and **New Deal**.
+- **Off**: handshake · "Your deal is off" · called-off "Everyone called it off, so nothing’s owed." / alone "Everyone in it left, so nothing’s owed." **New Deal** (and **Same Again**).
+
+*News line* (one, the first that applies; tap opens the Stakes screen at that deal):
+1. a friend's deal waits on your Agree: accent dot "New deal from {Lena}" ("{Lena} and {Sam}") + **Take a Look**;
+2. someone in a deal you're in asked to call it off and you haven't: "{Lena} wants to call off {Lena}’s deal" (your own deal is the block above) + **Take a Look**;
+3. a friend's deal you're a party of ended in the last 7 days: "{Lena} made it: you owe {Dinner, on us}" / "{Lena}’s deal ended: {Lena} owes you {Coffee for a week}" (per friend: their own text) / "{Lena}’s deal is off" — with an xmark (per device `dealSeen.${spaceId}.${dealId}`).
+
+*October window* (`oldStakesMonth` not null), under your block: "October’s stakes" with today's two rows of what counts for you in October (`stakesCard`'s rows, read-only) and, when you have a deal in play, the line "October’s stakes count too, for October." No Agree, Edit, house notice or "Add your stakes" lines.
+
+**The Stakes screen** (`StakesScreen`, "Stakes", inline; trailing **Make a Deal** glass `plus` when you can make one). Sections in order:
+1. *October’s stakes* (October window only): your October rows and each friend's rows as they apply to you (today's rows, read-only), footer "These count for October, as agreed by now. From November nothing renews on its own: make a deal." Old months settle in the month view, as before.
+2. *Your Deal*: in play → one row (handshake) "{length} at {90}%+" with the state's line as subtitle, chevron → `DealScreen`; none → **Make a Deal** and **Same Again** rows, footer "Pick what friends owe you if every week (or month) hits {90}%, what you owe if one doesn’t, and for how long. It starts once everyone agrees." Judging: "You’re judging, so there’s no deal to make. Turn off Only Rate Friends to play."
+3. *Waiting on You* (only when any): each friend's deal that needs your Agree or your Call Off: rows "{Lena}’s deal: {length} at {90}%+" with the terms as they apply to you ("{Lena} makes it, you owe" · "Dinner, with everyone" / "Lunch"; "{Lena} misses one, you get" · "Coffee for a week, shared with everyone" / "A coffee"), then **Agree to {Lena}’s Deal** (full width) or **Call Off** (destructive); footer "Starts {startPhrase} once {who} agree." / "Waiting for {Sam} and you." / "{Lena} asked to call it off. It’s off once everyone taps Call Off."
+4. *To Settle* (only when any): every debt line of a won or lost deal from `ended` that involves you (as debtor or creditor), unsettled first, with a check circle (enabled per `canSettleLine`): titles as §9.7's month view ("{Sam and Kim} owe you: Dinner, on us", "You owe {Lena}: A coffee", "{Lena} owes you: Coffee for a week"), subtitles "{Lena}’s deal, {4 weeks}" · "Together" (a together line with ≥ 2 owing) · "Settled · marked by you, Nov 30" or the hints "Only {Lena} can mark this." / "Only the people {Lena} owes can mark this." / "Only the people you owe can mark this." / "{Lena} has left, so you can mark this yourself."; accessible name "Settled: {title}". Tap → `settleDeal(…, line.keys, !settled)`; failure toast "Couldn’t update". Footer "Nothing is paid in the app. Settle up in real life, then whoever was owed marks it Settled."
+5. *Friends’ Deals*: each current friend (not you), join order: their deal in play → row "{Lena}" · "{Week 2 of 4} · all {90}%+ so far" / "Waiting for {Sam}" / "Starts next week" → `DealScreen`; none → "{Sam}" · "Nothing at stake".
+6. *Streak Rewards* (§9.8): your tiers in force (sparkles "3 months in a row" · text), "Your new streak rewards" when your doc's differ, a status per friend ("Agreed" / "Waiting"), **Edit Streak Rewards** (hidden in the October window and for a judge); for each friend whose new streak rewards wait on your Agree: their tiers and **Agree to {Lena}’s Streak Rewards** (`agreeToStakes` with the friend's pair terms; confirm "Agree to {Lena}’s streak rewards?" with "3 months in a row: you all owe “Weekend away”, together." per tier, **Agree**; toast "You agreed" · "They count once everyone agrees."). Footer "Hit {90}% this many months in a row and your friends owe you this too, together, deal or not. A month you sit out doesn’t break a streak." plus "Your streak: 3 months in a row." (latest results, ≥ 2).
+7. A row **Past Deals** (clock icon) → `DealHistoryScreen`.
+8. *House Stakes*: the space's texts (trophy "If you make it" · reward; flame "If you miss" · penalty); footer "New deals start from these. Only {Lena} can change them." (owner: "New deals start from these. Change them in Settings."; October window: "October’s house stakes are set. They count for October, as agreed.")
+
+**`DealScreen`** (one deal; title "{Lena}’s Deal" or "Your Deal", inline): a hero (handshake, "{length} at {90}%+", the state line as on the card); section *Terms*: trophy "Make it, they owe you" / "{Lena} makes it, you owe" · text(s); flame likewise; *Weeks* (or *Months*): one row per period from `start` (or "Starts {startPhrase}" before): "{Week of Nov 2}" · "93%" with a check glyph (pass), "84%" with the 0 glyph (miss), "Paused · a week added", "Skipped · a week added" (excused), "Not in it · a week added" (missing), "Judge · counts as a miss", "Nothing planned · 0%", "{87%} · 1 missed review" (when `missed`), "In progress" (current), "Checking…" (pending), then the remaining ones plain ("Week of Nov 23"); *Friends* (waiting): each friend "Agreed" / "Waiting" / "Left"; *Settle* (won/lost): its debt lines as on the Stakes screen; actions: your waiting deal → **Edit Deal** (opens the editor prefilled; saves with `replace`) and **Withdraw Deal** (destructive); an agreed deal you're in → **Call Off Deal** (destructive) or "You asked to call it off." / "Everyone called it off. It’s confirmed within a few hours."; footers by state: waiting "Starts {startPhrase} if {who} {agree|agrees} before {when}. Friends see it on their stakes card." · scheduled "Starts {startPhrase}. Every week needs {90}%; the first one under ends it and you owe your penalty." · running (weeks) "Every week needs {90}%, minus 5 for each friend you don’t review that week. A paused or skipped week adds one more." · (months) "Every month needs {90}%. A month with no score, like one that was all paused, adds one more. A month you only judge counts as a miss." · ended "Ended {Mon d}." (+ "Same Again proposes it with today’s friends.").
+
+**`DealEditorSheet`** ("New Deal" / "Edit Deal"; xmark Cancel, checkmark **Propose**; Cancel with changes asks **Discard Changes** / **Keep Editing**):
+1. "How long?": segmented **Weeks** | **Months**; a row **Length** with a menu of `DEAL_COUNTS[unit]` ("1 week" … "12 weeks"); footer weeks "Every week has to reach {90}%. Your first week under ends the deal." / months "Every month has to reach {90}%. Your first month under ends the deal." + " It starts {startPhrase} if everyone agrees before {when}." (months: " It starts in {December}, the first month whose lists haven’t locked yet.")
+2. "If you make it, they owe you…" — segmented **Same for Everyone** | **Different per Friend**; one field (placeholder "Dinner, on them"; footer "One thing from the whole group, together.") or a field per friend ("{Sam} owes you…"; footer "Each friend owes you their own.").
+3. "If you miss, you owe them…" — likewise ("Coffee for everyone, for a week" · "One thing you give the group." / "You owe {Sam}…" · "You owe each friend their own.").
+4. Footer: "Friends have to tap Agree. Nothing’s at stake until they all do." (Same Again with missing texts adds "Add what {Kim} owes you." / "Add what you owe {Kim}.")
+- Prefill: Same Again's input; Edit: the waiting deal's; else the house stakes on Same for Everyone, 4 weeks. Switching a line's mode prefills its empty fields from the other mode (as today). Propose disabled while `dealProblem` isn't null; the problem text shows under the section it's about.
+- Success: haptic, close, toast "Deal proposed" · "Waiting for {who} to agree." (Edit: "Deal updated" · "Friends have to agree again."). Failure: the message under the button, the sheet stays.
+
+**Confirms and toasts**
+- Same Again: "Same deal again?" · "{4 weeks} at {90}%+ each. Make it: {Dinner, on them}. Miss one: {Coffee for a week}. Friends have to agree again." (per friend: "Make it: what each friend owed you last time. …") · [Cancel] [Propose] → toast as Propose.
+- Agree: "Agree to {Lena}’s deal?" · "{4 weeks}, each at {90}%+." + "If {Lena} makes it: you all owe “{Dinner, on us}”, together." / "If {Lena} makes it: you owe “{Lunch}”." + "If {Lena} misses one: the group gets “{Coffee for a week}”." / "If {Lena} misses one: you get “{A coffee}”." + "It starts {startPhrase} once {Kim} agrees too." / "It starts {startPhrase}." · [Cancel] [Agree] → success haptic, toast "You agreed to {Lena}’s deal" · "It starts {startPhrase}." / "It starts once {Kim} agrees too."; failure toast "Couldn’t agree" with the message.
+- Withdraw: "Withdraw your deal?" · "Friends won’t be asked anymore, and nothing’s at stake until you make a new one." · [Keep It] [Withdraw] (destructive) → toast "Deal withdrawn".
+- Call Off (yours): "Call off your deal?" · "It ends only if {who} call it off too. Then nothing’s owed. You can’t take this back." · [Keep Going] [Call Off] (destructive) → toast "Asked to call it off" · "It’s off once {who} agree." (the last tap: "Deal called off" · "It’s confirmed within a few hours."). A friend's: "Call off {Lena}’s deal?" · "It ends only if everyone in it calls it off. Then nothing’s owed." · [Keep Going] [Call Off].
+- Failure toasts: "Couldn’t propose the deal" / "Couldn’t withdraw it" / "Couldn’t call it off" with the message.
+
+**`DealHistoryScreen`** ("Past Deals", inline): one section per person (you first, then members in join order, then former members by name or "A former member"), newest first, withdrawn ones left out: "{4 weeks} · Made it" · "Nov 2 – Nov 28 · Dinner, on us"; "{3 months} · Ended in month 2" · "84% in December · Coffee for a week"; "{2 weeks} · Called off"; "{4 weeks} · Off" · "{Lena} left"; in play "{4 weeks} · Week 2 of 4" · "All {90}%+ so far" / "Waiting for agreement"; tap → `DealScreen` (its debt lines can be settled there). Empty: "No deals yet" · "Deals you and your friends make show up here."
+
+**`StreakRewardsSheet`** (replaces `StakesEditorSheet`, which goes): "Streak Rewards"; rows "3 months in a row" with a text field, swipe to delete, **Add Streak Reward** (hidden at 5) → "How many months in a row?" with the unused `TIER_CHOICES`; footer `TIERS_FOOTER`; Save → `saveStreakRewards`; toast "Saved" · "Counts as soon as {who} agree." / "Counts now." (as today's `saveMessage`, for the tiers).
+
+**Elsewhere**
+- Space Settings: the house stakes keep their place. Owner footer "New deals start from these. They don’t count on their own." (October window: fields read-only, footer "October’s house stakes are set. You can change them from November; new deals start from them."). Save toast "Saved" · "New deals start from these." Others: read-only rows, footer "Only {Lena} can change the house stakes. New deals start from them." The row **Your Stakes** becomes **Deals and Stakes** (handshake) → the Stakes screen. The judge toggle's confirm adds, when you have a deal in play: weeks "Your deal is running: weeks you judge count as a miss." / months "Your deal is running: a month you only judge counts as a miss."
+- Create space: the house-stakes fields stay (required by the rules); footer "New deals start from these. Deadlines run on Berlin time." Join preview footer: "After you join, make a deal with your friends. Deals here start from these."
+- Month view, from `DEALS_FROM_MONTH`: debt lines from `stakesDebts` (streak rewards only); no "owes" verdict line and no "nothing’s owed" line (`verdictText` returns null); a complete month ends with the footnote "Deals are settled on the Stakes screen." October and earlier: unchanged.
+- Spaces card's verdict line (`verdictStatus`), from `DEALS_FROM_MONTH`: "{November}: cleared the bar" / "{November}: missed by 4 points" (Overview's wording, §6.5); null without a score. The card gains no deals line (no listener per card); pushes and the Space screen cover it.
+- Overview, Goals, Friends: unchanged.
+
+### 12.11 Reminders and the job
+
+**Dormant without deals.** Everything below runs only for a space with `hasDeals`; every other space is read, decided and sent exactly as before (the same reads, keys, windows and copy; §12.15's checks prove it). The only behaviour change for spaces without deals is for **future months**: the verdict of `DEALS_FROM_MONTH` and later, and `house`/`stakes` notes made once `termsMonth` is `DEALS_FROM_MONTH` or later (below), none of which exists before November 2026.
+
+**Deal results** (`ensureDeals(space, load, stored)`, `scripts/reminders.ts`, right after `ensureScores`, before the send-time mute, in its own `.catch` (log, `summary.errors++`), so night runs confirm results too):
+1. `load.dealsOpen()`: `deals where ended == null` (one query; empty = 1 read). Each doc through `decodeDeal`; an undecodable one is logged and skipped.
+2. For each deal, in `uid`, `seq` order: the clock from the loader's stored week docs and lists (`load.period`, cached; computed when missing). Not fully agreed → nothing (waiting deals cost no more reads). Fully agreed without a stamp → stamp `agreedAt` and `start`.
+3. The periods it needs (`dealPeriodsToLoad`): weeks → `load.week(id)` → `weekDealPeriod`; months → the month's weeks and list (`load.week`, `load.monthly`) → `computeMonth` → `monthDealPeriod`. At most `DEAL_LOADS_PER_SPACE = 4` period loads per space and `DEAL_LOADS_PER_RUN = 16` per run (a month is one load; loads the results writer already made in this run are free); the rest wait for the next run.
+4. `dealState` with those periods as `extra` → the new `track` entries and, when determined, `ended`. One transaction per deal re-reads it: ended meanwhile (a withdrawal) → nothing; else `update` only `track` (the stored entries plus the new ones, never rewritten), `agreedAt`/`start` when missing, `ended` when determined, and `checkedAt = Timestamp.fromMillis(nowMs)`. Times: `Timestamp.fromMillis` of the domain's numbers (`agreedAt`, `ended.at`), so a rerun writes the same.
+5. **People without a profile** (`knowProfiles`, read once per run, only for the people of open deals): a deal of someone without a profile (a deleted account) that is waiting is deleted at once; one that is scheduled or running is decided as usual and deleted when it ends (no `deal-end` push about it); and when one is deleted, that person's other ended deals in the space go too (`where('uid', '==', …)`, admin deletes).
+6. Dry run: logs what it would write. Summary gains `deals` (deal docs updated) and `dealsEnded`.
+
+**Pushes** (`scripts/reminders-plan.ts`; two new kinds, event pushes: only 09:00–21:00 local and never 00:00–08:00, open `./?space=<id>`, tag `stakes-<space>`, urgency normal; keys `${spaceId}_${uid}@${seq}_${kind}_${to}`, whose period has no `_`):
+- `deal`: to each friend in a waiting deal who is still a member and hasn't agreed, daily 09:00–21:00 from `createdAt` until `createdAt + 7 days`; `final` once they agreed or the deal isn't waiting. "New deal from {Lena}" · "{Lena} wants a deal in {Film Club}: {4 weeks} at {90}%+. Take a look, and tap Agree if you’re in."
+- `deal-end`: when a deal ended won, lost or off (not withdrawn), to its person and every party who are current members, from `laterAwakeAt(ended.at, tz)` until `ended.at + 3 days`:
+  - person, won: "You made it: {4 weeks} at {90}%+" · "Your deal in {Film Club} is done. Collect from {Sam and Kim}: {Dinner, on us}." (per friend: "… Collect from Sam and Kim.")
+  - person, lost: "Your deal ended" · "{The week of Nov 16} in {Film Club} was {84}%. Pay up to {Sam and Kim}: {Coffee for a week}." (per friend: "… Pay up to Sam and Kim."; judged: "You judged {the week of Nov 16} in {Film Club}, so it counts as a miss. Pay up …")
+  - person, off: "Your deal is off" · called-off "Everyone in {Film Club} called it off. Nothing’s owed." / alone "Everyone in your deal left {Film Club}, so nothing’s owed." (left: none: they left)
+  - party, won: "{Lena} made it" · "{4 weeks} at {90}%+ in {Film Club}. You owe {Lena}: {Dinner, on us}." (their own text when per friend)
+  - party, lost: "{Lena}’s deal ended" · "{Lena}’s {week of Nov 16} in {Film Club} was {84}%. {Lena} owes you: {Coffee for a week}." (months: "{Lena}’s {November} in …"; judged: "{Lena} judged {the week of Nov 16} in {Film Club}, so it counts as a miss. {Lena} owes you: …")
+  - party, off: "{Lena}’s deal is off" · called-off "Everyone called it off. Nothing’s owed." / left "{Lena} left {Film Club}, so nothing’s owed."
+- Loading: in a space with `hasDeals`, during its event hours: `load.dealsRecent()` = `deals where ended.at >= now − 3 days` (one query) beside the open ones already read; `dealCandidates(space, open, recent, nowMs) → { kind, deal, to, key, opensAt, expiresAt }[]`; their sent-log keys are read with the others'; names come from the profiles already loaded (plus the people of those deals). `SpaceInput` gains `deals?: { open: Deal[]; recent: Deal[] }`; without it the planner does exactly what it did.
+- No push for Withdraw, Agree, Call Off taps or settling (the card shows them).
+
+**From `DEALS_FROM_MONTH`** (every space; identical before):
+- Verdict (`decideVerdict`) for a month `≥ DEALS_FROM_MONTH`: debts from `stakesDebts`; passed "You made it: {93%}" (with a tier reached and a streak ≥ 2: "{4} months in a row: {93%}") · "{November} in {Film Club} is done." + " Collect your streak reward: {Weekend away}." / " Collect your streak rewards: {A and B}." when tiers are owed; missed "You fell short: {84%}" · "{November} in {Film Club} is done." Skips as today.
+- `house`: a note whose `termsMonth(space, note.at, …)` is `DEALS_FROM_MONTH` or later sends nothing (`final` for everyone): house stakes no longer change what anyone owes.
+- `stakes`: a change whose `termsMonth(space, updatedAt)` is `DEALS_FROM_MONTH` or later is about streak rewards: sent only to a friend whose agreement's tiers differ from the doc's (`sameTiers`), as "New streak rewards from {Lena}" · "{Lena} has new streak rewards in {Film Club}. Take a look, and tap Agree if you’re in."
+
+**Reads** (estimates; the data builder measures and records them as in §9.11): a space without deals: unchanged (steady night 2, day 3, as today). With deals: +1 a run (the open query), +1 during its day (recent ends), and when a period closes, that period's load (shared with the results and scores writers when it is the same week or month).
+
+`REMINDER_TIMES` (Profile's Notifications footer): "… A space with its own times follows them, and you hear when a friend needs your OK or a deal ends. Shared goals remind you to check in as each week ends."
+
+### 12.12 Help and intro
+
+Within the 700-word cap; `content.test.ts` counts **696** words on the usual times (697 today) and **699** on its custom times (700 today); every paragraph ≤ 190 characters. Section titles unchanged.
+- spaces: "Each space has house stakes, set by the owner. You can also set your own reward and penalty." → "Make a deal with friends: your reward, your penalty, and how many weeks or months it runs." · "Your stakes count as soon as friends tap Agree; a line that’s the same for everyone needs all of them." → "It starts when every friend taps Agree. Every week or month in it needs {90}%; the first miss ends it and you owe your penalty." · "A month’s stakes are set when it ends." → "Make it to the end and they owe you your reward. Then nothing’s at stake until a new deal."
+- review: "Every friend you don’t review costs you {5 points} off your month." → "… off your month, and off that week in a deal."
+- scores: "Your week’s score comes from your friends’ marks: Done counts fully, Half counts half. If nobody reviews you, your own ticks count instead." → "Your week’s score comes from your friends’ marks; if nobody reviews you, your own ticks count." · "Hit {90}% for the month and your friends owe you your reward. Miss it and you owe them your penalty." → "In a weekly deal, a paused or skipped week adds one more." · "Hit {90}% several months in a row for streak rewards. Sitting a month out doesn’t break a streak; a month under {90}% starts it over." → "Hit {90}% several months in a row for streak rewards; a month under {90}% starts it over." (the streak editor's footer keeps "A month you sit out doesn’t break a streak.")
+- The tests change accordingly: drop the checks for "house stakes, set by the owner", "count as soon as friends tap Agree", "the same for everyone needs all of them", "A month’s stakes are set when it ends.", "Hit 90% for the month" (and its 80% variant), "your friends owe you your reward" and the exact 5-point line; add checks for "Make a deal with friends", "how many weeks or months", "every friend taps Agree", "the first miss ends it", "nothing’s at stake until a new deal", "and off that week in a deal", "a paused or skipped week adds one more", "a month under 90% starts it over", and that `RULES.threshold` flows into the deal paragraph (80% variant). `REMINDER_TIMES` as §12.11.
+- Intro (`INTRO_VERSION` stays: a precision): welcome "Plan your week, let friends review it on Friday, and make deals on how you do." · month page (title unchanged, "Hit 90% and they owe you") "Make a deal for a few weeks or months. Keep each one at 90% and they owe you; miss one and you owe them." (two sentences, contains "90%").
+
+### 12.13 Leaving and account deletion
+
+- `leaveSpace`: withdraws your waiting deal there first (best effort); an agreed one ends by itself ('left'). Your Agrees, Call Off taps and Settled marks in friends' deals stay (they are the friends' record; you show as "A former member" once your profile is gone).
+- `deleteMyAccount` (§11.12's order, two new steps):
+  - after the friend codes and **before leaving the spaces** (still a member, so the reads are allowed): for each space with `hasDeals`, list your deals (`where('uid', '==', me)`), withdraw the one still waiting, and tap Call Off on an agreed one (your part; it ends 'left' anyway when its next period locks without you); keep the list of your deal ids in memory;
+  - **after the profile** (with friends, scores and showcase): delete your ended deals from that list, newest first (the rules allow it once your profile is gone, and only the newest of your chain at a time); a refusal is ignored (an agreed deal still running, or a retry that lost the list after leaving), since the job deletes the deals of anyone without a profile once they end (§12.11, step 5).
+  - Each step is idempotent; an interrupted deletion leaves at most deals the job removes later. The data tests interrupt it between the two steps and check that nothing of yours is still asking anyone to agree.
+
+### 12.14 Module map additions (§3)
+
+| Path | Owner | Notes |
+|---|---|---|
+| `src/domain/types.ts` | contract | Additive (written by the contract): `Space.hasDeals`, `DealUnit`, `DealOutcome`, `DealOffReason`, `DealEnd`, `DealResult`, `DealNote`, `DealPeriod`, `DealMark`, `DealTerms`, `DealInput`, `Deal`, `DealsView`. |
+| `src/domain/deals.ts` (+ `deals.test.ts`); `stakes.ts` (`DEALS_FROM_MONTH`, `monthHasStakes`, `stakesDebts`, `oldStakesMonth`); `decode.ts` (`decodeDeal`, `hasDeals`) | domain | §12.8. Pure; the job runs them. |
+| `src/data/deals.ts`; `api.ts`, `stakes.ts` (`saveStreakRewards`), `spaces.ts` (leave, the October house-stakes refusal), `auth.ts` (`deleteMyAccount`), `convert.ts`, `store` keys | data | §12.9, §12.13. |
+| `scripts/reminders.ts` (`ensureDeals`, the deal loads and pushes), `scripts/reminders-plan.ts` (`dealCandidates`, the two kinds, the November copy), `scripts/reminders-predeals-oracle.ts` (a frozen copy of today's planner), `scripts/reminders-deals.test.ts` | data (this batch) | §12.11. |
+| `firestore.rules`, `tests/rules/deals.test.ts` (+ `budget.test.ts`, `spaces.test.ts` rows) | rules | §12.7. |
+| `src/screens/stakes/**` (`StakesCard.tsx`, `StakesScreen.tsx`, `DealScreen.tsx`, `DealEditorSheet.tsx`, `DealHistoryScreen.tsx`, `StreakRewardsSheet.tsx`, `deals.ts` + `deals.test.ts`; `StakesEditorSheet.tsx` goes), `SpaceSettingsScreen.tsx`, `CreateSpaceSheet.tsx`, `JoinSheet.tsx`, `MonthView.tsx`, `SpacesScreen.tsx`, `components/month.ts`, `help/content.ts` (+ tests), `src/ui/icons.tsx` (`handshake`) | screens | §12.10, §12.12. |
+| `tests/e2e/deals.spec.ts` (+ `deals-seed.ts`, `emulator.ts` helpers) | screens | The flows of §12.10. |
+
+### 12.15 Deploy order and old clients
+
+**Before shipping**: every check passes on `claude/task-rating-app-feasibility-abixvp`: types, unit (the planner oracle and the `stakesDebts` oracle included), rules (with the budget rows: 895, 325 and 482 unchanged), data and reminders job (the existing reminders read counts unchanged), e2e, build. Batch 3 ships first if it hasn't (§11.14): its rules are a prefix of these.
+
+**Nothing deploys before step 2**: every commit pushed to any `claude/**` branch carries `[skip ci]` in its subject (§11.14), and after each push `gh run list --workflow=deploy.yml --limit 3` shows no new run.
+
+**The reminders job runs this branch's code on every push** (§11.14). So a commit that changes `scripts/**` or `src/domain/**` is pushed only when `npx tsc -b`, `npm test` (with `scripts/reminders-deals.test.ts`' oracle sweep: on spaces without `hasDeals`, months before `DEALS_FROM_MONTH` and notes from before it, `planSpace` gives exactly what the frozen pre-deals planner gives) and `npm run test:data` (with every existing reminders test unchanged, read counts included, and a space whose stray deal docs have no `hasDeals` flag, which the job must ignore) pass. Until the rules are published nobody can create a deal or set `hasDeals` (the live rules deny both), so the deal code in the job never runs on real data before then; the November copy changes act only on November and later. Two existing job tests describe November 2026 with stakes (made-up data: November hasn't happened): `tests/data/reminders-results.test.ts`' November verdict and `scripts/reminders-batch2.test.ts`' `house` push changed on Saturday Oct 31 (October complete, so `termsMonth` is November). They change to §12.11's behaviour, with a comment saying why; no other existing reminders test may change. The same goes for the e2e tests that use "the month after the real one" or "last month" relative to the real date (`batch2.spec.ts`' stakes tests, `flow.spec.ts`' verdict and settling): from November 2026 those months have no stakes, so they're pinned to a month before `DEALS_FROM_MONTH` or rewritten for deals.
+
+Ship steps, exactly in this order:
+1. **`DEALS_FROM_MONTH` check.** It must be the month after the month whose terms count on the deploy day (`'2026-11'` for a deploy before October completes, Saturday Oct 31 00:00 on the usual times; a space with its own times can complete a little later). If the deploy slips past that, change it in `src/domain/stakes.ts` (and the tests and copy that name November) to the next month, re-run every check, push with `[skip ci]`, then go on.
+2. **The owner publishes the rules.** Firebase console → Firestore Database → Rules → select everything, paste the whole of `firestore.rules` from the head of the app branch → **Publish**. Against the live file it appends one space branch and the deals block: everything the live app writes passes exactly as before at the same cost. Leave `'2026-10'` (twice) as it is (§10.11). No index to create.
+3. **Then deploy the app** by hand: GitHub → Actions → **Deploy** → Run workflow → "Use workflow from" **`claude/task-rating-app-feasibility-abixvp`** → Run workflow. Right after step 2, on a weekday daytime, away from a Monday-evening lock and a review window, and before October's last Friday's reviews if possible (so the October window is short). A new app against the old rules can't create deals ("Couldn’t propose the deal. Try again."); everything else works.
+4. **Only if you pinned the reminders job** with `APP_BRANCH`: delete the variable right after step 3.
+
+To check it shipped: a phone with the new build shows "Nothing at stake after October" (or your deal) on a space's stakes card, Make a Deal proposes one, and a friend sees "New deal from …". "Couldn’t propose the deal" there means the rules in the console aren't the new file.
+
+**Old clients** (about 30 minutes): they show and edit per-person stakes and house stakes as batch 2 did, and the rules accept it; in the October window that still counts for October (the new app only stops offering it). They don't show deals; nothing they write touches a deal or `hasDeals`. From November, an old client's stakes card and month view would show house-stakes lines and debts for November that don't count; they update within the half hour. An old client's leave doesn't withdraw a waiting deal (the screens hide deals of people who left; it never starts without them), and its account deletion leaves deal docs, which the job deletes once they're ended (§12.11).
+
+### 12.16 Known limits
+
+- **Results are as fresh as the job**: a period's result and a deal's end are confirmed within a few hours of its final time (GitHub runs the hourly schedule every 1–4 hours); until then the app shows them as provisional, and a new deal waits for the confirmation. If the job is down, nothing is decided ("Deal results are running late"), but nothing is lost: it catches up, period by period, when it runs again (at most 4 period loads per space per run).
+- **Provisional text can differ from the result** only when a week's stored lock or deadline differs from the computed one and the client lacks that doc (it has this and next week's), or for a month's score (the card doesn't load months).
+- **A friend who never agrees blocks your deal** (owner's model: everyone agrees). Withdraw it, or the owner can remove an inactive member. There's no decline and no expiry.
+- **Call Off taps are final**: a tap stays even if the others never tap (the deal just goes on).
+- **Settled marks are honor-system** (any member can write them, as month settlements); the outcome itself can't be faked.
+- **Deleting a deal record needs no profile**: a determined crafted client could delete its profile, delete its own ended deals (erasing what it owed in the app), and make a new profile. Rare and harmless to scores; the rules can't tell a real account deletion apart.
+- **A deal's length can grow without limit** through pauses (one a month, everyone's OK) and excusals (no cap, owner's decision 7).
+- **A months deal's monthly list counts; a weeks deal ignores monthly lists** (and their missed reviews, which only cost points in the month's score).
+- **Judges are never in a deal**, even one who judges only this week and plays next week; they're in the next deal proposed while they play.
+- **Newcomers aren't in a running deal**: nothing is at stake between them and its person until their next deal.
+- **October 2026 overlaps**: a weeks deal agreed in late October can count October's last week as well as October's month stakes.
+- **Old stakes docs keep their lines** (inert from November) until the person saves streak rewards, which resets them to the house stakes; `saveMyStakes` stays callable (old clients).
+- **The `deal` push may arrive hours late** (event pushes go out 09:00–21:00, the job runs every few hours), and stops after 7 days; the card keeps showing "New deal from …".
+- A deal of someone who deleted their account is gone once it ends (with what it owed); friends' own deals keep that person's Agree and marks as "A former member".
+
+### 12.17 Decisions made in this contract
+
+1. **Deals live in their own docs, one per deal, `{uid}_{seq}`** (not a field on the stakes doc): the rules can prove "one deal in play per person" with one `getAfter` (the previous one ended), the job can query open deals in one read, history is just the collection, and no existing path, rule or budget changes. The plan saves stay at 895, the add after the lock at 325, the cross-out at 482.
+2. **Immutable terms**: a deal never changes after it's proposed; editing a waiting deal withdraws it and proposes a new one (friends agree again). So an Agree is a timestamp, not a copy of the terms, and can never be stale; the rules stay small.
+3. **The reminders job decides every result and end** (admin writes of `track` and `ended`), because they decide what's owed: no client can mark itself won, erase a loss or end a deal it's losing. The cost is freshness (a few hours), shown honestly as provisional. A new deal waits for the confirmation, so deals never overlap.
+4. **A space flag (`hasDeals`) keeps everything dormant**: without it the app adds no listener and the job no read, so every space without deals is exactly what it was (and the existing read-count tests stand unchanged). It costs one more branch at the end of the space's update chain, which no existing write reaches.
+5. **A week in a weeks deal is its score minus 5 per friend you didn't review** (refining "the weekly score"): with month stakes gone, missed reviews would otherwise cost a weeks-deal player nothing, and reviewing is the heart of the game. Months deals already use `finalScore`, which subtracts them.
+6. **Paused, excused and empty-of-doc periods add a period; judged ones are misses**: a pause needs everyone's OK and an excusal most reviewers' votes, so they can fairly extend a deal; judging is your own switch, so (as §9.4 already does for months) it can't stall or protect a deal. A week with nothing planned scores 0% (§1), a miss.
+7. **Start = the first period whose lists lock after everyone agreed** (stored lock when known): the list lock is the commitment moment of the whole game; it gives "this week" up to Monday's lock, and for months "the month whose first lists haven't locked yet" (agreed mid-month → next month, as the owner suggested; agreed the weekend before a month starts → that month). Until everyone agreed it slides, and the screens say until when.
+8. **Everyone else who plays is in the deal; judges and later joiners aren't**: the owner's model is "every friend taps Agree"; leaving someone out would let a person pick an easy audience. Judges have nothing at stake (§9.4).
+9. **Withdraw alone before everyone agreed; Call Off by everyone after**: before, nothing was promised; after, it's everyone's promise, so ending it early is everyone's call (the owner asked whether both sides must agree to cancel: yes, once agreed). Taps are final to keep it simple and unfakeable; a period that ended before the last tap still counts.
+10. **A friend who leaves stays in the deal; you leaving calls it off**: leaving can't dodge a locked period (its result still counts) and can't make friends owe you for periods you didn't play. Everyone else leaving calls it off too (nobody to owe).
+11. **October is the last month of open-ended stakes, settled by the existing machinery** ("each agreed line as a one-month deal" in effect, without writing any deal docs or migrating data): October's terms are computed exactly as batch 2 does, so the job's behaviour on October is untouched, and the October window freezes the new app's stakes editing so "what was agreed" means "agreed by now". From `DEALS_FROM_MONTH` months carry no stakes.
+12. **House stakes stay, as the start of every deal**: the owner keeps them, the invite shows them and the editor prefills them; their month freezes keep running (the rules insist on them for an owner's edit, and changing that would change existing rules). They no longer count on their own, so the `house` push stops.
+13. **Streak rewards stay, on top of deals**: they reward a run of good months, deal or not, and are agreed separately; a months deal and a streak reward can both fall due. They move to their own editor; saving them resets the inert stake lines to the house stakes so every friend can agree.
+14. **Settling is per pair on the deal doc** (`settled`), one tap per line as in §9.7: one listener shows a deal and its marks, and a together line of 7 is one write the rules check in 7 slots.
+15. **Pushes: `deal` (a new deal waiting on you) and `deal-end` (a deal you're in ended)**, both in waking hours; none for Agree, Withdraw, Call Off or settling (the card shows them). The month verdict stays (scores still matter for months deals and streaks) without stakes from November.
+16. **Help stays within 700 words** (696 / 699): three deal paragraphs replace the stakes ones, the review line gains "and off that week in a deal", and two sentences lose words the screens repeat (the Done/Half explanation in the score paragraph, "a month you sit out doesn’t break a streak", which the streak editor says).
+17. **Account deletion withdraws, calls off and deletes your deals**; the rules allow deleting your own ended deal only once your profile is gone, newest first, and the job removes the rest, so nothing of a deleted account asks anyone to agree or stays readable as its own record.

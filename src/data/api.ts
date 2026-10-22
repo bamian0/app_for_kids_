@@ -5,6 +5,9 @@ import { now } from '../domain/clock.ts'
 import { isGoalId } from '../domain/shared.ts'
 import type {
   Checkin,
+  Deal,
+  DealInput,
+  DealsView,
   FriendsView,
   MemberStakes,
   MonthData,
@@ -18,6 +21,7 @@ import type {
   SharedGoalsView,
   Showcase,
   Space,
+  StreakTier,
   UID,
   UserProfile,
   UserStats,
@@ -290,6 +294,85 @@ export function useLatestResults(space: Space): Live<MonthResults | null> {
  */
 export { saveMyStakes, agreeToStakes } from './stakes.ts'
 export type { StakesInput } from './stakes.ts'
+
+// ---------- Deals: stakes with a length (SPEC §12) ----------
+// deals: TODO — the data builder builds these in src/data/deals.ts (saveStreakRewards in src/data/stakes.ts) and
+// replaces each stub below with the hook or a re-export, keeping the signatures. SPEC §12.9 has the behaviour and the
+// messages. Every deal write but settleDeal fails at once offline (MSG.offline); settleDeal queues like settlePairs.
+
+const NOT_BUILT = 'Deals aren’t ready yet.'
+const NO_DEALS: Live<DealsView> = Object.freeze({ data: Object.freeze({ open: {}, ended: [] }) as DealsView, loading: false, error: null })
+const NO_DEAL_HISTORY: Live<Deal[]> = Object.freeze({ data: Object.freeze([]) as unknown as Deal[], loading: false, error: null })
+
+/**
+ * Each member's deal in play and the deals that ended (won, lost, off) in the last 60 days (SPEC §12.9): two
+ * listeners, `deals where ended == null` and `deals where ended.at >= now − 60 days` (withdrawn ones dropped), only
+ * when `space.hasDeals`; otherwise `{ open: {}, ended: [] }` at once with no reads. Key `${uid}|deals|${spaceId}`.
+ */
+export function useDeals(_space: Space): Live<DealsView> {
+  // deals: TODO
+  return NO_DEALS
+}
+
+/** Every deal of the space, for Past Deals (one listener on the collection, only while that screen is open; none
+ *  without `space.hasDeals`), newest first by person and seq. Key `${uid}|dealHistory|${spaceId}`. */
+export function useDealHistory(_space: Space): Live<Deal[]> {
+  // deals: TODO
+  return NO_DEAL_HISTORY
+}
+
+/**
+ * Proposes your next deal (`${me}_${seq + 1}`, SPEC §12.9): validated with dealProblem (its texts thrown), then one
+ * query for your deals here and a transaction that re-reads the space and your latest deal, creates the new one with
+ * `friends` = every member but you who doesn't judge, and sets `space.hasDeals` the first time. `replace`: the id of
+ * your deal still waiting for agreement, withdrawn in the same transaction (Edit). Resolves with the new deal (its
+ * times the device's estimate). "Your last deal isn’t over yet. You can make a new one once its result is in." while
+ * your previous deal is in play. Fails at once offline.
+ */
+export async function proposeDeal(_space: Space, _input: DealInput, _opts?: { replace?: string }): Promise<Deal> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
+
+/** Takes back your deal while some friend still has to agree (SPEC §12.2): `ended = { outcome: 'withdrawn', at, by }`.
+ *  Once everyone agreed: "Everyone agreed, so it can’t be withdrawn. Ask everyone to call it off." Fails at once offline. */
+export async function withdrawDeal(_space: Space, _dealId: string): Promise<void> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
+
+/** Your Agree to a friend's waiting deal, stamped with the server time (`agreed.{me}`); resolves without writing when
+ *  you already agreed. Deals never change after they are proposed, so there is nothing to compare. Fails at once offline. */
+export async function agreeToDeal(_space: Space, _dealId: string): Promise<void> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
+
+/** Your Call Off tap on a deal everyone agreed to (its person or a friend in it): `off.{me}` = server time, never
+ *  taken back. It's off once everyone still in it tapped (the job confirms). Resolves without writing when you
+ *  already tapped. Fails at once offline. */
+export async function callOffDeal(_space: Space, _dealId: string): Promise<void> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
+
+/** Marks the pairs of one debt line of a won or lost deal settled (or not): one update of `settled.{friend}` =
+ *  { settled, by: me, at: serverTimestamp() } per friend (a group line is one tap). Queues offline like settlePairs. */
+export async function settleDeal(_space: Space, _dealId: string, _friends: UID[], _settled: boolean): Promise<void> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
+
+/**
+ * Saves your streak rewards (SPEC §12.2, §9.8) in your stakes doc: the tiers (sorted, validated with the stakes
+ * editor's messages) with both lines set to the house stakes, Same for everyone (from DEALS_FROM_MONTH they no
+ * longer count; this keeps every friend able to agree). Friends agree with agreeToStakes as before. The screens offer
+ * it only outside the October window (oldStakesMonth); it has no date rule of its own. Fails at once offline.
+ */
+export async function saveStreakRewards(_space: Space, _tiers: StreakTier[]): Promise<void> {
+  // deals: TODO
+  throw new Error(NOT_BUILT)
+}
 
 // ---------- Batch 2.5: monthly adds and crossed-out tasks (SPEC §10) ----------
 

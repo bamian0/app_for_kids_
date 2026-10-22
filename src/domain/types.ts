@@ -66,6 +66,9 @@ export interface Space {
   /** The last change of the house stakes (`reward`, `penalty`), for the notice everyone else sees (§9.7).
    *  Absent until the owner changes them with a batch-2 app. */
   stakesNote?: StakesNote
+  /** Deals (SPEC §12): true once anyone proposed a deal in this space (set in the same transaction as the space's
+   *  first deal, never cleared). Absent: the space has no deals, so the app and the reminders job read none. */
+  hasDeals?: boolean
 }
 
 export interface Invite {
@@ -416,6 +419,130 @@ export interface MonthResults {
    *  player pair. */
   terms?: Record<UID, Record<UID, TermsInForce>>
   createdAt: number
+}
+
+// ---------- Deals: stakes with a length (SPEC §12) ----------
+// spaces/{spaceId}/deals/{uid}_{seq}. A deal is what friends owe a member who keeps every week (or month) of it at
+// 90% or more, what the member owes them on the first one under, and how many weeks or months it runs. One deal in
+// play per member per space; it ends on the first miss, or with the last period's result. Nothing is at stake
+// between deals. October 2026's open-ended stakes (§9.7) settle as agreed; from DEALS_FROM_MONTH on months have none.
+
+/** What a deal counts: weekly scores (minus missed reviews that week) or monthly scores. */
+export type DealUnit = 'week' | 'month'
+
+/** How a deal ended. 'withdrawn': its person took it back before everyone agreed (it never ran). 'won': every
+ *  period it needed was at 90% or more. 'lost': a period was under. 'off': called off by everyone in it, or its
+ *  person left, or everyone else in it left (nothing owed). Only the reminders job writes 'won', 'lost' and 'off'. */
+export type DealOutcome = 'withdrawn' | 'won' | 'lost' | 'off'
+
+/** Why a deal is off: everyone tapped Call Off, its person left the space, or every friend in it left. */
+export type DealOffReason = 'called-off' | 'left' | 'alone'
+
+/** The stored `ended` of a deal (§12.4). */
+export interface DealEnd {
+  outcome: DealOutcome
+  /** When it ended: the missed or last period's final time (lost, won), the lock it ended at (off: left, alone),
+   *  the last Call Off tap (off: called-off), or the server time of the withdrawal. */
+  at: number
+  /** Withdrawn: who withdrew (always the deal's person). */
+  by?: UID
+  /** Won: the last period; lost: the missed one (a WeekId or MonthId). */
+  period?: string
+  /** Lost: the missed period's deal score (null when it was missed by judging it). */
+  score?: number | null
+  /** Off only. */
+  reason?: DealOffReason
+}
+
+/** One period's verdict in a deal: counted at 90%+ ('pass'), under ('miss'), or not counted, so the deal runs one
+ *  period longer ('skip'). */
+export type DealResult = 'pass' | 'miss' | 'skip'
+
+/** Why a period is a skip, or a miss without a score: paused (§9.3), friends excused every task (§10.4), the person
+ *  wasn't in the week or it had no doc, judged it (a miss, §9.4), a month without a score, zero tasks (a miss at 0%). */
+export type DealNote = 'paused' | 'excused' | 'missing' | 'judge' | 'no-score' | 'empty'
+
+/** One finished period of a running deal, as the reminders job records it in `track` (in order from `start`). */
+export interface DealPeriod {
+  /** WeekId (a weeks deal) or MonthId (a months deal). */
+  id: string
+  result: DealResult
+  /** The deal score: a week's score minus latePenalty per review missed that week (floor 0); a month's finalScore.
+   *  null for a skip or a judged period. */
+  score: number | null
+  /** Reviews missed in the period (already taken off `score`). */
+  missed?: number
+  why?: DealNote
+}
+
+/** A Settled mark between a deal's person and one friend (honor system, §12.2). */
+export interface DealMark {
+  settled: boolean
+  /** Who marked it. */
+  by: UID
+  /** Server time. */
+  at: number
+}
+
+/** A deal's terms: each line Same for everyone ('group') or Different per friend ('each'), as stakes (§9.7). */
+export interface DealTerms {
+  rewardMode: StakesMode
+  penaltyMode: StakesMode
+  /** What the friends owe together when the person makes it ('group'); may be '' while the reward is per friend. */
+  reward: string
+  /** What the person gives the group when they miss ('group'); may be '' while the penalty is per friend. */
+  penalty: string
+  /** Exactly the deal's friends while either line is per friend (both texts in each entry, '' for a line that
+   *  isn't); {} while neither is. */
+  per: Record<UID, { reward: string; penalty: string }>
+}
+
+/** What the deal editor proposes (proposeDeal): the terms and the length. */
+export interface DealInput extends DealTerms {
+  unit: DealUnit
+  /** 1–12 (DEAL_COUNTS in domain/deals.ts lists what the picker offers). */
+  count: number
+}
+
+/** spaces/{spaceId}/deals/{uid}_{seq} (SPEC §12.4), decoded (decodeDeal in domain/decode.ts). */
+export interface Deal extends DealInput {
+  /** `${uid}_${seq}` */
+  id: string
+  spaceId: string
+  /** Whose bar it is: the person who proposed it. */
+  uid: UID
+  /** 1, 2, 3… per person per space: a new deal is `seq + 1` of the person's previous one, and only once that one ended. */
+  seq: number
+  /** Who the deal is with: every member but `uid` who didn't judge when it was proposed. Each still in the space must
+   *  agree before it starts. */
+  friends: UID[]
+  /** Each friend's Agree, server time (written by that friend only). */
+  agreed: Record<UID, number>
+  /** Call Off taps (the person and friends in the deal), server time. It's off once everyone still in it tapped. */
+  off: Record<UID, number>
+  /** Settled marks per friend, after it's won or lost. */
+  settled: Record<UID, DealMark>
+  createdAt: number
+  /** null while in play (waiting, scheduled, running). */
+  ended: DealEnd | null
+  // Written only by the reminders job (admin); absent until it first sees the deal fully agreed.
+  /** When everyone needed had agreed. */
+  agreedAt?: number
+  /** The first period (WeekId or MonthId): the first one whose lists lock after `agreedAt`. */
+  start?: string
+  /** Finished periods from `start`, in order. */
+  track?: DealPeriod[]
+  /** The job's last look at it (freshness). */
+  checkedAt?: number
+}
+
+/** What the Space screen and the Stakes screen need (useDeals): each member's deal in play, and recent ends. */
+export interface DealsView {
+  /** Each person's deal in play (no `ended`), by its person's uid: at most one each. */
+  open: Record<UID, Deal>
+  /** Deals that ended won, lost or off in the last DEAL_RECENT_DAYS (60), newest end first (withdrawn ones left out):
+   *  what's left to settle, and the end news. */
+  ended: Deal[]
 }
 
 // ---------- Money (private to each user: users/{uid}/...) ----------

@@ -1,6 +1,6 @@
 // Batch 3 shared goals end to end (SPEC §11.9.5), in iPhone-sized browsers against the emulators with the real
 // rules: creating a goal and joining it, checking in (decimals, edits), reaching the target with its moment, Keep
-// Going and Finish, leaving (the owner hands on, the last one finishes it), the ?goal= link, and the limits
+// Going and Finish, leaving (the owner hands on, the last one deletes it), the ?goal= link, and the limits
 // (offline, an ended goal, an invitee's view, a leaver's check-in, a sheet that outlives its week). Accounts,
 // friendships and some goals are seeded; what people do goes through the UI. The phones run in Rome on the real
 // clock (one test moves its clock with ?now=, which the server never sees).
@@ -387,7 +387,7 @@ test('check in, edit, decimals; reach together; Keep Going; Finish', async ({ br
   expect(ben.errors).toEqual([])
 })
 
-test('leaving: a member’s check-in goes and their part stays; the owner hands on; the last one finishes it', async ({ browser }) => {
+test('leaving: a member’s check-in goes and their part stays; the owner hands on; the last one deletes it', async ({ browser }) => {
   const t0 = Date.now() - 40 * DAY
   const [anaUid, benUid, cleoUid] = await accounts(t0, ANA, BEN, CLEO)
   await friends([anaUid, benUid, cleoUid], t0)

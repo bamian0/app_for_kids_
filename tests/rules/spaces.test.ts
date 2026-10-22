@@ -5,8 +5,8 @@ import {
   setDoc, Timestamp, updateDoc, where, writeBatch, type DocumentData, type Firestore,
 } from 'firebase/firestore'
 import {
-  addMonths, allDenied, allowed, CODE, DAY, denied, HOUR, inviteDoc, monthStr, monthWeeks, newSpace, OTHER_CODE, spaceDoc, ts,
-  useRulesEnv, USUAL,
+  addMonths, allDenied, allowed, CODE, CUSTOM, DAY, denied, HOUR, inviteDoc, mondayOf, monthStr, monthWeeks, newSpace, OTHER_CODE,
+  spaceDoc, ts, useRulesEnv, USUAL,
 } from './helpers.ts'
 
 const { db, seed } = useRulesEnv()
@@ -554,5 +554,127 @@ describe('house stakes (SPEC §9.7)', () => {
   test('mid-month, nothing needs freezing', async () => {
     await setup({}, { [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY) })
     await allowed(ownerEdit([], false))
+  })
+})
+
+describe('the deals flag (SPEC §12.7 marksDeals)', () => {
+  const flagged = (memberIds: string[], extra: DocumentData = {}) => staggered(memberIds, { hasDeals: true, ...extra })
+  const hasDeals = async (reader = 'alice', space = 's1') => (await getDoc(doc(db(reader), `spaces/${space}`))).get('hasDeals')
+
+  test('any member sets hasDeals: true, once and alone; nothing else touches it', async () => {
+    await twoSpaces()
+    const bob = doc(db('bob'), 'spaces/s1')
+    await allDenied({
+      'with a rename': () => updateDoc(bob, { hasDeals: true, name: 'Deal crew' }),
+      'with a judge switch': () => updateDoc(bob, { hasDeals: true, judges: ['bob'] }),
+      'with a leave': () => leave(db('bob'), 'bob', 's1', { hasDeals: true }),
+      'false': () => updateDoc(bob, { hasDeals: false }),
+      'a string': () => updateDoc(bob, { hasDeals: 'true' }),
+      'by a non-member': () => updateDoc(doc(db('zoe'), 'spaces/s1'), { hasDeals: true }),
+      'signed out': () => updateDoc(doc(db(), 'spaces/s1'), { hasDeals: true }),
+      'in a new space': () => setDoc(doc(db('carol'), 'spaces/s3'), newSpace('carol', { hasDeals: true })),
+      'in a new space that judges': () => setDoc(doc(db('carol'), 'spaces/s3'), newSpace('carol', { judges: ['carol'], hasDeals: true })),
+    })
+    await allowed(updateDoc(bob, { hasDeals: true }))
+    expect(await hasDeals()).toBe(true)
+    const alice = doc(db('alice'), 'spaces/s1')
+    // Writing it again changes nothing: a member's unchanged write passes as it always did (editsSpaceText);
+    // a non-member's doesn't.
+    await allowed(updateDoc(alice, { hasDeals: true }))
+    await allDenied({
+      'set again by a non-member': () => updateDoc(doc(db('zoe'), 'spaces/s1'), { hasDeals: true }),
+      'removed': () => updateDoc(alice, { hasDeals: deleteField() }),
+      'turned off': () => updateDoc(alice, { hasDeals: false }),
+      'removed with a rename': () => updateDoc(alice, { name: 'Crew', hasDeals: deleteField() }),
+      'removed by the owner\'s house-stakes edit': () => updateDoc(alice, { reward: 'Sushi', penalty: 'Dishes', hasDeals: deleteField() }),
+      'removed by a leave': () => leave(db('bob'), 'bob', 's1', { hasDeals: deleteField() }),
+      'removed by a judge switch': () => updateDoc(doc(db('bob'), 'spaces/s1'), { judges: ['bob'], hasDeals: deleteField() }),
+    })
+    expect(await hasDeals()).toBe(true)
+    // The owner, too, sets it on a space without it.
+    await allowed(updateDoc(doc(db('zoe'), 'spaces/s2'), { hasDeals: true }))
+  })
+
+  test('with the flag: renames, the owner\'s house-stakes edit with freezes, and an invite reset still pass', async () => {
+    const C = monthStr(Date.now())
+    const P = addMonths(C, -1)
+    const OLD = { reward: 'Dinner on me', penalty: 'You buy coffee for a week' }
+    const weekEnding = (deadlineMs: number): DocumentData => ({
+      startAt: ts(deadlineMs - 5 * DAY), lockAt: ts(deadlineMs - 4 * DAY), reviewOpenAt: ts(deadlineMs - DAY), deadlineAt: ts(deadlineMs),
+      members: ['alice', 'bob'], submittedBy: [],
+    })
+    // Last month complete (to be frozen in the edit's batch), this month in progress.
+    await seed({
+      'spaces/s1': flagged(['alice', 'bob'], { createdAt: ts(Date.now() - 90 * DAY) }),
+      [`invites/${CODE}`]: inviteDoc('s1', 'alice'),
+      [`spaces/s1/weeks/${monthWeeks(P).last}`]: weekEnding(Date.now() - 2 * DAY),
+      [`spaces/s1/weeks/${monthWeeks(C).last}`]: weekEnding(Date.now() + 3 * DAY),
+    })
+    const ownerEdit = (withNote: boolean, reward: string) => {
+      const alice = db('alice')
+      const batch = writeBatch(alice)
+      batch.set(doc(alice, `spaces/s1/months/${P}`), { ...OLD, createdAt: serverTimestamp() })
+      batch.update(doc(alice, 'spaces/s1'), { reward, penalty: 'Dishes', ...(withNote ? { stakesNote: { by: 'alice', at: serverTimestamp() } } : {}) })
+      batch.update(doc(alice, `invites/${CODE}`), { reward, penalty: 'Dishes' })
+      return batch.commit()
+    }
+    await allowed(ownerEdit(true, 'Sushi'))
+    // An older client's edit carries no note (last month is frozen now, so the space alone).
+    await allowed(updateDoc(doc(db('alice'), 'spaces/s1'), { reward: 'Tacos', penalty: 'Dishes' }))
+    await allowed(rotate(db('alice'), 'alice', 'QQQQ2222', { reward: 'Tacos', penalty: 'Dishes' }))
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 2' }))
+    // An older client's rename sends all three.
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 3', reward: 'Tacos', penalty: 'Dishes' }))
+    expect(await hasDeals()).toBe(true)
+  })
+
+  test('with the flag: leaving (with and without the kept join time), removal, a handover claim and joining still pass', async () => {
+    await seed({ 'spaces/s1': flagged(['alice', 'bob', 'carol', 'dave', 'erin']), [`invites/${CODE}`]: inviteDoc('s1', 'alice') })
+    const joined = (await getDoc(doc(db('alice'), 'spaces/s1'))).data()!.joinedAt as Record<string, Timestamp>
+    await allowed(leave(db('carol'), 'carol', 's1', { 'formerJoinedAt.carol': joined.carol }))
+    // An older client's leave, without it.
+    await allowed(leave(db('dave'), 'dave', 's1'))
+    await allowed(leave(db('alice'), 'erin', 's1'))
+    // The owner leaves and hands over.
+    await allowed(leave(db('alice'), 'alice', 's1', { ownerId: 'bob' }))
+    // An older client's join (no judges); a joiner who only rates, who later leaves with their judges entry.
+    await allowed(join(db('frank'), 'frank', 's1', CODE))
+    await allowed(join(db('gina'), 'gina', 's1', CODE, { judges: arrayUnion('gina') }))
+    await allowed(leave(db('gina'), 'gina', 's1', { judges: arrayRemove('gina') }))
+    // A space whose owner left without handing over: the earliest-joined claims it.
+    await seed({ 'spaces/s2': staggered(['bob', 'carol'], { ownerId: 'gone', hasDeals: true }) })
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s2'), { ownerId: 'bob' }))
+    expect(await hasDeals('bob')).toBe(true)
+    expect(await hasDeals('bob', 's2')).toBe(true)
+  })
+
+  test('with the flag: a judge switch, a change of times and every pause step still pass', async () => {
+    const ABC = ['alice', 'bob', 'carol']
+    const weekOf = (lockInMs: number): DocumentData => ({
+      startAt: ts(Date.now() + lockInMs - DAY), lockAt: ts(Date.now() + lockInMs), reviewOpenAt: ts(Date.now() + lockInMs + 3 * DAY),
+      deadlineAt: ts(Date.now() + lockInMs + 4 * DAY), members: ABC, submittedBy: [],
+    })
+    const NOV_B = '2026-11-23' // Friday Nov 27: November
+    await seed({ 'spaces/s1': flagged(ABC), [`spaces/s1/weeks/${NOV_B}`]: weekOf(12 * HOUR) })
+    const ref = (uid: string) => doc(db(uid), 'spaces/s1')
+    await allowed(updateDoc(ref('bob'), { judges: arrayUnion('bob') }))
+    await allowed(updateDoc(ref('bob'), { judges: arrayRemove('bob') }))
+    const fromWeek = mondayOf('UTC', 1)
+    await allowed(updateDoc(ref('alice'), { schedule: CUSTOM, scheduleNote: { by: 'alice', at: serverTimestamp(), fromWeek, before: USUAL } }))
+    await allowed(updateDoc(ref('alice'), { schedule: deleteField(), scheduleNote: { by: 'alice', at: serverTimestamp(), fromWeek, before: CUSTOM } }))
+    // Ask, OK, Not Now.
+    await allowed(updateDoc(ref('alice'), { pause: { weekId: NOV_B, by: 'alice', at: serverTimestamp(), oks: ['alice'] } }))
+    const p = (await getDoc(ref('alice'))).data()!.pause as DocumentData
+    await allowed(updateDoc(ref('bob'), { pause: { ...p, oks: ['alice', 'bob'] } }))
+    await allowed(updateDoc(ref('carol'), { pause: { ...p, oks: ['alice', 'bob'], declinedBy: 'carol' } }))
+    // The last holdout left: any member records the pause.
+    await seed({
+      'spaces/s1': flagged(['alice', 'bob'], { leftAt: { carol: ts(Date.now() - HOUR) }, pause: { weekId: NOV_B, by: 'alice', at: ts(Date.now() - HOUR), oks: ['alice', 'bob'] } }),
+    })
+    await allowed(updateDoc(ref('bob'), { 'paused.2026-11': NOV_B }))
+    // Alone in the space, asking pauses at once.
+    await seed({ 'spaces/s1': flagged(['alice']), 'spaces/s1/weeks/2026-11-30': { ...weekOf(12 * HOUR), members: ['alice'] } })
+    await allowed(updateDoc(ref('alice'), { pause: { weekId: '2026-11-30', by: 'alice', at: serverTimestamp(), oks: ['alice'] }, 'paused.2026-12': '2026-11-30' }))
+    expect(await hasDeals()).toBe(true)
   })
 })

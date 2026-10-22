@@ -147,7 +147,7 @@ type Case = {
 
 /** Appends the pads to a rule's condition that ends with `;`. */
 const atEnd = (point: string) => ({ point, padded: point.replace(/;$/, ' && pad(1) && apad();') })
-const SPACE = atEnd('|| declinesPause() || finalizesPause());')
+const SPACE = atEnd('|| declinesPause() || finalizesPause() || marksDeals());')
 const WEEK_UPDATE = atEnd('|| retimesWeek(spaceId, weekId));')
 const WEEK_CREATE = atEnd('validNewWeek(spaceId, weekId, incoming());')
 /** Pads the whole-list branch of a plan rule (the first of three, SPEC §10.7). */
@@ -193,6 +193,9 @@ const EDIT = atEnd('&& validGoalText(d) && reachesRule(e, d);')
 const FINISH = atEnd('&& d.archivedAt == request.time && d.invited == [];')
 const CHECKINS_READ = atEnd('allow read: if signedIn() && request.auth.uid in get(goalPath(goalId)).data.memberIds;')
 const GOAL_DELETE = atEnd('allow delete: if signedIn() && existing().memberIds == [request.auth.uid];')
+// deals (SPEC §12.7): the whole condition that allows each op (an update pays for the branches before its own).
+const DEAL_CREATE = atEnd('allow create: if signedIn() && newDeal(id);')
+const DEAL_UPDATE = atEnd('allow update: if signedIn() && (agreesToDeal() || withdrawsDeal() || callsOffDeal() || settlesDeal());')
 const CHECKIN_DELETE = atEnd('&& (!(request.auth.uid in get(goalPath(goalId)).data.memberIds) || !existsAfter(goalPath(goalId)));')
 
 const space = (extra: DocumentData = {}) => spaceDoc(M8, { createdAt: ts(Date.now() - 90 * DAY), ...extra })
@@ -273,6 +276,41 @@ const showAll = () => ({
   earnings: { monthId: '2026-09', amount: 999_999_999.99, currency: 'USD' },
   updatedAt: serverTimestamp(),
 })
+
+// ---------- deals fixtures (SPEC §12) ----------
+const F7 = M8.slice(1)
+/** m1's deal number `seq` with the 7 others, both lines per friend with 120-character texts: the worst case. */
+const dealOf7 = (seq: number, extra: DocumentData = {}): DocumentData => ({
+  uid: 'm1', seq, unit: 'month', count: 12, rewardMode: 'each', penaltyMode: 'each', reward: 'R'.repeat(120), penalty: 'P'.repeat(120),
+  per: per7, friends: F7, agreed: {}, off: {}, settled: {}, createdAt: serverTimestamp(), ended: null, ...extra,
+})
+const storedDealOf7 = (seq: number, extra: DocumentData = {}): DocumentData => ({ ...dealOf7(seq), createdAt: ts(Date.now() - 40 * DAY), ...extra })
+const agreedBy = (uids: string[]): DocumentData => Object.fromEntries(uids.map((u, i) => [u, ts(Date.now() - (39 - i) * DAY)]))
+const DEAL_STAMPS = { agreedAt: ts(Date.now() - 33 * DAY), start: '2026-11', track: [{ id: '2026-11', result: 'pass', score: 95.5, missed: 1 }] }
+/** 8 members, a stale judges entry (so `judges` is read and subtracted), deals on. */
+const dealSpace = (extra: DocumentData = {}) => space({ hasDeals: true, judges: ['x9'], ...extra })
+const PAUSE_IN_PLAY = { pause: { weekId: '2026-11-23', by: 'm2', at: ts(Date.now() - DAY), oks: ['m2', 'm3'] }, paused: { '2026-10': '2026-10-19' } }
+/** proposeDeal's Edit of a space that lacks the flag: re-read the space and m1's deals 1 and 2, withdraw the
+ *  waiting deal 1, create deal 2 and set the flag, in one transaction. */
+const editDeal = (fs: Firestore) => runTransaction(fs, async (tx) => {
+  await tx.get(doc(fs, 'spaces/s1'))
+  await tx.get(doc(fs, 'spaces/s1/deals/m1_1'))
+  await tx.get(doc(fs, 'spaces/s1/deals/m1_2'))
+  tx.update(doc(fs, 'spaces/s1/deals/m1_1'), { ended: { outcome: 'withdrawn', at: serverTimestamp(), by: 'm1' } })
+  tx.set(doc(fs, 'spaces/s1/deals/m1_2'), dealOf7(2))
+  tx.update(doc(fs, 'spaces/s1'), { hasDeals: true })
+})
+/** The Edit's worst case: no flag yet, a pause request in play, deal 1 waiting on the 7th friend. */
+const editSeed = () => ({
+  'spaces/s1': space({ judges: ['x9'], ...PAUSE_IN_PLAY }),
+  'spaces/s1/weeks/2026-11-23': weekDoc('planning', M8),
+  'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7.slice(0, 6)) }),
+})
+/** A together line of 7 (settleDeal): every pair in one update. */
+const settle7 = (fs: Firestore) => {
+  const [first, ...rest] = F7.flatMap((f) => [new FieldPath('settled', f), { settled: true, by: 'm1', at: serverTimestamp() }])
+  return updateDoc(doc(fs, 'spaces/s1/deals/m1_1'), first as FieldPath, rest[0], ...rest.slice(1))
+}
 
 const CASES: Case[] = [
   {
@@ -763,6 +801,70 @@ const CASES: Case[] = [
       const snap = await getDocs(query(collection(db('m1'), 'sharedGoals/g1/checkins'), where('weekId', '==', B3W)))
       if (snap.size !== 8) throw new Error(`expected 8 check-ins, got ${snap.size}`)
     },
+  },
+  // ---------- deals (SPEC §12.7) ----------
+  {
+    name: 'deals: create, 7 friends, both lines per friend, after an ended deal (getAfter)',
+    ...DEAL_CREATE,
+    seed: () => ({ 'spaces/s1': dealSpace(), 'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7), ...DEAL_STAMPS, ended: { outcome: 'lost', at: ts(Date.now() - DAY), period: '2026-11', score: 88 } }) }),
+    run: (db) => setDoc(doc(db('m1'), 'spaces/s1/deals/m1_2'), dealOf7(2)),
+  },
+  {
+    name: 'deals: Edit (withdraw + create + flag in one transaction), the create op',
+    ...DEAL_CREATE,
+    seed: editSeed,
+    run: (db) => editDeal(db('m1')),
+  },
+  {
+    name: 'deals: Edit (withdraw + create + flag in one transaction), the withdraw op',
+    ...DEAL_UPDATE,
+    seed: editSeed,
+    run: (db) => editDeal(db('m1')),
+  },
+  {
+    name: 'deals: Edit (withdraw + create + flag in one transaction), the flag op',
+    ...SPACE,
+    seed: editSeed,
+    run: (db) => editDeal(db('m1')),
+  },
+  {
+    name: 'deals: marksDeals, the owner, 8 members, a pause request in play (last in the space chain)',
+    ...SPACE,
+    seed: () => ({
+      'spaces/s1': space({ judges: ['m8'], leftAt: { x: ts(Date.now() - DAY) }, formerJoinedAt: { x: ts(Date.now() - 9 * DAY) }, ...PAUSE_IN_PLAY }),
+      'spaces/s1/weeks/2026-11-23': weekDoc('planning', M8),
+    }),
+    run: (db) => updateDoc(doc(db('m1'), 'spaces/s1'), { hasDeals: true }),
+  },
+  {
+    name: 'deals: Agree, the 7th friend, 8 members (1st branch)',
+    ...DEAL_UPDATE,
+    seed: () => ({ 'spaces/s1': dealSpace(), 'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7.slice(0, 6)) }) }),
+    run: (db) => updateDoc(doc(db('m8'), 'spaces/s1/deals/m1_1'), new FieldPath('agreed', 'm8'), serverTimestamp()),
+  },
+  {
+    name: 'deals: Withdraw, 6 of 7 agreed, 8 members (2nd branch)',
+    ...DEAL_UPDATE,
+    seed: () => ({ 'spaces/s1': dealSpace(), 'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7.slice(0, 6)) }) }),
+    run: (db) => updateDoc(doc(db('m1'), 'spaces/s1/deals/m1_1'), { ended: { outcome: 'withdrawn', at: serverTimestamp(), by: 'm1' } }),
+  },
+  {
+    name: 'deals: Call Off, the 8th tap, 8 members (3rd branch)',
+    ...DEAL_UPDATE,
+    seed: () => ({
+      'spaces/s1': dealSpace(),
+      'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7), ...DEAL_STAMPS, off: agreedBy(['m1', ...F7.slice(0, 6)]) }),
+    }),
+    run: (db) => updateDoc(doc(db('m8'), 'spaces/s1/deals/m1_1'), new FieldPath('off', 'm8'), serverTimestamp()),
+  },
+  {
+    name: 'deals: settle a together line of 7 in one write (4th branch)',
+    ...DEAL_UPDATE,
+    seed: () => ({
+      'spaces/s1': dealSpace(),
+      'spaces/s1/deals/m1_1': storedDealOf7(1, { agreed: agreedBy(F7), ...DEAL_STAMPS, ended: { outcome: 'won', at: ts(Date.now() - DAY), period: '2026-12' } }),
+    }),
+    run: (db) => settle7(db('m1')),
   },
 ]
 

@@ -5,6 +5,8 @@ import {
   agreementsOf,
   agreeOutcome,
   buildMonthResults,
+  dealsFromAt,
+  DEALS_FROM_MONTH,
   debtLines,
   FIRST_RESULTS_MONTH,
   freezeBinds,
@@ -17,6 +19,7 @@ import {
   memberTerms,
   missingFor,
   monthDebts,
+  monthHasStakes,
   monthHouse,
   monthLocks,
   monthTerms,
@@ -24,10 +27,12 @@ import {
   nextAgreement,
   nextStreak,
   nextTierRuns,
+  oldStakesMonth,
   pairSettlement,
   pairTerms,
   provisionalStreaks,
   sameTerms,
+  stakesDebts,
   streaksFor,
   termsFriends,
   termsMonth,
@@ -983,5 +988,124 @@ describe('streaks and streak rewards', () => {
     const own: MonthResults = { monthId: '2026-11', completeAt: 1, members: { marco: { score: 95, passed: true, streak: 7, tierRuns: { '3': 7 } }, lena: { score: 10, passed: false, streak: 0 } }, createdAt: 2 }
     expect(streaksFor('2026-11', '2026-03', own, null, {}, {})).toEqual({ streaks: { marco: 7, lena: 0 }, tierRuns: { marco: { '3': 7 }, lena: {} } })
     expect(streaksFor('2026-11', '2026-03', null, null, {}, {})).toBeNull()
+  })
+})
+
+// ---------- Deals: the month stakes cutover (SPEC §12.3, §12.8) ----------
+
+describe('the cutover month (dealsFrom)', () => {
+  const at = (iso: string) => Date.parse(iso)
+  const sp = space(['marco', 'lena'])
+  const saturdayNoon = space(['marco', 'lena'], { schedule: { lock: 1440, reviewOpen: 5760, deadline: 7920 } })
+  // October 2026's last week is Oct 26 – Nov 1; on the usual times it is complete Saturday Oct 31 at 00:00 (CET).
+  const OCT_DONE = at('2026-10-30T23:00:00Z')
+
+  it('DEALS_FROM_MONTH is November 2026, after FIRST_RESULTS_MONTH', () => {
+    expect(DEALS_FROM_MONTH).toBe('2026-11')
+    expect(DEALS_FROM_MONTH > FIRST_RESULTS_MONTH).toBe(true)
+  })
+
+  it('monthHasStakes: only months before dealsFrom', () => {
+    expect(monthHasStakes('2026-10')).toBe(true)
+    expect(monthHasStakes('2025-03')).toBe(true)
+    expect(monthHasStakes('2026-11')).toBe(false)
+    expect(monthHasStakes('2027-01')).toBe(false)
+    expect(monthHasStakes('2026-11', '2026-12')).toBe(true)
+    expect(monthHasStakes('2026-12', '2026-12')).toBe(false)
+  })
+
+  it('dealsFromAt: the month after the terms month, never before DEALS_FROM_MONTH', () => {
+    expect(dealsFromAt(sp, at('2026-10-22T10:00:00Z'))).toBe('2026-11')
+    expect(dealsFromAt(sp, OCT_DONE - 1)).toBe('2026-11')
+    expect(dealsFromAt(sp, OCT_DONE)).toBe('2026-12')
+    expect(dealsFromAt(sp, at('2026-11-05T10:00:00Z'))).toBe('2026-12')
+    expect(dealsFromAt(saturdayNoon, at('2026-10-31T10:00:00Z'))).toBe('2026-11')
+    expect(dealsFromAt(saturdayNoon, at('2026-10-31T11:00:00Z'))).toBe('2026-12')
+    expect(dealsFromAt(sp, at('2026-09-10T10:00:00Z'))).toBe('2026-11')
+    expect(dealsFromAt(sp, at('2020-01-10T10:00:00Z'))).toBe('2026-11')
+    expect(dealsFromAt(sp, at('2027-02-10T10:00:00Z'))).toBe('2027-03')
+  })
+
+  it('oldStakesMonth: the month whose terms count while it is before dealsFrom, else null', () => {
+    expect(oldStakesMonth(sp, at('2026-10-22T10:00:00Z'))).toBe('2026-10')
+    expect(oldStakesMonth(sp, OCT_DONE - 60_000)).toBe('2026-10')
+    expect(oldStakesMonth(sp, OCT_DONE)).toBeNull()
+    expect(oldStakesMonth(sp, at('2026-11-05T10:00:00Z'))).toBeNull()
+    // Reviews due Saturday at noon: still October on Saturday morning.
+    expect(oldStakesMonth(saturdayNoon, at('2026-10-31T10:00:00Z'))).toBe('2026-10')
+    expect(oldStakesMonth(saturdayNoon, at('2026-10-31T11:00:00Z'))).toBeNull()
+    // A monthly list due later keeps October open (the stored week and list, as termsMonth).
+    const last = weekBounds('2026-10-26', TZ)
+    const week: Week = { id: '2026-10-26', spaceId: 's1', ...last, members: [], submittedBy: [] }
+    const list: MonthlyList = { ...week, id: '2026-10', deadlineAt: last.deadlineAt + 6 * H }
+    expect(oldStakesMonth(sp, OCT_DONE + H, week, list)).toBe('2026-10')
+    expect(oldStakesMonth(sp, OCT_DONE + 6 * H, week, list)).toBeNull()
+    // A later recorded cutover: November keeps its stakes.
+    expect(oldStakesMonth(sp, at('2026-11-05T10:00:00Z'), null, null, '2026-12')).toBe('2026-11')
+    expect(oldStakesMonth(sp, at('2026-12-05T10:00:00Z'), null, null, '2026-12')).toBeNull()
+  })
+
+  /** mulberry32, so a failure always replays. */
+  function rng(seed: number): () => number {
+    let a = seed
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  const UIDS = ['marco', 'lena', 'sam', 'kim', 'ana']
+
+  /** A random month: verdicts, terms (agreed or house lines, per friend or together, streak rewards) and tier runs. */
+  function randomMonth(rand: () => number, monthId: string) {
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]
+    const players = UIDS.filter(() => rand() < 0.8)
+    const results: Record<UID, MemberMonthResult> = {}
+    const terms: Record<UID, Record<UID, TermsInForce>> = {}
+    const tierRuns: Record<UID, Record<string, number>> = {}
+    for (const uid of players) {
+      const others = players.filter((o) => o !== uid && rand() < 0.9)
+      results[uid] = result(uid, others, { monthId, passed: pick([true, true, false, null]) })
+      const tiers = [2, 3, 6].filter(() => rand() < 0.4).map((months) => ({ months, reward: `Streak ${months}` }))
+      tierRuns[uid] = Object.fromEntries(tiers.map((t) => [String(t.months), pick([t.months, t.months - 1, t.months + 1, 0])]))
+      if (rand() < 0.15) continue
+      terms[uid] = {}
+      for (const o of others) {
+        if (rand() < 0.1) continue
+        const line = (text: string) => (rand() < 0.4 ? houseLine(text) : { text: `${text} ${o}`, together: rand() < 0.5, source: 'agreed' as const, at: t1 })
+        terms[uid][o] = { reward: line('Dinner'), penalty: line('Coffee'), tiers: rand() < 0.7 ? tiers : [] }
+      }
+    }
+    return { results, terms, tierRuns: rand() < 0.2 ? null : tierRuns }
+  }
+
+  it('stakesDebts equals monthDebts for 300 random months before DEALS_FROM_MONTH', () => {
+    const rand = rng(20261101)
+    const months = ['2025-12', '2026-01', '2026-06', '2026-09', '2026-10']
+    for (let i = 0; i < 300; i++) {
+      const monthId = months[i % months.length]
+      const { results, terms, tierRuns } = randomMonth(rand, monthId)
+      const debts = monthDebts(monthId, results, terms, tierRuns)
+      expect(stakesDebts(monthId, results, terms, tierRuns), `month ${i}`).toEqual(debts)
+      expect(stakesDebts(monthId, results, terms, tierRuns, DEALS_FROM_MONTH), `month ${i}`).toEqual(debts)
+    }
+  })
+
+  it('from dealsFrom on, exactly the tier debts (streak rewards); with dealsFrom = 2026-12 November keeps them all', () => {
+    const rand = rng(7)
+    let tiers = 0
+    for (let i = 0; i < 300; i++) {
+      const monthId = ['2026-11', '2026-12', '2027-05'][i % 3]
+      const { results, terms, tierRuns } = randomMonth(rand, monthId)
+      const debts = monthDebts(monthId, results, terms, tierRuns)
+      const kept = stakesDebts(monthId, results, terms, tierRuns)
+      expect(kept, `month ${i}`).toEqual(debts.filter((d) => d.kind === 'tier'))
+      tiers += kept.length
+      if (monthId === '2026-11') expect(stakesDebts(monthId, results, terms, tierRuns, '2026-12'), `month ${i}`).toEqual(debts)
+      else expect(stakesDebts(monthId, results, terms, tierRuns, '2026-12')).toEqual(kept)
+    }
+    // The fixtures do owe streak rewards.
+    expect(tiers).toBeGreaterThan(20)
   })
 })

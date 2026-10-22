@@ -2,7 +2,7 @@ rules_version = '2';
 
 // Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2; for batch 2, §9 (§9.9
 // lists every change in file order, with its budget); for batch 2.5 (monthly adds, crossed-out tasks),
-// §10 (§10.7 lists the changes and their budgets).
+// §10 (§10.7 lists the changes and their budgets); for deals, §12 (§12.7: one space branch and the deals block).
 //
 // How to publish: Firebase console > Firestore Database > Rules > paste this whole file > Publish.
 // Test locally first with `npm run test:rules` (Firestore emulator + tests/rules).
@@ -615,7 +615,7 @@ service cloud.firestore {
       allow update: if signedIn()
         && (editsSpaceText(spaceId) || leavesSpace() || joinsSpace(spaceId) || removesMember() || rotatesInviteCode()
             || claimsOwnership() || setsOwnJudge() || setsSchedule() || asksToPause() || oksPause()
-            || declinesPause() || finalizesPause());
+            || declinesPause() || finalizesPause() || marksDeals());
 
       match /joins/{uid} {
         allow get: if isUser(uid);
@@ -1225,6 +1225,133 @@ service cloud.firestore {
       match /settlements/{sid} {
         allow read: if isMember(spaceId);
         allow create, update: if signedIn() && validSettlement(spaceId, sid);
+      }
+
+      // ---------- deals (SPEC §12.7) ----------
+      // Appended for deals: no rule above calls these, so every existing request costs what it did. A deal
+      // lives in spaces/{id}/deals/{uid}_{seq}; its person creates it, friends agree, the person may
+      // withdraw it while it waits, everyone in it may tap Call Off, any member marks Settled. Only the
+      // reminders job (admin) writes agreedAt, start, track, checkedAt and an end other than a withdrawal.
+      // Measured in tests/rules/budget.test.ts. Each update branch starts with its changedOnly (plainly
+      // false for the other writes) and keeps its reads and lets behind it, as the batch-2 branches do.
+
+      // The space flag, last in the space's update chain: any member sets hasDeals, once, alone. Every
+      // other branch lists the keys it changes, so none of them can touch it.
+      function marksDeals() {
+        return changedOnly(['hasDeals']) && incoming().hasDeals == true && !('hasDeals' in existing())
+          && request.auth.uid in existing().memberIds;
+      }
+
+      function dealPath(id) { return /databases/$(database)/documents/spaces/$(spaceId)/deals/$(id); }
+      function dealIdOf(uid, seq) { return uid + '_' + string(seq); }
+
+      // The lines as stakes' (§9.7): a 'group' line's text is used, an 'each' line's per-friend texts are;
+      // per-friend entries for exactly the friends while either line is per friend, none otherwise.
+      function validDealTerms(d) {
+        let rewardEach = d.rewardMode == 'each';
+        let penaltyEach = d.penaltyMode == 'each';
+        return d.rewardMode in ['group', 'each'] && d.penaltyMode in ['group', 'each']
+          && (rewardEach ? keptText(d.reward) : lineText(d.reward))
+          && (penaltyEach ? keptText(d.penalty) : lineText(d.penalty))
+          && d.per is map
+          && (rewardEach || penaltyEach
+              ? d.per.size() == d.friends.size() && validPer(d.per, d.uid, d.friends, rewardEach, penaltyEach)
+              : d.per.size() == 0);
+      }
+      // Every other member who doesn't judge, each once (memberIds has no repeats), and at least one.
+      function withEveryPlayer(fs, want) {
+        return fs is list && fs.size() >= 1 && fs.size() == want.size() && fs.toSet() == want.toSet();
+      }
+
+      // Proposed by its person (a member who doesn't judge) with every other member who doesn't judge,
+      // and only once their previous deal has ended: seq 1 needs nothing before it, any other the previous
+      // one ended (getAfter: an Edit withdraws it in the same transaction). Docs are created once and never
+      // deleted, so the chain proves at most one deal in play per person. Exactly the 15 keys: size 15, and
+      // all 15 are read (uid, seq, unit, count, rewardMode, penaltyMode, reward, penalty, per, friends,
+      // agreed, off, settled, createdAt, ended).
+      function newDeal(id) {
+        let d = incoming();
+        let space = get(spacePath(spaceId)).data;
+        let judges = space.get('judges', []);
+        return d.size() == 15
+          && isUser(d.uid) && d.uid in space.memberIds && !(d.uid in judges)
+          && d.seq is int && d.seq >= 1 && d.seq <= 9999 && id == dealIdOf(d.uid, d.seq)
+          && d.unit in ['week', 'month'] && d.count is int && d.count >= 1 && d.count <= 12
+          && withEveryPlayer(d.friends, space.memberIds.removeAll(judges.concat([d.uid])))
+          && validDealTerms(d)
+          && d.agreed == {} && d.off == {} && d.settled == {}
+          && d.createdAt == request.time && d.ended == null
+          && (d.seq == 1 || getAfter(dealPath(dealIdOf(d.uid, d.seq - 1))).data.ended != null);
+      }
+
+      // A friend in it agrees, once, for themselves, with the server time, while it is in play and the job
+      // hasn't stamped its start, and while both they and its person are members (a deal whose person
+      // left never starts).
+      function agreesToDeal() {
+        return changedOnly(['agreed']) && agreesWith(request.auth.uid, existing(), incoming().agreed);
+      }
+      function agreesWith(me, o, a) {
+        return o.ended == null && !('start' in o) && me in o.friends && !(me in o.agreed)
+          && a.diff(o.agreed).affectedKeys().hasOnly([me]) && a[me] == request.time
+          && bothIn(me, o.uid, get(spacePath(spaceId)).data.memberIds);
+      }
+      function bothIn(a, b, ms) { return a in ms && b in ms; }
+
+      // Its person, still a member, takes it back while some friend still in the space hasn't agreed (or
+      // none is left to agree), and before the job stamped its start (so a friend leaving and coming back
+      // can't reopen a running deal).
+      function withdrawsDeal() {
+        return changedOnly(['ended']) && withdrawsWith(existing(), get(spacePath(spaceId)).data.memberIds);
+      }
+      function withdrawsWith(o, ms) {
+        return isUser(o.uid) && o.ended == null && !('start' in o)
+          && incoming().ended == {'outcome': 'withdrawn', 'at': request.time, 'by': o.uid}
+          && o.uid in ms
+          && waitsOn(o.agreed.keys().toSet(), o.friends.toSet().intersection(ms.toSet()));
+      }
+      // Not fully agreed: nobody is left to agree, or someone left to agree hasn't.
+      function waitsOn(agreed, need) { return need.size() == 0 || !agreed.hasAll(need); }
+
+      // Its person or a friend who agreed taps Call Off, once, with the server time (no take-backs), while
+      // a member and while it is in play. Whether everyone in it did, and when, is the job's call.
+      function callsOffDeal() {
+        return changedOnly(['off']) && callsOffWith(request.auth.uid, existing(), incoming().off);
+      }
+      function callsOffWith(me, o, f) {
+        return o.ended == null && (me == o.uid || me in o.agreed) && !(me in o.off)
+          && f.diff(o.off).affectedKeys().hasOnly([me]) && f[me] == request.time
+          && isMember(spaceId);
+      }
+
+      // Settled marks once it's won or lost, for friends who agreed (honor system: any member, as month
+      // settlements). 7 slots: rules have no loops, and a set can't be indexed, so each agreed friend (a
+      // list) is checked in turn. A removed mark fails its slot (the entry is missing); unsettling writes
+      // settled: false. A mark is exactly {settled, by, at}: size 3, and all 3 are read.
+      function dealMark(m) {
+        return m.size() == 3 && m.settled is bool && m.by == request.auth.uid && m.at == request.time;
+      }
+      function settlesDeal() {
+        return changedOnly(['settled']) && settlesWith(existing(), incoming().settled, existing().agreed.keys());
+      }
+      function settlesWith(o, s, ps) {
+        let ch = s.diff(o.settled).affectedKeys();
+        let n = ps.size();
+        return o.ended != null && o.ended.outcome in ['won', 'lost']
+          && ch.size() >= 1 && ch.hasOnly(ps) && isMember(spaceId)
+          && (n <= 0 || !(ps[0] in ch) || dealMark(s[ps[0]]))
+          && (n <= 1 || !(ps[1] in ch) || dealMark(s[ps[1]]))
+          && (n <= 2 || !(ps[2] in ch) || dealMark(s[ps[2]]))
+          && (n <= 3 || !(ps[3] in ch) || dealMark(s[ps[3]]))
+          && (n <= 4 || !(ps[4] in ch) || dealMark(s[ps[4]]))
+          && (n <= 5 || !(ps[5] in ch) || dealMark(s[ps[5]]))
+          && (n <= 6 || !(ps[6] in ch) || dealMark(s[ps[6]]));
+      }
+
+      match /deals/{id} {
+        allow read: if isMember(spaceId);
+        allow create: if signedIn() && newDeal(id);
+        allow update: if signedIn() && (agreesToDeal() || withdrawsDeal() || callsOffDeal() || settlesDeal());
+        // No delete: a deal is the record of what was promised and owed (SPEC §12.4).
       }
     }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   decodeCancels,
   decodeCheckin,
+  decodeDeal,
   decodeFriendship,
   decodeMemberStakes,
   decodeMonthResults,
@@ -692,6 +693,205 @@ describe('decodeCheckin', () => {
     for (const v of JUNK) {
       expect(decodeCheckin('2026-10-19_ben', v, toMs)).toBeNull()
       expect(() => decodeCheckin('2026-10-19_ben', { ...good, note: v, at: v }, toMs)).not.toThrow()
+    }
+  })
+})
+
+describe('decodeSpaceExtras: hasDeals (SPEC §12.4)', () => {
+  it('true only when stored exactly true; nothing else changes', () => {
+    const space = { name: 'Film Club', judges: ['ana'] }
+    expect(decodeSpaceExtras({ ...space, hasDeals: true }, toMs)).toEqual({ judges: ['ana'], hasDeals: true })
+    for (const v of [...JUNK.filter((x) => x !== true), false, 'true', 1]) {
+      const out = decodeSpaceExtras({ ...space, hasDeals: v }, toMs)
+      expect('hasDeals' in out, String(v)).toBe(false)
+      expect(out).toEqual(decodeSpaceExtras(space, toMs))
+    }
+  })
+})
+
+describe('decodeDeal (SPEC §12.4, §12.8)', () => {
+  const C = Date.parse('2026-11-06T09:00:00Z')
+  const good = {
+    uid: 'lena',
+    seq: 2,
+    unit: 'week',
+    count: 4,
+    rewardMode: 'each',
+    penaltyMode: 'group',
+    reward: '',
+    penalty: 'Coffee for a week',
+    per: { sam: { reward: 'Lunch', penalty: '' }, kim: { reward: 'Tea', penalty: '' } },
+    friends: ['sam', 'kim'],
+    agreed: { sam: ts(C + 1), kim: ts(C + 2) },
+    off: { lena: ts(C + 3) },
+    settled: { sam: { settled: true, by: 'lena', at: ts(C + 4) } },
+    createdAt: ts(C),
+    ended: { outcome: 'lost', at: ts(C + 5), period: '2026-11-16', score: 84 },
+    agreedAt: ts(C + 2),
+    start: '2026-11-09',
+    track: [
+      { id: '2026-11-09', result: 'pass', score: 95 },
+      { id: '2026-11-16', result: 'miss', score: 84, missed: 1 },
+    ],
+    checkedAt: ts(C + 6),
+  }
+  const decoded = {
+    id: 'lena_2',
+    spaceId: 's1',
+    uid: 'lena',
+    seq: 2,
+    unit: 'week',
+    count: 4,
+    rewardMode: 'each',
+    penaltyMode: 'group',
+    reward: '',
+    penalty: 'Coffee for a week',
+    per: { sam: { reward: 'Lunch', penalty: '' }, kim: { reward: 'Tea', penalty: '' } },
+    friends: ['sam', 'kim'],
+    agreed: { sam: C + 1, kim: C + 2 },
+    off: { lena: C + 3 },
+    settled: { sam: { settled: true, by: 'lena', at: C + 4 } },
+    createdAt: C,
+    ended: { outcome: 'lost', at: C + 5, period: '2026-11-16', score: 84 },
+    agreedAt: C + 2,
+    start: '2026-11-09',
+    track: [
+      { id: '2026-11-09', result: 'pass', score: 95 },
+      { id: '2026-11-16', result: 'miss', score: 84, missed: 1 },
+    ],
+    checkedAt: C + 6,
+  }
+  const dec = (x: Record<string, unknown>, id = 'lena_2') => decodeDeal(id, { ...good, ...x }, 's1', toMs)
+
+  it('a full doc, and a fresh one as proposed', () => {
+    expect(decodeDeal('lena_2', good, 's1', toMs)).toEqual(decoded)
+    const fresh = { ...good, rewardMode: 'group', reward: 'Dinner', per: {}, agreed: {}, off: {}, settled: {}, ended: null }
+    for (const k of ['agreedAt', 'start', 'track', 'checkedAt']) delete (fresh as Record<string, unknown>)[k]
+    expect(decodeDeal('lena_2', fresh, 's1', toMs)).toEqual({
+      ...decoded,
+      rewardMode: 'group',
+      reward: 'Dinner',
+      per: {},
+      agreed: {},
+      off: {},
+      settled: {},
+      ended: null,
+      agreedAt: undefined,
+      start: undefined,
+      track: undefined,
+      checkedAt: undefined,
+    })
+    expect(Object.keys(decodeDeal('lena_2', fresh, 's1', toMs) ?? {})).not.toContain('track')
+    // A months deal.
+    const months = dec({ unit: 'month', start: '2026-12', track: [{ id: '2026-12', result: 'skip', score: null, why: 'no-score' }], ended: null })
+    expect([months?.start, months?.track]).toEqual(['2026-12', [{ id: '2026-12', result: 'skip', score: null, why: 'no-score' }]])
+  })
+
+  it('null when the id, uid, seq, unit, count, a mode or createdAt is malformed', () => {
+    for (const id of ['lena_3', 'sam_2', 'lena_02', 'lena-2', 'lena_2_x', 'le_na_2', '']) expect(dec({}, id), id).toBeNull()
+    for (const seq of [0, 10000, 1.5, '2', null]) expect(dec({ seq }, `lena_${seq}`), String(seq)).toBeNull()
+    expect(dec({ uid: 'le_na' }, 'le_na_2')).toBeNull()
+    for (const unit of ['day', 'weeks', null, 1]) expect(dec({ unit }), String(unit)).toBeNull()
+    for (const count of [0, 13, 2.5, '4', null]) expect(dec({ count }), String(count)).toBeNull()
+    for (const v of ['both', null, 1]) {
+      expect(dec({ rewardMode: v })).toBeNull()
+      expect(dec({ penaltyMode: v })).toBeNull()
+    }
+    for (const v of JUNK) expect(dec({ createdAt: v })).toBeNull()
+    for (const v of JUNK) expect(decodeDeal('lena_2', v, 's1', toMs)).toBeNull()
+  })
+
+  it('texts, per, friends, agreed, off and settled: malformed entries read empty or are dropped', () => {
+    expect(dec({ reward: 5, penalty: null })).toMatchObject({ reward: '', penalty: '' })
+    expect(dec({ per: { sam: { reward: 'Lunch' }, kim: { reward: 'Tea', penalty: '' }, lena: { reward: 'x', penalty: '' }, 'b_d': { reward: 'x', penalty: 'y' } } })?.per).toEqual({
+      kim: { reward: 'Tea', penalty: '' },
+    })
+    expect(dec({ per: 'x' })?.per).toEqual({})
+    expect(dec({ friends: ['sam', 'sam', 'lena', 'k_m', 7, '', 'kim'] })?.friends).toEqual(['sam', 'kim'])
+    expect(dec({ friends: 'sam' })?.friends).toEqual([])
+    expect(dec({ agreed: { sam: ts(C), kim: 'yesterday', ana: ts(-1), 'x_y': ts(C) } })?.agreed).toEqual({ sam: C })
+    expect(dec({ off: { lena: null } })?.off).toEqual({})
+    expect(
+      dec({
+        settled: {
+          sam: { settled: true, by: 'lena', at: ts(C) },
+          kim: { settled: 'yes', by: 'lena', at: ts(C) },
+          ana: { settled: false, by: '', at: ts(C) },
+          ben: { settled: false, by: 'ben', at: 5 },
+          lee: { settled: false, by: 'lena', at: ts(C + 9) },
+        },
+      })?.settled,
+    ).toEqual({ sam: { settled: true, by: 'lena', at: C }, lee: { settled: false, by: 'lena', at: C + 9 } })
+  })
+
+  it('ended: each valid shape as itself; an off reason other than called-off or alone reads called-off; anything else is off at createdAt', () => {
+    expect(dec({ ended: null })?.ended).toBeNull()
+    expect(dec({ ended: undefined })?.ended).toBeNull()
+    expect(dec({ ended: { outcome: 'withdrawn', at: ts(C + 5), by: 'lena', extra: 1 } })?.ended).toEqual({ outcome: 'withdrawn', at: C + 5, by: 'lena' })
+    expect(dec({ ended: { outcome: 'won', at: ts(C + 5), period: '2026-11-30', score: 99 } })?.ended).toEqual({ outcome: 'won', at: C + 5, period: '2026-11-30' })
+    expect(dec({ ended: { outcome: 'lost', at: ts(C + 5), period: '2026-11-16', score: null } })?.ended).toEqual({ outcome: 'lost', at: C + 5, period: '2026-11-16', score: null })
+    expect(dec({ ended: { outcome: 'lost', at: ts(C + 5), period: '2026-11', score: 'x' } })?.ended).toEqual({ outcome: 'lost', at: C + 5 })
+    expect(dec({ ended: { outcome: 'off', at: ts(C + 5), reason: 'alone' } })?.ended).toEqual({ outcome: 'off', at: C + 5, reason: 'alone' })
+    for (const reason of ['left', 'called-off', undefined, 5]) {
+      expect(dec({ ended: { outcome: 'off', at: ts(C + 5), reason } })?.ended).toEqual({ outcome: 'off', at: C + 5, reason: 'called-off' })
+    }
+    const over = { outcome: 'off', at: C, reason: 'called-off' }
+    for (const v of [{ outcome: 'done', at: ts(C + 5) }, { outcome: 'won' }, { outcome: 'withdrawn', at: ts(C + 5) }, 'won', 5, true, [], {}]) {
+      expect(dec({ ended: v })?.ended, JSON.stringify(v)).toEqual(over)
+    }
+  })
+
+  it('agreedAt, start, checkedAt and track: kept only when well formed', () => {
+    const bad = dec({ agreedAt: 'x', start: '2026-11-10', checkedAt: ts(-5) })
+    expect([bad?.agreedAt, bad?.start, bad?.checkedAt]).toEqual([undefined, undefined, undefined])
+    expect(dec({ start: '2026-11' })?.start).toBeUndefined()
+    expect(
+      dec({
+        track: [
+          { id: '2026-11-09', result: 'pass', score: 95 },
+          { id: '2026-11-09', result: 'miss', score: 10 },
+          { id: '2026-11-16', result: 'miss', score: null, why: 'left' },
+          { id: '2026-11-23', result: 'skip', score: null, why: 'paused', missed: 2 },
+          { id: '2026-11-30', result: 'skip', score: null, why: 'holiday', missed: -1 },
+          { id: '2026-12-07', result: 'won', score: 1 },
+          { id: '2026-12-14', result: 'pass' },
+          { id: '2026-12-15', result: 'pass', score: 1 },
+          { id: '2026-12', result: 'pass', score: 1 },
+          { id: '2026-12-21', result: 'pass', score: '95' },
+          null,
+          'x',
+        ],
+      })?.track,
+    ).toEqual([
+      { id: '2026-11-09', result: 'pass', score: 95 },
+      { id: '2026-11-16', result: 'miss', score: null, why: 'left' },
+      { id: '2026-11-23', result: 'skip', score: null, why: 'paused', missed: 2 },
+      { id: '2026-11-30', result: 'skip', score: null },
+    ])
+    expect(dec({ track: 'x' })?.track).toBeUndefined()
+  })
+
+  it('never throws on 500 random values', () => {
+    let a = 20261106
+    const rand = () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]
+    const value = (depth: number): unknown => {
+      if (depth > 2 || rand() < 0.5) return pick([...JUNK, 'lena', 'week', 'month', 'each', 'group', 'won', 'off', '2026-11-09', ts(C)])
+      if (rand() < 0.5) return Array.from({ length: Math.floor(rand() * 4) }, () => value(depth + 1))
+      return Object.fromEntries(Array.from({ length: Math.floor(rand() * 4) }, () => [pick(['outcome', 'at', 'id', 'result', 'score', 'sam', 'reward', 'penalty', 'settled', 'by']), value(depth + 1)]))
+    }
+    const keys = Object.keys(good)
+    for (let i = 0; i < 500; i++) {
+      const doc: Record<string, unknown> = { ...good }
+      for (const k of keys) if (rand() < 0.3) doc[k] = value(0)
+      const id = rand() < 0.8 ? 'lena_2' : String(value(0))
+      expect(() => decodeDeal(id, doc, 's1', toMs)).not.toThrow()
+      expect(() => decodeDeal(id, value(0), 's1', toMs)).not.toThrow()
     }
   })
 })

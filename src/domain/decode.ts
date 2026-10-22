@@ -4,6 +4,7 @@
 // caller's SDK gives it) into epoch ms, or null.
 import { IANAZone } from 'luxon'
 import { CANCEL_MAX_CHANGES, cleanWhy, whyIsBlank } from './cancel.ts'
+import { DEAL_MAX_COUNT, dealId, isPeriodId, parseDealId } from './deals.ts'
 import { pairUsers } from './friends.ts'
 import { isUid } from './ids.ts'
 import { scheduleProblem } from './schedule.ts'
@@ -14,6 +15,12 @@ import type {
   Agreement,
   AgreedTerms,
   Checkin,
+  Deal,
+  DealEnd,
+  DealMark,
+  DealNote,
+  DealPeriod,
+  DealUnit,
   FriendState,
   Friendship,
   LineInForce,
@@ -138,6 +145,8 @@ export interface SpaceExtras {
   judges?: UID[]
   stakesNote?: StakesNote
   formerJoinedAt?: Record<UID, number>
+  /** Deals (SPEC §12.4): only when stored exactly `true`. */
+  hasDeals?: true
 }
 
 /** uid → a valid time; malformed entries left out, null when none is left. */
@@ -169,6 +178,7 @@ export function decodeSpaceExtras(d: unknown, toMs: ToMs): SpaceExtras {
   if (house) out.stakesNote = house
   const former = timesMap(o.formerJoinedAt, toMs)
   if (former) out.formerJoinedAt = former
+  if (o.hasDeals === true) out.hasDeals = true
   return out
 }
 
@@ -613,4 +623,121 @@ export function decodeCheckin(id: string, d: unknown, toMs: ToMs): Checkin | nul
   const o = obj(d)
   if (!o || !isUid(o.uid) || !isWeekId(o.weekId) || id !== checkinId(o.weekId, o.uid) || !isInt(o.amount100, 0, MAX_HUNDREDTHS)) return null
   return { id, uid: o.uid, weekId: o.weekId, amount: fromHundredths(o.amount100), note: typeof o.note === 'string' ? o.note : '', at: time(o.at, toMs) ?? 0 }
+}
+
+// ---------- Deals (SPEC §12.4, §12.8) ----------
+// spaces/{spaceId}/deals/{uid}_{seq}. Shared by the data layer and the reminders job: a malformed field is dropped or
+// read as a safe default, a doc that can't be a deal is null, and nothing throws.
+
+const DEAL_NOTES: readonly DealNote[] = ['paused', 'excused', 'missing', 'judge', 'left', 'no-score', 'empty']
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+/** A deal's `ended`: null when absent or null; a valid withdrawn / won / lost / off shape as itself (an off `reason`
+ *  other than 'called-off' or 'alone' reads 'called-off'); anything else is over with nothing owed (off at `createdAt`),
+ *  so the seq chain still reads as ended. */
+function dealEnd(v: unknown, unit: DealUnit, createdAt: number, toMs: ToMs): DealEnd | null {
+  if (v === null || v === undefined) return null
+  const fallback: DealEnd = { outcome: 'off', at: createdAt, reason: 'called-off' }
+  const o = obj(v)
+  const at = o ? time(o.at, toMs) : null
+  if (!o || at === null) return fallback
+  switch (o.outcome) {
+    case 'withdrawn':
+      return isUid(o.by) ? { outcome: 'withdrawn', at, by: o.by } : fallback
+    case 'won':
+    case 'lost': {
+      const end: DealEnd = { outcome: o.outcome, at }
+      if (isPeriodId(unit, o.period)) end.period = o.period
+      if (o.outcome === 'lost' && (o.score === null || isFiniteNumber(o.score))) end.score = o.score
+      return end
+    }
+    case 'off':
+      return { outcome: 'off', at, reason: o.reason === 'alone' ? 'alone' : 'called-off' }
+    default:
+      return fallback
+  }
+}
+
+/** The job's `track`: entries with a period id of the deal's unit, a known result and a number-or-null score, each id
+ *  once (the first); `missed` (an int ≥ 0) and `why` (a known note) kept when valid. */
+function dealTrack(v: unknown, unit: DealUnit): DealPeriod[] {
+  const out: DealPeriod[] = []
+  const seen = new Set<string>()
+  for (const item of v as unknown[]) {
+    const e = obj(item)
+    if (!e || !isPeriodId(unit, e.id) || seen.has(e.id)) continue
+    if (e.result !== 'pass' && e.result !== 'miss' && e.result !== 'skip') continue
+    if (!(e.score === null || isFiniteNumber(e.score))) continue
+    const entry: DealPeriod = { id: e.id, result: e.result, score: e.score }
+    if (isInt(e.missed, 0, 1e6)) entry.missed = e.missed
+    const why = DEAL_NOTES.find((n) => n === e.why)
+    if (why) entry.why = why
+    seen.add(e.id)
+    out.push(entry)
+  }
+  return out
+}
+
+function dealMark(v: unknown, toMs: ToMs): DealMark | null {
+  const o = obj(v)
+  const at = o ? time(o.at, toMs) : null
+  return o && typeof o.settled === 'boolean' && typeof o.by === 'string' && o.by.length > 0 && at !== null ? { settled: o.settled, by: o.by, at } : null
+}
+
+/**
+ * spaces/{spaceId}/deals/{id} (SPEC §12.4, §12.8): null when `id` isn't `${uid}_${seq}` of the doc's own `uid` and
+ * `seq`, or `unit`, `count` (1–12), either mode or `createdAt` is malformed. Texts that aren't strings read ''; `per`
+ * entries without both strings, `friends` that aren't uids (or are its person, or repeat), and `agreed` / `off`
+ * entries without a time are dropped; a `settled` entry needs `{ settled: boolean, by: string, at: time }`; `ended` as
+ * dealEnd; `agreedAt` and `checkedAt` a time, `start` a period id of the unit, `track` as dealTrack (each left out when
+ * malformed). Never throws.
+ */
+export function decodeDeal(id: string, d: unknown, spaceId: string, toMs: ToMs): Deal | null {
+  try {
+    const o = obj(d)
+    const parsed = parseDealId(id)
+    if (!o || !parsed || o.uid !== parsed.uid || o.seq !== parsed.seq || dealId(parsed.uid, parsed.seq) !== id) return null
+    const unit = o.unit === 'week' || o.unit === 'month' ? o.unit : null
+    const rewardMode = mode(o.rewardMode)
+    const penaltyMode = mode(o.penaltyMode)
+    const createdAt = time(o.createdAt, toMs)
+    if (!unit || !isInt(o.count, 1, DEAL_MAX_COUNT) || !rewardMode || !penaltyMode || createdAt === null) return null
+    const owner = parsed.uid
+    const per = uidMap(o.per, (v) => {
+      const e = obj(v)
+      return e && typeof e.reward === 'string' && typeof e.penalty === 'string' ? { reward: e.reward, penalty: e.penalty } : null
+    })
+    delete per[owner]
+    const deal: Deal = {
+      id,
+      spaceId,
+      uid: owner,
+      seq: parsed.seq,
+      unit,
+      count: o.count,
+      rewardMode,
+      penaltyMode,
+      reward: text(o.reward),
+      penalty: text(o.penalty),
+      per,
+      friends: strictUids(o.friends).filter((f) => f !== owner),
+      agreed: uidMap(o.agreed, (v) => time(v, toMs)),
+      off: uidMap(o.off, (v) => time(v, toMs)),
+      settled: uidMap(o.settled, (v) => dealMark(v, toMs)),
+      createdAt,
+      ended: dealEnd(o.ended, unit, createdAt, toMs),
+    }
+    const agreedAt = time(o.agreedAt, toMs)
+    if (agreedAt !== null) deal.agreedAt = agreedAt
+    if (isPeriodId(unit, o.start)) deal.start = o.start
+    if (Array.isArray(o.track)) deal.track = dealTrack(o.track, unit)
+    const checkedAt = time(o.checkedAt, toMs)
+    if (checkedAt !== null) deal.checkedAt = checkedAt
+    return deal
+  } catch {
+    return null
+  }
 }

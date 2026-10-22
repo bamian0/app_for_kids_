@@ -36,6 +36,10 @@ export const MAX_PAST = 5
 /** The month batch 2 ships in: month results (streaks) start here, and from here on the previous app's early
  *  freeze of a month's house stakes doesn't bind. Kept equal to the rules' literal '2026-10' (SPEC §9.8, §9.14). */
 export const FIRST_RESULTS_MONTH: MonthId = '2026-10'
+/** Deals (SPEC §12.3): the floor and default of `dealsFrom`, the first month with no month stakes. October 2026 always
+ *  keeps its stakes; the reminders job may record a later month (public/config.dealsFrom) from the first deal. Code
+ *  takes `dealsFrom` as a value (the functions below default to this), never decides by the constant alone. */
+export const DEALS_FROM_MONTH: MonthId = '2026-11'
 /** A freeze made this close before a month's completion still counts as made at completion: the rules' hour of
  *  slack plus the anchor's DST hour. */
 export const HOUSE_SLACK_MS = 2 * 3_600_000
@@ -720,3 +724,51 @@ export function streaksFor(
   return provisionalStreaks(monthId, firstMonthId, prev, month, terms)
 }
 
+
+// ---------- Deals: the month stakes cutover (SPEC §12.3, §12.8; additive: nothing above changes) ----------
+
+/**
+ * The cutover month the reminders job records from the first deal's time `t` (SPEC §12.3): the later of
+ * DEALS_FROM_MONTH and the month after the one whose terms count at `t` (termsMonth, computed bounds). A ship before
+ * October 2026 is complete gives '2026-11'; one on November 5 gives '2026-12'. Never earlier than DEALS_FROM_MONTH.
+ */
+export function dealsFromAt(space: Pick<Space, 'timezone' | 'schedule'>, t: number): MonthId {
+  const after = addMonths(termsMonth(space, t), 1)
+  return after > DEALS_FROM_MONTH ? after : DEALS_FROM_MONTH
+}
+
+/** A month has month stakes (rewards and penalties of its own, §9.7) only before `dealsFrom`. */
+export function monthHasStakes(monthId: MonthId, dealsFrom: MonthId = DEALS_FROM_MONTH): boolean {
+  return monthId < dealsFrom
+}
+
+/**
+ * A month's debts with deals (SPEC §12.8): monthDebts for months before `dealsFrom`; from it on only the streak
+ * rewards ('tier' debts), since months carry no reward or penalty of their own. Every caller of monthDebts (the month
+ * view, the verdict) uses this, passing `dealsFrom`; monthDebts itself is unchanged.
+ */
+export function stakesDebts(
+  monthId: MonthId,
+  results: Record<UID, MemberMonthResult>,
+  terms: Record<UID, Record<UID, TermsInForce>>,
+  tierRuns: Record<UID, Record<string, number>> | null,
+  dealsFrom: MonthId = DEALS_FROM_MONTH,
+): Debt[] {
+  const debts = monthDebts(monthId, results, terms, tierRuns)
+  return monthHasStakes(monthId, dealsFrom) ? debts : debts.filter((d) => d.kind === 'tier')
+}
+
+/**
+ * The October window (SPEC §12.3): the month whose terms count now (termsMonth, with this week's stored doc and the
+ * month's list when known) while it is before `dealsFrom`, so its stakes are shown read-only; else null.
+ */
+export function oldStakesMonth(
+  space: Pick<Space, 'timezone' | 'schedule'>,
+  nowMs: number,
+  thisWeek?: Week | null,
+  monthly?: MonthlyList | null,
+  dealsFrom: MonthId = DEALS_FROM_MONTH,
+): MonthId | null {
+  const month = termsMonth(space, nowMs, thisWeek, monthly)
+  return monthHasStakes(month, dealsFrom) ? month : null
+}

@@ -570,6 +570,18 @@ describe('deals: settle', () => {
     await denied(settle8('m1', F7))
   })
 
+  test('every slot is checked: one bad mark in a line of 7 refuses the write, whichever friend it is', async () => {
+    await setup8(WON)
+    const ref = dealRef(db('m1'), 'm1_1', 's8')
+    const cases: Record<string, () => Promise<unknown>> = {}
+    for (const bad of F7) {
+      const args = F7.flatMap((f) => [new FieldPath('settled', f), { settled: true, by: f === bad ? 'm3' : 'm1', at: serverTimestamp() }])
+      cases[`a mark by someone else for ${bad}`] = () => updateDoc(ref, args[0] as FieldPath, args[1], ...args.slice(2))
+    }
+    await allDenied(cases)
+    await allowed(settle8('m1', F7))
+  })
+
   test('only marks of friends who agreed, each `{ settled, by: me, at: now }`, never removed', async () => {
     await setup8(WON, { agreed: Object.fromEntries(F7.slice(0, 6).map((f) => [f, ago(39 * DAY)])), settled: { m2: { settled: true, by: 'm1', at: ago(HOUR) } } }, { leftAt: { x9: ago(DAY) } })
     const ref = dealRef(db('m1'), 'm1_1', 's8')

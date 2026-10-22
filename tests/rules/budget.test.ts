@@ -75,6 +75,28 @@
 //   the owner finishes a goal (the last branch)                 246      754          10
 //   a week's check-ins query, 8 docs                             26      974          10
 //
+// Deals (SPEC §12.7), measured 2026-10-22 (firebase-tools 15.33), with every row above re-measured the same
+// day: all unchanged (week and monthly plan 895, appends 325, cross-outs 482; the plan guard below passes),
+// except declinesPause at 607, one term over its 602 of 2026-10-17, which the pre-deals rules (4387b10)
+// measure at 607 too on the same day (the appended `|| marksDeals()` is never reached by an existing write).
+// The space's update chain gained one last branch (marksDeals) and deals have their own match block; a
+// deal update pays for the branches before its own (each starts with a changedOnly):
+//   deal create: 7 friends, both lines per friend, after an     717      283           8
+//     ended deal (getAfter of the previous one)
+//   the Edit transaction (withdraw + create + flag): the create 717      283          10
+//     op / the withdraw op / the flag op                        141 / 471    859 / 529   9 / 10
+//   marksDeals: the owner, 8 members, a pause request in play,  471      529          10
+//     last in the space chain
+//   Agree, the 7th friend, 8 members (1st branch)               110      890           9
+//   Withdraw, 6 of 7 agreed, 8 members (2nd branch)             141      859           9
+//   Call Off, the 8th tap, 8 members (3rd branch)               147      853           9
+//   settle a together line of 7 in one write (4th branch)       482      518           9
+// The create's cost is mostly validPer (shared with stakes, as SPEC §12.7 asks): about 57 expressions per
+// friend entry, 400 of the 717 (measured: passing incoming() and the space as parameters instead of lets
+// costs the same, and checking per through the friends list saves 5). Reads: the create 2 (the space,
+// getAfter of the previous deal); Agree, Withdraw, Call Off and settle 1 (the space); the flag none. "10"
+// spare reads is the most the measure tries (a transaction may read 20).
+//
 // The plan path keeps canPlan's judge check: its headroom (105) is above the 40 SPEC §9.4 asks for.
 // The plan rules try the whole list, then an append, then a cross-out (SPEC §10.7), so a cross-out
 // pays for both branches before it; that order keeps the whole-list save at 895 (guarded at the end

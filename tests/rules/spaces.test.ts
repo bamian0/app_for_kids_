@@ -625,6 +625,13 @@ describe('the deals flag (SPEC §12.7 marksDeals)', () => {
     await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 2' }))
     // An older client's rename sends all three.
     await allowed(updateDoc(doc(db('bob'), 'spaces/s1'), { name: 'Crew 3', reward: 'Tacos', penalty: 'Dishes' }))
+    // Old clients' stakes, Agree and month settlement in it (rules that read the space doc).
+    const terms = { rewardMode: 'group', penaltyMode: 'group', reward: 'Dinner', penalty: 'Coffee', tiers: [] }
+    await allowed(setDoc(doc(db('alice'), 'spaces/s1/stakes/alice'), { ...terms, per: {}, agreed: {}, updatedAt: serverTimestamp() }))
+    await allowed(updateDoc(doc(db('bob'), 'spaces/s1/stakes/alice'), { 'agreed.bob': { at: serverTimestamp(), terms, past: [] } }))
+    await allowed(setDoc(doc(db('bob'), `spaces/s1/settlements/${P}_alice_bob`), {
+      monthId: P, uid: 'alice', other: 'bob', settled: true, settledBy: 'bob', settledAt: serverTimestamp(),
+    }))
     expect(await hasDeals()).toBe(true)
   })
 

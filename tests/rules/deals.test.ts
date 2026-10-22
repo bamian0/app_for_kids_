@@ -312,7 +312,8 @@ describe('deals: propose (SPEC §12.2 Making a deal)', () => {
 
 describe('deals: edit terms after proposing (SPEC §12.17 2: terms never change)', () => {
   test('nobody changes a deal\'s terms, length, friends or identity', async () => {
-    await setup({}, { 'deals/alice_1': storedDeal({ agreed: { bob: ago(DAY) } }) })
+    // carol agreed; bob hasn't yet, so his Agree alone would pass (below).
+    await setup({}, { 'deals/alice_1': storedDeal({ agreed: { carol: ago(DAY) } }) })
     const cases: Record<string, () => Promise<unknown>> = {}
     for (const who of ['alice', 'bob', 'dan']) {
       const ref = dealRef(db(who), 'alice_1')
@@ -333,6 +334,7 @@ describe('deals: edit terms after proposing (SPEC §12.17 2: terms never change)
       })
     }
     await allDenied(cases)
+    await allowed(agree(db('bob'), 'bob'))
   })
 })
 
@@ -372,6 +374,11 @@ describe('deals: agree', () => {
       'with another field (count)': () => updateDoc(bob, new FieldPath('agreed', 'bob'), serverTimestamp(), 'count', 1),
       'with another field (agreedAt)': () => updateDoc(bob, new FieldPath('agreed', 'bob'), serverTimestamp(), 'agreedAt', serverTimestamp()),
     })
+    await allowed(agree(db('bob'), 'bob'))
+  })
+
+  test('a friend who turned judge after the proposal is still in it and agrees (SPEC §12.2)', async () => {
+    await setup({ judges: ['dan', 'bob'] }, { 'deals/alice_1': storedDeal() })
     await allowed(agree(db('bob'), 'bob'))
   })
 

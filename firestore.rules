@@ -2,7 +2,8 @@ rules_version = '2';
 
 // Stakes: Cloud Firestore security rules. The contract is docs/SPEC.md §2; for batch 2, §9 (§9.9
 // lists every change in file order, with its budget); for batch 2.5 (monthly adds, crossed-out tasks),
-// §10 (§10.7 lists the changes and their budgets); for deals, §12 (§12.7: one space branch and the deals block).
+// §10 (§10.7 lists the changes and their budgets); for deals, §12 (§12.7: one space branch, marksDeals,
+// and the deals block, appended).
 //
 // How to publish: Firebase console > Firestore Database > Rules > paste this whole file > Publish.
 // Test locally first with `npm run test:rules` (Firestore emulator + tests/rules).

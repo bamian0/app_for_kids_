@@ -1,45 +1,55 @@
-// The Stakes screen (SPEC §9.7): what counts now for you, your new stakes and who still has to agree, each
-// friend's stakes as they apply to you (with Agree), and the house stakes. Every "counts now" row is memberTerms
-// for termsMonth with termsFriends of that row's subject and the space's house stakes, as on the stakes card.
+// The Stakes screen (SPEC §12.10): October's stakes while they still count (read-only), your deal (or Make a Deal and
+// Same Again), friends' deals waiting on your Agree or your Call Off, what's left to settle, everyone's deals, your
+// streak rewards (and friends' new ones to agree to), Past Deals, and the house stakes new deals start from.
 import { useEffect, useRef, useState } from 'react'
-import { agreeToStakes, useAuth, useLatestResults, useMonthly, useProfiles, useSpace, useStakes, useWeek } from '../../data/api.ts'
-import { agreementStatus, memberTerms, missingFor, pairTerms, waitingFor } from '../../domain/stakes.ts'
+import { agreeToStakes, useAuth, useDeals, useDealsFrom, useLatestResults, useMonthly, useProfiles, useSpace, useStakes, useWeek } from '../../data/api.ts'
+import { dealFriends, lastPlayedDeal } from '../../domain/deals.ts'
+import { spaceJudges } from '../../domain/scoring.ts'
+import { memberTerms, oldStakesMonth, pairTerms } from '../../domain/stakes.ts'
 import { monthIdForWeek, weekIdFor } from '../../domain/time.ts'
-import type { MemberStakes, Space, TermsInForce, UID } from '../../domain/types.ts'
-import { Avatar, Button, EmptyState, GlassButton, Icon, Row, Screen, Section, haptic, useAlert, useSheet, useToast } from '../../ui/index.ts'
+import type { Deal, MemberStakes, Space, UID } from '../../domain/types.ts'
+import { Avatar, Button, CheckCircle, EmptyState, Facts, GlassButton, Icon, Row, Screen, Section, haptic, useAlert, useNav, useSheet, useToast } from '../../ui/index.ts'
 import { Loading } from '../components/Bits.tsx'
 import { useNow } from '../components/clock.ts'
-import { firstName, nameOf, personOf } from '../components/people.ts'
+import { personOf } from '../components/people.ts'
 import type { Profiles } from '../components/people.ts'
-import { StakesItems, StakesList } from '../components/Stakes.tsx'
-import { StakesEditorSheet } from './StakesEditorSheet.tsx'
+import { StakesItems } from '../components/Stakes.tsx'
+import { useDealActions } from './dealActions.tsx'
+import { DealHistoryScreen } from './DealHistoryScreen.tsx'
+import { DealScreen } from './DealScreen.tsx'
 import {
-  agreeConfirm,
-  agreeOutcomeNow,
-  agreeToast,
-  differsFromCurrent,
-  friendOrder,
-  friendRows,
-  friendsOf,
-  friendStatus,
-  houseFooter,
-  houseOf,
-  isJudging,
-  JUDGE_NOTE,
-  leaversHolding,
-  newFriendRows,
-  NO_OWN_FOOTER,
-  ownFooter,
-  ownRows,
-  proposedRows,
-  stakesFromLive,
-  streakLine,
-  termsInForceNow,
-  termsNow,
-  tierRows,
-  tiersShown,
-  waitingFooter,
-} from './stakes.ts'
+  atStakeLine,
+  dealNamer,
+  dealNow,
+  dealPeople,
+  dealTitle,
+  friendDealRows,
+  houseStakesFooter,
+  inDeal,
+  isOn,
+  JUDGE_NO_DEAL,
+  lastTimeText,
+  leavingFooter,
+  NO_FRIENDS,
+  octoberFooter,
+  octoberHeader,
+  possessive,
+  SETTLE_FOOTER,
+  settleRows,
+  sortSettleRows,
+  statusLine,
+  streakAgreeConfirm,
+  streakFooter,
+  streakMissingText,
+  streakStatus,
+  streaksWaitOnMe,
+  sameTierList,
+  waitingOnYouFooter,
+  yourDealFooter,
+} from './deals.ts'
+import type { Name } from './deals.ts'
+import { StreakRewardsSheet } from './StreakRewardsSheet.tsx'
+import { friendRows, friendsOf, houseOf, playingFriends, stakesCard, stakesFromLive, termsInForceNow, termsNow, tierRows, tiersShown } from './stakes.ts'
 import type { StakesDocs, TermsNow } from './stakes.ts'
 import './stakes.css'
 
@@ -47,8 +57,8 @@ const DAY = 86_400_000
 
 export interface StakesScreenProps {
   spaceId: string
-  /** Open scrolled to this friend's section (Take a Look, "Lena has new stakes"). */
-  focus?: UID
+  /** Open scrolled to this deal (Take a Look, "New deal from Lena"). */
+  focus?: string
 }
 
 export function StakesScreen({ spaceId, focus }: StakesScreenProps) {
@@ -70,61 +80,309 @@ export function StakesScreen({ spaceId, focus }: StakesScreenProps) {
   return <StakesBody space={live.data} focus={focus} />
 }
 
-function StakesBody({ space, focus }: { space: Space; focus?: UID }) {
+/** A tile like the stakes rows' (filled for what you're owed). */
+function Tile({ icon, filled }: { icon: 'handshake' | 'plus' | 'undo' | 'clock'; filled?: boolean }) {
+  return (
+    <span className={filled ? 'dl-tile dl-tile--filled' : 'dl-tile'} aria-hidden>
+      <Icon name={icon} size={18} weight={icon === 'handshake' ? 1.8 : 2.2} />
+    </span>
+  )
+}
+
+function StakesBody({ space, focus }: { space: Space; focus?: string }) {
   const { uid } = useAuth()
   const me = uid ?? ''
   const nowMs = useNow()
+  const nav = useNav()
   const sheet = useSheet()
-  const toast = useToast()
-  const { confirm } = useAlert()
+  const dealsFrom = useDealsFrom()
   const thisWeekId = weekIdFor(nowMs, space.timezone)
-  // Shared with the Space screen's listeners: this week's stored doc and this month's list tell when the month ends.
+  // Shared with the Space screen's listeners: this week's doc (the clock, its result) and this month's list (the
+  // October window).
   const week = useWeek(space, thisWeekId)
   const monthly = useMonthly(space, monthIdForWeek(thisWeekId))
+  const thisWeek = week.data?.week ?? null
+  const dealsLive = useDeals(space)
+  const deals = dealsLive.error ? undefined : dealsLive.data
   const stakesLive = useStakes(space)
   const stakes = stakesFromLive(stakesLive)
   const latest = useLatestResults(space)
+  const all = deals ? [...Object.values(deals.open), ...deals.ended] : []
   const leavers = Object.entries(space.leftAt ?? {}).flatMap(([id, at]) => (!space.memberIds.includes(id) && nowMs - at < 62 * DAY ? [id] : []))
-  const profiles: Profiles = useProfiles([...space.memberIds, ...leavers])
-  const name = (id: UID) => firstName(nameOf(profiles, id))
-  const [busy, setBusy] = useState<UID | null>(null)
+  const profiles: Profiles = useProfiles([...new Set([...space.memberIds, ...leavers, ...dealPeople(all)])])
+  const name = dealNamer(profiles, space.memberIds)
+  const actions = useDealActions(space, me, name)
+  const oldMonth = oldStakesMonth(space, nowMs, thisWeek, monthly.data?.monthly ?? null, dealsFrom)
+  const judge = spaceJudges(space).includes(me)
+  const weeks = [thisWeek]
+  const stateOf = (d: Deal) => dealNow(d, space, nowMs, weeks, week.data)
+  const ctx = { me, nowMs, tz: space.timezone, threshold: space.threshold, name }
 
-  const thisWeek = week.data?.week ?? null
-  const now = termsNow(space, nowMs, thisWeek, monthly.data?.monthly ?? null)
-  const house = houseOf(space)
-  const judge = isJudging(space, me, thisWeek)
-  const own = stakes?.[me]
-  const friends = friendsOf(space, me, now)
-  const shown = friends.filter((f) => space.memberIds.includes(f))
-  const terms = stakes ? memberTerms(space, me, friends, stakes, house, Infinity) : {}
-  const streak = latest.data?.members[me]?.streak ?? null
+  const mine = deals?.open[me]
+  const myState = mine ? stateOf(mine) : null
+  const friendsOpen = Object.values(deals?.open ?? {})
+    .filter((d) => d.uid !== me && space.memberIds.includes(d.uid))
+    .sort((a, b) => (space.joinedAt[a.uid] ?? 0) - (space.joinedAt[b.uid] ?? 0))
+    .map((deal) => ({ deal, state: stateOf(deal) }))
+  const waitingOnMe = friendsOpen.filter(
+    ({ state }) =>
+      (state.phase === 'waiting' && state.waitingFor.includes(me)) ||
+      (isOn(state) && !state.provisional && state.callOff.asked.length > 0 && state.callOff.waitingFor.includes(me)),
+  )
+  const toSettle = sortSettleRows(
+    (deals?.ended ?? []).filter((d) => d.ended?.outcome === 'won' || d.ended?.outcome === 'lost').flatMap((d) => settleRows(d, stateOf(d), { me, memberIds: space.memberIds, name })),
+  )
+  const last = deals ? lastPlayedDeal(deals.ended, me) : null
+  const playing = dealFriends(space, me)
+  const canMake = !!deals && !mine && !judge && playing.length > 0
+  const friends = [...space.memberIds].filter((id) => id !== me).sort((a, b) => (space.joinedAt[a] ?? 0) - (space.joinedAt[b] ?? 0))
 
-  // Take a Look: open on that friend's section.
-  const sections = useRef(new Map<UID, HTMLElement>())
+  // Take a Look: open on that deal.
+  const anchors = useRef(new Map<string, HTMLElement>())
   const scrolled = useRef(false)
-  const ready = stakesLive.data !== undefined || !!stakesLive.error
+  const ready = deals !== undefined || !!dealsLive.error
   useEffect(() => {
     if (!focus || !ready || scrolled.current) return
-    const el = sections.current.get(focus)
+    const el = anchors.current.get(`wait:${focus}`) ?? anchors.current.get(`friend:${focus}`)
     if (!el) return
     scrolled.current = true
     el.scrollIntoView({ block: 'start' })
   }, [focus, ready])
+  const anchor = (id: string) => (el: HTMLElement | null) => {
+    if (el) anchors.current.set(id, el)
+    else anchors.current.delete(id)
+  }
 
-  const openEditor = (friend?: UID) => sheet.present((close) => <StakesEditorSheet space={space} own={own} now={now} focus={friend} close={close} />)
+  const openDeal = (deal: Deal) => nav.push(<DealScreen spaceId={space.id} dealId={deal.id} />, { title: 'Stakes' })
+  const isOwner = space.ownerId === me
+
+  if (!ready && !stakesLive.error && stakesLive.data === undefined) {
+    return (
+      <Screen title="Stakes" titleDisplay="inline">
+        <Loading />
+      </Screen>
+    )
+  }
+
+  return (
+    <Screen
+      title="Stakes"
+      titleDisplay="inline"
+      trailing={canMake ? <GlassButton icon="plus" aria-label="Make a Deal" onClick={() => actions.edit()} /> : undefined}
+    >
+      {oldMonth && <OctoberSection space={space} me={me} nowMs={nowMs} stakes={stakes} thisWeek={thisWeek} monthly={monthly.data?.monthly ?? null} month={oldMonth} name={name} profiles={profiles} />}
+
+      {/* 2. Your Deal */}
+      {dealsLive.error ? (
+        <Section header="Your Deal">
+          <Row leading={<Tile icon="handshake" />} title="Can’t load deals" subtitle={dealsLive.error.message} />
+        </Section>
+      ) : mine && myState ? (
+        <Section header="Your Deal" footer={isOn(myState) ? leavingFooter(space.name) : undefined}>
+          <Row leading={<Tile icon="handshake" />} title={dealTitle(mine, space.threshold)} subtitle={<Facts text={statusLine(mine, myState, ctx)} />} chevron onPress={() => openDeal(mine)} />
+        </Section>
+      ) : judge ? (
+        <Section header="Your Deal">
+          <Row leading={<Tile icon="handshake" />} title={<span className="sk-note">{JUDGE_NO_DEAL}</span>} />
+        </Section>
+      ) : playing.length === 0 ? (
+        <Section header="Your Deal">
+          <Row leading={<Tile icon="handshake" />} title={<span className="sk-note">{NO_FRIENDS}</span>} />
+        </Section>
+      ) : deals ? (
+        <Section header="Your Deal" footer={yourDealFooter(space.threshold)}>
+          <Row leading={<Tile icon="plus" filled />} title="Make a Deal" action onPress={() => actions.edit()} />
+          {last && <Row leading={<Tile icon="undo" />} title="Same Again" subtitle={lastTimeText(last)} action onPress={() => void actions.sameAgain(last)} />}
+        </Section>
+      ) : null}
+
+      {/* 3. Waiting on You */}
+      {waitingOnMe.map(({ deal, state }, i) => {
+        const subject = name(deal.uid)
+        const person = personOf(profiles, deal.uid)
+        const agreeing = state.phase === 'waiting'
+        return (
+          <div className="sk-section" key={deal.id} ref={anchor(`wait:${deal.id}`)}>
+            <Section header={i === 0 ? 'Waiting on You' : undefined} footer={waitingOnYouFooter(deal, state, me, name, nowMs, space.timezone)}>
+              <Row
+                leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={30} />}
+                title={<span className="t-semibold">{`${possessive(subject)} deal: ${dealTitle(deal, space.threshold)}`}</span>}
+                chevron
+                onPress={() => openDeal(deal)}
+              />
+              <StakesItems items={friendDealRows(deal, me, subject)} />
+              <div className="sk-agree">
+                {agreeing ? (
+                  <Button size="large" fullWidth onClick={() => void actions.agree(deal, state)}>
+                    {`Agree to ${possessive(subject)} Deal`}
+                  </Button>
+                ) : (
+                  <Button size="large" fullWidth variant="destructive" onClick={() => void actions.callOff(deal, state)}>
+                    Call Off
+                  </Button>
+                )}
+              </div>
+            </Section>
+          </div>
+        )
+      })}
+
+      {/* 4. To Settle */}
+      {toSettle.length > 0 && (
+        <Section header="To Settle" footer={SETTLE_FOOTER}>
+          {toSettle.map((row) => (
+            <Row
+              key={`${row.deal.id}-${row.line.keys.join(',')}`}
+              leading={<CheckCircle checked={row.settled} disabled={!row.canSettle} onChange={() => actions.settle(row)} aria-label={`Settled: ${row.title}`} />}
+              title={<span className="t-semibold">{row.title}</span>}
+              subtitle={<Facts text={row.subtitle} />}
+            />
+          ))}
+        </Section>
+      )}
+
+      {/* 5. Friends’ Deals */}
+      {friends.length > 0 && (
+        <Section header="Friends’ Deals">
+          {friends.map((f) => {
+            const person = personOf(profiles, f)
+            const open = friendsOpen.find((x) => x.deal.uid === f)
+            const avatar = <Avatar name={person.name} color={person.color} photo={person.photo} size={30} />
+            if (!open) return <Row key={f} leading={avatar} title={name(f)} subtitle="Nothing at stake" />
+            const stake = inDeal(open.deal, open.state, me) ? atStakeLine(open.deal, me, name(f)) : null
+            return (
+              <div key={f} ref={anchor(`friend:${open.deal.id}`)} className="sk-section">
+                <Row
+                  leading={avatar}
+                  title={name(f)}
+                  subtitle={
+                    <>
+                      <span className="dl-sub">{statusLine(open.deal, open.state, ctx)}</span>
+                      {stake && <span className="dl-sub dl-sub--quiet">{stake}</span>}
+                    </>
+                  }
+                  chevron
+                  onPress={() => openDeal(open.deal)}
+                />
+              </div>
+            )
+          })}
+        </Section>
+      )}
+
+      {/* 6. Streak Rewards */}
+      {stakes && (
+        <StreakRewards
+          space={space}
+          me={me}
+          stakes={stakes}
+          now={termsNow(space, nowMs, thisWeek, monthly.data?.monthly ?? null)}
+          frozen={!!oldMonth}
+          judge={judge}
+          streak={latest.data?.members[me]?.streak ?? null}
+          name={name}
+          profiles={profiles}
+          onEdit={() => sheet.present((close) => <StreakRewardsSheet space={space} close={close} />, { 'aria-label': 'Streak Rewards' })}
+        />
+      )}
+
+      {/* 7. Past Deals */}
+      <Section>
+        <Row icon="clock" title="Past Deals" chevron onPress={() => nav.push(<DealHistoryScreen spaceId={space.id} />, { title: 'Stakes' })} />
+      </Section>
+
+      {/* 8. House Stakes */}
+      <Section header="House Stakes" footer={houseStakesFooter(name(space.ownerId), isOwner, oldMonth)}>
+        <StakesItems
+          items={[
+            { icon: 'trophy', label: 'If you make it', text: space.reward },
+            { icon: 'flame', label: 'If you miss', text: space.penalty },
+          ]}
+        />
+      </Section>
+    </Screen>
+  )
+}
+
+interface OctoberProps {
+  space: Space
+  me: UID
+  nowMs: number
+  stakes: StakesDocs | undefined
+  thisWeek: import('../../domain/types.ts').Week | null
+  monthly: import('../../domain/types.ts').MonthlyList | null
+  month: string
+  name: Name
+  profiles: Profiles
+}
+
+/** October's stakes (read-only): your two rows, then each friend's as they apply to you. */
+function OctoberSection({ space, me, nowMs, stakes, thisWeek, monthly, month, name, profiles }: OctoberProps) {
+  const model = stakesCard({ space, me, stakes, nowMs, thisWeek, monthly, name })
+  const now = model.now
+  const friends = playingFriends(space, me)
+  return (
+    <Section header={octoberHeader(month)} footer={octoberFooter(month)}>
+      <StakesItems items={model.rows} />
+      {stakes &&
+        friends.map((f) => {
+          const forMe = termsInForceNow(space, f, stakes, now, [me])[me]
+          if (!forMe) return null
+          const person = personOf(profiles, f)
+          const alone = friendsOf(space, f, now).filter((x) => space.memberIds.includes(x)).length <= 1
+          return (
+            <div key={f}>
+              <div className="sk-subhead dl-subhead">
+                <Avatar name={person.name} color={person.color} photo={person.photo} size={18} />
+                {name(f)}
+              </div>
+              <StakesItems items={friendRows(name(f), forMe, space.threshold, alone)} />
+            </div>
+          )
+        })}
+    </Section>
+  )
+}
+
+interface StreakProps {
+  space: Space
+  me: UID
+  stakes: StakesDocs
+  now: TermsNow
+  /** The October window: no edit, no Agree. */
+  frozen: boolean
+  judge: boolean
+  streak: number | null
+  name: Name
+  profiles: Profiles
+  onEdit: () => void
+}
+
+/** Your streak rewards in force (and your new ones with who agreed), and friends' new ones to agree to. */
+function StreakRewards({ space, me, stakes, now, frozen, judge, streak, name, profiles, onEdit }: StreakProps) {
+  const toast = useToast()
+  const { confirm } = useAlert()
+  const [busy, setBusy] = useState<UID | null>(null)
+  const own: MemberStakes | undefined = stakes[me]
+  const friends = friendsOf(space, me, now)
+  const shown = friends.filter((f) => space.memberIds.includes(f))
+  const terms = memberTerms(space, me, friends, stakes, houseOf(space), Infinity)
+  const inForce = tiersShown(terms, shown)
+  const mineNew = own && !sameTierList(inForce, own.tiers) ? own.tiers : null
+  const others = playingFriends(space, me).filter((f) => streaksWaitOnMe(stakes[f], me))
 
   const agree = async (subject: UID) => {
-    const terms = pairTerms(stakes?.[subject], me)
-    if (!terms || busy) return
-    const outcome = agreeOutcomeNow(space, subject, me, stakes, now, nowMs)
-    const ask = agreeConfirm(name(subject), terms, outcome, now, name, space.threshold)
+    const theirs = stakes[subject]
+    const t = pairTerms(theirs, me)
+    if (!theirs || !t || busy) return
+    const ask = streakAgreeConfirm(name(subject), theirs.tiers)
     const ok = await confirm({
       title: ask.title,
       message: (
         <>
-          {ask.lines.map((line, i) => (
-            <span key={i} style={{ display: 'block', marginTop: i === ask.lines.length - 1 ? 8 : 0 }}>
-              {line}
+          {ask.lines.map((l, i) => (
+            <span key={i} style={{ display: 'block' }}>
+              {l}
             </span>
           ))}
         </>
@@ -134,10 +392,9 @@ function StakesBody({ space, focus }: { space: Space; focus?: UID }) {
     if (!ok) return
     setBusy(subject)
     try {
-      await agreeToStakes(space, subject, terms)
+      await agreeToStakes(space, subject, t)
       haptic()
-      const done = agreeToast(name(subject), outcome, now, name)
-      toast({ title: done.title, message: done.message, icon: 'checkmark', tone: 'success' })
+      toast({ title: 'You agreed', message: 'They count once everyone agrees.', icon: 'checkmark', tone: 'success' })
     } catch (e) {
       toast({ title: 'Couldn’t agree', message: e instanceof Error ? e.message : undefined, tone: 'error' })
     } finally {
@@ -145,222 +402,75 @@ function StakesBody({ space, focus }: { space: Space; focus?: UID }) {
     }
   }
 
-  if (!ready) {
-    return (
-      <Screen title="Stakes" titleDisplay="inline">
-        <Loading />
-      </Screen>
-    )
-  }
-
-  const owner = space.ownerId === me
-  return (
-    <Screen
-      title="Stakes"
-      titleDisplay="inline"
-      trailing={judge || space.memberIds.length < 2 ? undefined : <GlassButton onClick={() => openEditor()}>Edit</GlassButton>}
-    >
-      {stakesLive.error && <EmptyState icon="info" title="Can’t load everyone’s stakes" message="For now, the house stakes count for everyone." />}
-      {judge && (
-        <Section>
-          <Row leading={<span className="sk-line-icon" aria-hidden><Icon name="person2" size={16} weight={2.2} /></span>} title={<span className="sk-note">{JUDGE_NOTE}</span>} />
-        </Section>
-      )}
-
-      {stakes && space.memberIds.length > 1 && (
-        <YourStakes space={space} own={own} friends={friends} shown={shown} terms={terms} now={now} streak={streak} judge={judge} name={name} profiles={profiles} onEdit={openEditor} />
-      )}
-
-      {stakes &&
-        friendOrder(space, me, stakes, judge, now).map((subject) => (
-          <FriendStakes
-            key={subject}
-            sectionRef={(el) => {
-              if (el) sections.current.set(subject, el)
-              else sections.current.delete(subject)
-            }}
-            space={space}
-            me={me}
-            subject={subject}
-            stakes={stakes}
-            now={now}
-            judge={judge}
-            busy={busy === subject}
-            name={name}
-            profiles={profiles}
-            onAgree={() => void agree(subject)}
-          />
-        ))}
-
-      <Section header="House stakes" footer={houseFooter(name(space.ownerId), owner)}>
-        <StakesList reward={house.reward} penalty={house.penalty} threshold={space.threshold} />
-      </Section>
-    </Screen>
-  )
-}
-
-interface YourStakesProps {
-  space: Space
-  own: MemberStakes | undefined
-  friends: UID[]
-  shown: UID[]
-  terms: Record<UID, TermsInForce>
-  now: TermsNow
-  streak: number | null
-  judge: boolean
-  name: (uid: UID) => string
-  profiles: Profiles
-  onEdit: (friend?: UID) => void
-}
-
-function YourStakes({ space, own, friends, shown, terms, now, streak, judge, name, profiles, onEdit }: YourStakesProps) {
-  const house = houseOf(space)
-  const rowsNow = [...ownRows(terms, shown, house, name, space.threshold), ...tierRows(tiersShown(terms, shown))]
-  if (!own) {
-    const footer = [judge ? null : NO_OWN_FOOTER, streakLine(streak)].filter(Boolean).join(' ')
-    return (
-      <Section header="Your stakes" footer={footer || undefined}>
-        <StakesItems items={rowsNow} />
-        {!judge && <Row leading={<span className="sk-action-icon" aria-hidden><Icon name="plus" size={20} weight={2.2} /></span>} title="Set Your Own Stakes" action onPress={() => onEdit()} />}
-      </Section>
-    )
-  }
-  const differs = shown.some((f) => differsFromCurrent(terms[f], pairTerms(own, f)))
-  const waiting = waitingFor(own, shown, terms)
-  const missing = missingFor(own, shown)
-  const footer = ownFooter({
-    waiting: waiting.map(name),
-    total: shown.length,
-    leavers: leaversHolding(space, own, friends, terms).map(name),
-    month: now.month,
-    allAgreed: !differs && waiting.length === 0 && missing.length === 0,
-    streak,
-  })
-  const statusRows = shown.map((f) => {
-    const person = personOf(profiles, f)
-    const avatar = <Avatar name={person.name} color={person.color} photo={person.photo} size={30} />
-    const status = friendStatus(own, f, terms)
-    if (status.kind === 'missing') {
-      return judge ? (
-        <Row key={f} leading={avatar} title={name(f)} subtitle="No stakes set for them yet" />
-      ) : (
-        <Row key={f} leading={avatar} title={`Add Stakes for ${name(f)}`} action onPress={() => onEdit(f)} />
-      )
-    }
-    if (status.kind === 'agreed') {
-      return (
-        <Row
-          key={f}
-          leading={avatar}
-          title={name(f)}
-          detail={
-            <span className="sk-status">
-              <Icon name="checkmark" size={13} weight={2.6} />
-              Agreed
-            </span>
-          }
-        />
-      )
-    }
-    return (
-      <Row
-        key={f}
-        leading={avatar}
-        title={name(f)}
-        subtitle={status.subtitle}
-        detail={
-          <span className="sk-status">
-            <Icon name="clock" size={13} weight={2.2} />
-            Waiting
-          </span>
-        }
-      />
-    )
-  })
-  if (!differs) {
-    return (
-      <Section header="Your stakes" footer={footer ?? undefined}>
-        <StakesItems items={rowsNow} />
-        {statusRows}
-      </Section>
-    )
-  }
   return (
     <>
-      <Section header="Your stakes" headerAccessory={<span className="sk-head__counts">Counts now</span>}>
-        <StakesItems items={rowsNow} />
-      </Section>
-      <Section header="Your new stakes" footer={footer ?? undefined}>
-        <StakesItems items={proposedRows(own, shown, name, space.threshold)} />
-        {statusRows}
-      </Section>
-    </>
-  )
-}
-
-interface FriendStakesProps {
-  sectionRef: (el: HTMLElement | null) => void
-  space: Space
-  me: UID
-  subject: UID
-  stakes: StakesDocs
-  now: TermsNow
-  judge: boolean
-  busy: boolean
-  name: (uid: UID) => string
-  profiles: Profiles
-  onAgree: () => void
-}
-
-function FriendStakes({ sectionRef, space, me, subject, stakes, now, judge, busy, name, profiles, onAgree }: FriendStakesProps) {
-  const theirs = stakes[subject]
-  const subjectName = name(subject)
-  const person = personOf(profiles, subject)
-  // What counts between them and their friends now; for you, even while you judge (you're then not among them).
-  const inForce = termsInForceNow(space, subject, stakes, now)
-  const forMe = inForce[me] ?? termsInForceNow(space, subject, stakes, now, [me])[me]
-  const theirFriends = friendsOf(space, subject, now).filter((f) => space.memberIds.includes(f))
-  const alone = theirFriends.length <= 1
-  const current = pairTerms(theirs, me)
-  const status = theirs ? agreementStatus(theirs, me, inForce) : 'missing'
-  const showNew = differsFromCurrent(forMe, current)
-  const footer =
-    theirs && status !== 'missing' ? waitingFooter(waitingFor(theirs, theirFriends, inForce), me, name) : `${subjectName} hasn’t set stakes with you yet. The house stakes count.`
-  return (
-    <div className="sk-section" ref={sectionRef}>
-      <Section
-        header={
-          <span className="sk-head">
-            <Avatar name={person.name} color={person.color} photo={person.photo} size={22} />
-            {subjectName}
-          </span>
-        }
-        footer={footer}
-      >
-        {forMe && <StakesItems items={friendRows(subjectName, forMe, space.threshold, alone)} />}
-        {showNew && current && (
+      <Section header="Streak Rewards" footer={streakFooter(space.threshold, streak)}>
+        {inForce.length > 0 ? <StakesItems items={tierRows(inForce)} /> : !mineNew && <Row title={<span className="sk-note">No streak rewards yet</span>} />}
+        {mineNew && own && (
           <>
-            <div className="sk-subhead">New</div>
-            <StakesItems items={newFriendRows(subjectName, current, space.threshold, alone)} />
+            <div className={inForce.length > 0 ? 'sk-subhead' : 'sk-subhead dl-subhead--first'}>Your new streak rewards</div>
+            {mineNew.length > 0 ? <StakesItems items={tierRows(mineNew)} /> : <Row title={<span className="sk-note">None: you removed them</span>} />}
+            {shown.map((f) => {
+              const person = personOf(profiles, f)
+              const status = streakStatus(own, f)
+              return (
+                <Row
+                  key={f}
+                  leading={<Avatar name={person.name} color={person.color} photo={person.photo} size={30} />}
+                  title={name(f)}
+                  detail={
+                    <span className="sk-status">
+                      <Icon name={status === 'Agreed' ? 'checkmark' : 'clock'} size={13} weight={status === 'Agreed' ? 2.6 : 2.2} />
+                      {status}
+                    </span>
+                  }
+                />
+              )
+            })}
           </>
         )}
-        {status === 'missing' ? null : status === 'agreed' ? (
+        {!frozen && !judge && (
           <Row
             leading={
-              <span className="sk-line-icon" aria-hidden>
-                <Icon name="checkmark" size={15} weight={2.6} />
+              <span className="sk-action-icon" aria-hidden>
+                <Icon name="sparkles" size={19} weight={2} />
               </span>
             }
-            title="You agreed"
+            title="Edit Streak Rewards"
+            action
+            onPress={onEdit}
           />
-        ) : judge ? null : (
-          <div className="sk-agree">
-            <Button size="large" fullWidth loading={busy} onClick={onAgree}>
-              {`Agree to ${subjectName}’s Stakes`}
-            </Button>
-          </div>
         )}
       </Section>
-    </div>
+      {!frozen &&
+        !judge &&
+        others.map((f) => {
+          const theirs = stakes[f]
+          const subject = name(f)
+          const person = personOf(profiles, f)
+          const missing = pairTerms(theirs, me) === null
+          return (
+            <Section
+              key={f}
+              header={
+                <span className="sk-head">
+                  <Avatar name={person.name} color={person.color} photo={person.photo} size={22} />
+                  {`${possessive(subject)} streak rewards`}
+                </span>
+              }
+              footer={missing ? streakMissingText(subject) : undefined}
+            >
+              {theirs.tiers.length > 0 ? <StakesItems items={tierRows(theirs.tiers)} /> : <Row title={<span className="sk-note">No streak rewards anymore</span>} />}
+              {!missing && (
+                <div className="sk-agree">
+                  <Button size="large" fullWidth loading={busy === f} onClick={() => void agree(f)}>
+                    {`Agree to ${possessive(subject)} Streak Rewards`}
+                  </Button>
+                </div>
+              )}
+            </Section>
+          )
+        })}
+    </>
   )
 }

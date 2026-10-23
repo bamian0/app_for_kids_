@@ -162,7 +162,18 @@ describe('results writer', () => {
     // Tuesday Dec 1, 10:17: November is written first, then its verdict quotes it.
     expect(await runReminders({ db, send: push.send, nowMs: at('2026-12-01T10:17:00Z'), log: quiet })).toMatchObject({ results: 1, errors: 0 })
     expect((await results('s1', '2026-11'))!.members.a).toEqual({ score: 100, passed: true, streak: 2, tierRuns: { 2: 2 } })
+    // November 2026 has no month stakes, SPEC §12: the verdict says how the month went and names only the streak
+    // rewards owed (§12.11).
     expect(push.lines()).toEqual([
+      'a | 2 months in a row: 100% | November in s1 is done. Collect your streak reward: Weekend away.',
+      'b | You made it: 100% | November in s1 is done.',
+      'c | You fell short: 0% | November in s1 is done.',
+    ])
+    // With the cutover recorded later (a late ship: dealsFrom December), November keeps its stakes as October does.
+    await db.recursiveDelete(db.collection('_private'))
+    const lateShip = fakePush()
+    await runReminders({ db, send: lateShip.send, nowMs: at('2026-12-01T10:17:00Z'), log: quiet, dealsFrom: '2026-12' })
+    expect(lateShip.lines()).toEqual([
       'a | 2 months in a row: 100% | November in s1 is done. Collect: Dinner, on you, plus Weekend away.',
       'b | You made it: 100% | November in s1 is done. Collect from Anna and Chris.',
       'c | You fell short: 0% | November in s1 is done. Pay up: Coffee for a week',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { computeMonth, computeWeek } from '../../domain/scoring.ts'
+import { DEALS_FROM_MONTH } from '../../domain/stakes.ts'
 import type { MemberMonthResult, MemberWeekResult, WeekResult } from '../../domain/scoring.ts'
 import { monthCompleteAt, weekBounds } from '../../domain/time.ts'
 import type { Review, Space, WeekData } from '../../domain/types.ts'
@@ -213,21 +214,21 @@ describe('month verdict', () => {
   const stakes = { reward: 'Dinner', penalty: 'Coffee' }
 
   it('names who owes whom from the month’s players', () => {
-    expect(verdictText(monthResult('a', { others: ['b'] }), 'a', name, stakes)).toBe('Ben owes you: Dinner')
-    expect(verdictText(monthResult('a', { others: ['b', 'c'], passed: false }), 'a', name, stakes)).toBe('You owe Ben and Cat: Coffee')
-    expect(verdictText(monthResult('b', { others: ['a', 'c'] }), 'a', name, stakes)).toBe('You and Cat owe Ben: Dinner')
-    expect(verdictText(monthResult('b', { others: ['a'], passed: false }), 'a', name, stakes)).toBe('Ben owes you: Coffee')
+    expect(verdictText(monthResult('a', { others: ['b'] }), 'a', name, stakes, DEALS_FROM_MONTH)).toBe('Ben owes you: Dinner')
+    expect(verdictText(monthResult('a', { others: ['b', 'c'], passed: false }), 'a', name, stakes, DEALS_FROM_MONTH)).toBe('You owe Ben and Cat: Coffee')
+    expect(verdictText(monthResult('b', { others: ['a', 'c'] }), 'a', name, stakes, DEALS_FROM_MONTH)).toBe('You and Cat owe Ben: Dinner')
+    expect(verdictText(monthResult('b', { others: ['a'], passed: false }), 'a', name, stakes, DEALS_FROM_MONTH)).toBe('Ben owes you: Coffee')
   })
 
   it('owes nothing alone', () => {
-    expect(verdictText(monthResult('a'), 'a', name, stakes)).toBe('Just you this month, so nothing’s owed.')
-    expect(verdictStatus('2026-09', monthResult('a'), 'a', name)).toBe('September: just you, nothing owed')
+    expect(verdictText(monthResult('a'), 'a', name, stakes, DEALS_FROM_MONTH)).toBe('Just you this month, so nothing’s owed.')
+    expect(verdictStatus('2026-09', monthResult('a'), 'a', name, DEALS_FROM_MONTH)).toBe('September: just you, nothing owed')
   })
 
   it('writes the home card line', () => {
-    expect(verdictStatus('2026-09', monthResult('a', { others: ['b'] }), 'a', name)).toBe('September: Ben owes you')
-    expect(verdictStatus('2026-09', monthResult('a', { others: ['b', 'c', 'd', 'e'], passed: false }), 'a', name)).toBe('September: You owe 4 friends')
-    expect(verdictStatus('2026-09', monthResult('a', { complete: false, passed: null }), 'a', name)).toBeNull()
+    expect(verdictStatus('2026-09', monthResult('a', { others: ['b'] }), 'a', name, DEALS_FROM_MONTH)).toBe('September: Ben owes you')
+    expect(verdictStatus('2026-09', monthResult('a', { others: ['b', 'c', 'd', 'e'], passed: false }), 'a', name, DEALS_FROM_MONTH)).toBe('September: You owe 4 friends')
+    expect(verdictStatus('2026-09', monthResult('a', { complete: false, passed: null }), 'a', name, DEALS_FROM_MONTH)).toBeNull()
   })
 
   it('lets only the people owed mark it settled', () => {
@@ -360,7 +361,7 @@ describe('month roster', () => {
     const now = Date.UTC(2026, 9, 11)
     const results = computeMonth(space, '2026-09', weeks, now)
     expect(results.c.former).toBe(true)
-    expect(verdictText(results.c, 'a', name, { reward: 'r', penalty: 'p' })).toMatch(/^Cat owes you and Ben: p$/)
+    expect(verdictText(results.c, 'a', name, { reward: 'r', penalty: 'p' }, DEALS_FROM_MONTH)).toMatch(/^Cat owes you and Ben: p$/)
     expect(results.a.others).not.toContain('d')
     expect(computeWeek(weeks[0], space, now).members.c.participating).toBe(true)
   })

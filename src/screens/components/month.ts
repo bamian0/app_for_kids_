@@ -2,11 +2,11 @@
 import { scheduleOf } from '../../domain/schedule.ts'
 import { isMonthPlayer } from '../../domain/scoring.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
-import { debtLines, monthDebts, monthTerms, streaksFor } from '../../domain/stakes.ts'
+import { debtLines, monthHasStakes, monthTerms, stakesDebts, streaksFor } from '../../domain/stakes.ts'
 import type { DebtLine, House, Streaks } from '../../domain/stakes.ts'
 import { addMonths, firstMonthOf, monthCompleteAt, monthIdForWeek, weekIdFor } from '../../domain/time.ts'
 import type { MemberStakes, MonthId, MonthResults, Settlement, Space, TermsInForce, UID } from '../../domain/types.ts'
-import { formatScore, monthName, shortDate } from './format.ts'
+import { formatScore, monthName, shortDate, wholePercent } from './format.ts'
 import { compactNames, listNames } from './people.ts'
 
 const DAY = 86_400_000
@@ -60,17 +60,30 @@ export function owesPhrase(result: MemberMonthResult, me: UID, name: (uid: UID) 
   return `${cap(who)} ${isMe ? 'owe' : 'owes'} ${list}`
 }
 
-/** The verdict line under a member's month, quoting the month's stakes; null until the month is over. */
-export function verdictText(result: MemberMonthResult, me: UID, name: (uid: UID) => string, stakes: { reward: string; penalty: string }): string | null {
-  if (!result.complete) return null
+/** The verdict line under a member's month, quoting the month's stakes; null until the month is over, and from
+ *  `dealsFrom` on (months carry no stakes of their own then: deals settle on the Stakes screen, SPEC §12.10). */
+export function verdictText(
+  result: MemberMonthResult,
+  me: UID,
+  name: (uid: UID) => string,
+  stakes: { reward: string; penalty: string },
+  dealsFrom: MonthId,
+): string | null {
+  if (!result.complete || !monthHasStakes(result.monthId, dealsFrom)) return null
   if (result.passed === null) return 'No scored weeks, so nothing’s owed.'
   if (result.others.length === 0) return `Just ${result.uid === me ? 'you' : name(result.uid)} this month, so nothing’s owed.`
   return `${owesPhrase(result, me, name)}: ${result.passed ? stakes.reward : stakes.penalty}`
 }
 
-/** The home card's line for a fresh verdict: "October: Lena owes you". null when there is no verdict. */
-export function verdictStatus(monthId: MonthId, result: MemberMonthResult, me: UID, name: (uid: UID) => string): string | null {
+/** The home card's line for a fresh verdict: "October: Lena owes you"; from `dealsFrom` on, how the month went
+ *  ("November: cleared the bar", "November: missed by 4 points", SPEC §12.10). null when there is no verdict. */
+export function verdictStatus(monthId: MonthId, result: MemberMonthResult, me: UID, name: (uid: UID) => string, dealsFrom: MonthId, threshold = 90): string | null {
   if (!result.complete || result.passed === null) return null
+  if (!monthHasStakes(monthId, dealsFrom)) {
+    if (result.finalScore === null) return null
+    const short = Math.max(1, threshold - wholePercent(result.finalScore))
+    return result.passed ? `${monthName(monthId)}: cleared the bar` : `${monthName(monthId)}: missed by ${short} ${short === 1 ? 'point' : 'points'}`
+  }
   if (result.others.length === 0) return `${monthName(monthId)}: just you, nothing owed`
   return `${monthName(monthId)}: ${owesPhrase(result, me, name, true)}`
 }
@@ -283,11 +296,13 @@ export function monthDebtView(input: {
   firstLockAt: number
   stored: MonthResults | null | undefined
   prev: MonthResults | null | undefined
+  /** The first month without month stakes (useDealsFrom): from it on, only streak rewards are owed. */
+  dealsFrom: MonthId
 }): MonthDebtView {
-  const { space, monthId, results, stakes, house, completeAt, firstLockAt, stored, prev } = input
+  const { space, monthId, results, stakes, house, completeAt, firstLockAt, stored, prev, dealsFrom } = input
   const terms = monthTerms(space, monthId, results, stakes, house, { completeAt, firstLockAt }, stored)
   const complete = Object.values(results).some((r) => r.complete)
-  if (!complete) return { terms, lines: debtLines(monthDebts(monthId, soFar(results, space.threshold), terms, null)), streaks: null }
+  if (!complete) return { terms, lines: debtLines(stakesDebts(monthId, soFar(results, space.threshold), terms, null, dealsFrom)), streaks: null }
   const streaks = streaksFor(monthId, firstMonthOf(space), stored, prev, results, terms)
-  return { terms, lines: debtLines(monthDebts(monthId, results, terms, streaks?.tierRuns ?? null)), streaks }
+  return { terms, lines: debtLines(stakesDebts(monthId, results, terms, streaks?.tierRuns ?? null, dealsFrom)), streaks }
 }

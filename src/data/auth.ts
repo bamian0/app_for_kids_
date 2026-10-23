@@ -15,6 +15,7 @@ import type { UID, UserProfile } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { Live } from './api.ts'
 import { isProfilePhoto, toProfile } from './convert.ts'
+import { withdrawAllWaitingDeals } from './deals.ts'
 import { errorCode, humanError, isDenied, MSG } from './errors.ts'
 import { deleteAllMoney } from './money.ts'
 import { deleteMyFriendCodes, deleteMyFriendships } from './friends.ts'
@@ -135,7 +136,8 @@ export async function updateMyPhoto(photo: string | null): Promise<void> {
  * see nothing from then on, stats included), every shared goal is left the way leaveSharedGoal leaves it (your part
  * stays in its totals) and every invitation declined, and your friend codes go; after the profile, every pair you are
  * in, then the job's rings, stats and scores docs (the job skips users without a profile, so it won't write them
- * again), and the showcase last.
+ * again), and the showcase last. Deals (SPEC §12.13): before leaving the spaces, a deal of yours still waiting for
+ * agreement is withdrawn; no deal is deleted.
  */
 export async function deleteMyAccount(password: string): Promise<void> {
   const user = requireUser()
@@ -158,6 +160,9 @@ export async function deleteMyAccount(password: string): Promise<void> {
     await hideShowcase(user.uid)
     await leaveAllSharedGoals(user.uid)
     await deleteMyFriendCodes(user.uid)
+    // Deals (SPEC §12.13), while still a member: a waiting deal of yours is withdrawn (best effort); nothing is
+    // deleted, and an agreed one is lost by the leave like any leaver's.
+    await withdrawAllWaitingDeals(user.uid).catch(() => {})
     await leaveAllSpaces(user.uid)
     const subs = await getDocs(collection(db, 'users', user.uid, 'push'))
     await Promise.all(subs.docs.map((sub) => deleteDoc(sub.ref)))

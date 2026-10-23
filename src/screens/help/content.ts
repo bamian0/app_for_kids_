@@ -50,7 +50,7 @@ const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
 
 /** When reminders come, as the profile's Notifications footer says it; the job sends these (SPEC §4, §9.11, §11.10). */
 export const REMINDER_TIMES =
-  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK. Shared goals remind you to check in as each week ends.'
+  'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK or a deal ends. Shared goals remind you to check in as each week ends.'
 
 /** The Help sheet, in the order a newcomer meets things. About three minutes of reading, at most. */
 export function helpSections(rules: HelpRules = RULES): HelpSection[] {
@@ -66,9 +66,9 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       title: 'Spaces and stakes',
       paragraphs: [
         `A space is you and up to ${maxMembers - 1} friends. Start one, or join with an invite link or code.`,
-        'Each space has house stakes, set by the owner. You can also set your own reward and penalty.',
-        'Your stakes count as soon as friends tap Agree; a line that’s the same for everyone needs all of them.',
-        'A month’s stakes are set when it ends.',
+        'Make a deal with friends: your reward, your penalty, and how many weeks or months it runs.',
+        `It starts when every friend taps Agree. Every week or month in it needs ${threshold}%; the first miss ends it and you owe your penalty.`,
+        'Make it to the end and they owe you your reward. Then nothing’s at stake until a new deal.',
         `Deadlines follow the space’s time zone. Join after ${momentDay(lock)}’s lock and you start the next week.`,
         'Turn on Only Rate Friends to review everyone with no list and nothing owed. In a month you also play, weeks you judge count as 0%.',
         'The owner can change when lists lock and reviews open and close, with a day’s notice.',
@@ -95,7 +95,7 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
         `${reviewStart}, mark each friend’s tasks: Done, Half or Not done. You review everyone with tasks that week.`,
         'It’s blind: nobody sees any marks until everyone has submitted, or the deadline passes.',
         `Submit once, before ${momentText(deadline, hourCycle)}. Reviews are final.`,
-        `Every friend you don’t review costs you ${points(latePenalty)} off your month.`,
+        `Every friend you don’t review costs you ${points(latePenalty)} off your month, and off that week in a deal.`,
         'In a month’s last week, you also review your friends’ monthly lists.',
         'For a crossed-out task, pick Fair, Skip It or Not Done. If most say fair, it doesn’t count.',
       ],
@@ -105,12 +105,12 @@ export function helpSections(rules: HelpRules = RULES): HelpSection[] {
       icon: 'trophy',
       title: 'Scores and the month',
       paragraphs: [
-        'Your week’s score comes from your friends’ marks: Done counts fully, Half counts half. If nobody reviews you, your own ticks count instead.',
+        'Your week’s score comes from your friends’ marks; if nobody reviews you, your own ticks count.',
         `Your month is the average of its weeks, minus ${points(latePenalty)} for each review you missed. A week belongs to the month its Friday falls in.`,
-        `Hit ${threshold}% for the month and your friends owe you your reward. Miss it and you owe them your penalty.`,
+        'In a weekly deal, a paused or skipped week adds one more.',
         'Nothing is paid in the app. Settle up in real life, then whoever was owed marks each one Settled.',
         'Anyone can ask to pause a week before its reviews open. If everyone says OK, it doesn’t count. One pause a month.',
-        `Hit ${threshold}% several months in a row for streak rewards. Sitting a month out doesn’t break a streak; a month under ${threshold}% starts it over.`,
+        `Hit ${threshold}% several months in a row for streak rewards; a month under ${threshold}% starts it over.`,
       ],
     },
     {
@@ -207,7 +207,7 @@ export function introPages(rules: HelpRules = RULES): IntroPage[] {
     {
       id: 'welcome',
       title: 'Welcome to Stakes',
-      text: 'Plan your week, let friends review it on Friday, and see who owes whom at the end of the month.',
+      text: 'Plan your week, let friends review it on Friday, and make deals on how you do.',
     },
     {
       id: 'plan',
@@ -222,7 +222,7 @@ export function introPages(rules: HelpRules = RULES): IntroPage[] {
     {
       id: 'month',
       title: `Hit ${rules.threshold}% and they owe you`,
-      text: 'Your month is the average of your weeks. Miss the bar and you owe them instead.',
+      text: `Make a deal for a few weeks or months. Keep each one at ${rules.threshold}% and they owe you; miss one and you owe them.`,
     },
     {
       id: 'money',

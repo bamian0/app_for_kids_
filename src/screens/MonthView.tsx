@@ -1,7 +1,8 @@
 // The month: your score against the bar, everyone's weeks (paused and judged ones too), the month's list and
 // late points, and who owes whom, per pair and per line (SPEC §9.7): by the score so far while the month runs,
 // and once it is complete by the terms that counted then, with a check for whoever was owed. Streaks from the
-// month's results (§9.8).
+// month's results (§9.8). From `dealsFrom` (SPEC §12.10) months owe only streak rewards: deals settle on the
+// Stakes screen, and a finished month says so.
 import { useEffect, useState } from 'react'
 import {
   settlePairs,
@@ -11,13 +12,14 @@ import {
   useMonthStakes,
   useProfiles,
   useResults,
+  useDealsFrom,
   useSettlements,
   useStakes,
 } from '../data/api.ts'
 import { boundsFor } from '../domain/schedule.ts'
 import { computeMonth, monthEndsAt } from '../domain/scoring.ts'
 import type { MemberMonthResult } from '../domain/scoring.ts'
-import { FIRST_RESULTS_MONTH, lineSettlement, monthHouse } from '../domain/stakes.ts'
+import { FIRST_RESULTS_MONTH, lineSettlement, monthHasStakes, monthHouse } from '../domain/stakes.ts'
 import type { DebtLine } from '../domain/stakes.ts'
 import { addMonths, formatMonth, formatWeekRange, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
 import type { MonthId, Settlement, Space, UID, WeekData, WeekId } from '../domain/types.ts'
@@ -45,6 +47,7 @@ import { firstName, nameOf, personOf } from './components/people.ts'
 import type { Profiles } from './components/people.ts'
 import { firstTime } from './components/storage.ts'
 import { deadlineText } from './components/zone.ts'
+import { DEALS_FOOTNOTE } from './stakes/deals.ts'
 import { streakNote } from './stakes/stakes.ts'
 import './stakes/stakes.css'
 
@@ -76,6 +79,7 @@ export function MonthView({ space, profiles: spaceProfiles, onOpenWeek, onOpenMo
   const ownResults = useResults(space, monthId)
   const prevResults = useResults(space, addMonths(monthId, -1))
   const settlements = useSettlements(space.id, monthId)
+  const dealsFrom = useDealsFrom()
   const playGlow = useEdgeGlow().play
   const toast = useToast()
 
@@ -112,6 +116,7 @@ export function MonthView({ space, profiles: spaceProfiles, onOpenWeek, onOpenMo
           firstLockAt: boundsFor(space, weekIds[0], docOf(weekIds[0])).lockAt,
           stored: ownResults.data ?? null,
           prev: prevResults.data ?? null,
+          dealsFrom,
         })
       : null
 
@@ -185,12 +190,14 @@ export function MonthView({ space, profiles: spaceProfiles, onOpenWeek, onOpenMo
               tierReached={id === me && myTier}
               streakNote={id === me ? note : null}
               hasList={!!monthly?.monthly}
+              dealsFrom={dealsFrom}
               onSettle={settle}
               onOpenWeek={onOpenWeek}
               onOpenMonthly={onOpenMonthly}
             />
           ))}
           {footnote && <p className="sk-month-footnote">{footnote}</p>}
+          {complete && !monthHasStakes(monthId, dealsFrom) && <p className="sk-month-footnote">{DEALS_FOOTNOTE}</p>}
         </>
       )}
     </>
@@ -215,6 +222,8 @@ interface MemberMonthProps {
   streakNote: string | null
   /** The month has a list (its row shows after the weeks). */
   hasList: boolean
+  /** The first month without month stakes (useDealsFrom). */
+  dealsFrom: MonthId
   onSettle: (line: DebtLine, value: boolean) => void
   onOpenWeek: (weekId: WeekId) => void
   onOpenMonthly?: (monthId: MonthId) => void
@@ -235,7 +244,7 @@ function JudgeCaption({ summary }: { summary: string }) {
 }
 
 function MemberMonth(props: MemberMonthProps) {
-  const { space, result, me, profiles, nowMs, hero, weeks, lines, settlements, streak, tierReached, hasList, onSettle, onOpenWeek, onOpenMonthly } = props
+  const { space, result, me, profiles, nowMs, hero, weeks, lines, settlements, streak, tierReached, hasList, dealsFrom, onSettle, onOpenWeek, onOpenMonthly } = props
   const person = personOf(profiles, result.uid)
   const isMe = result.uid === me
   const name = (id: UID) => firstName(nameOf(profiles, id))
@@ -246,7 +255,7 @@ function MemberMonth(props: MemberMonthProps) {
   const summary = monthSummary(result, (weekId) => nowMs >= boundsOf(weekId).deadlineAt)
   const pill = result.complete ? streakPill(streak) : null
   // No debts: why nothing's owed (a month that only judged says so in its summary).
-  const nothingOwed = result.complete && !onlyJudged && (result.passed === null || result.others.length === 0) ? verdictText(result, me, name, space) : null
+  const nothingOwed = result.complete && !onlyJudged && (result.passed === null || result.others.length === 0) ? verdictText(result, me, name, space, dealsFrom) : null
 
   const weekRows = weekIdsInMonth(result.monthId).map((weekId) => {
     const bounds = boundsOf(weekId)

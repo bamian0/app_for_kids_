@@ -6,7 +6,7 @@ import { pauseNeeded } from '../../domain/pause.ts'
 import type { PauseChoice, PauseView } from '../../domain/pause.ts'
 import { boundsFor, isUsualSchedule, momentText, scheduleChangeLines, splitMoment, joinMoment, timeLabel } from '../../domain/schedule.ts'
 import type { HourCycle } from '../../domain/schedule.ts'
-import { DEFAULT_SCHEDULE, addWeeks, monthIdForWeek } from '../../domain/time.ts'
+import { DEFAULT_SCHEDULE, addMonths, addWeeks, monthIdForWeek } from '../../domain/time.ts'
 import type { WeekBounds } from '../../domain/time.ts'
 import type { MonthId, Space, UID, Week, WeekId, WeekSchedule } from '../../domain/types.ts'
 import { monthName } from '../components/format.ts'
@@ -496,25 +496,15 @@ export function memberSubtitle(owner: boolean, judge: boolean, joined: string | 
   return [owner ? 'Owner' : null, judge ? 'Judge' : null, joined ? `Joined ${joined}` : null].filter(Boolean).join(' · ') || undefined
 }
 
-// ---------- House stakes in Settings (SPEC §9.7) ----------
+// ---------- House stakes in Settings (SPEC §12.10) ----------
 
-/** Where the house stakes count right now (termsNow in stakes/stakes.ts). */
-export interface HouseWhen {
-  month: MonthId
-  thisMonth: MonthId
-  window: boolean
-}
-
-/** The owner's footer: "They count between two friends until they agree on their own. Changes count right away,
- *  for October." (between a month's completion and the next month's first week: "…, for November. October is
- *  final."); everyone else's: "Only Lena can change the house stakes. Set your own on the Stakes screen." */
-export function houseFooter(now: HouseWhen, isOwner: boolean, ownerName: string): string {
-  if (!isOwner) return `Only ${ownerName} can change the house stakes. Set your own on the Stakes screen.`
-  const base = `They count between two friends until they agree on their own. Changes count right away, for ${monthName(now.month)}.`
-  return now.window ? `${base} ${monthName(now.thisMonth)} is final.` : base
+/** The house stakes' footer: what new deals start from (they don't count on their own); in the October window the
+ *  owner's are set until the month after it (`oldMonth`: oldStakesMonth, else null). */
+export function houseFooter(isOwner: boolean, ownerName: string, oldMonth: MonthId | null): string {
+  if (!isOwner) return `Only ${ownerName} can change the house stakes. New deals start from them.`
+  if (oldMonth) return `${monthName(oldMonth)}’s house stakes are set. You can change them from ${monthName(addMonths(oldMonth, 1))}; new deals start from them.`
+  return 'New deals start from these. They don’t count on their own.'
 }
 
 /** The save toast's message after the owner changed the house stakes. */
-export function houseSaved(now: HouseWhen): string {
-  return now.window ? `The new house stakes count from ${monthName(now.month)}. ${monthName(now.thisMonth)} is final.` : 'The new house stakes count now.'
-}
+export const HOUSE_SAVED = 'New deals start from these.'

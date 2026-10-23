@@ -1,7 +1,7 @@
 // Home: every space you're in as a card with your month score and the one thing that matters now.
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useAuth, useMonthData, useMySpaces, useProfiles, useWeek } from '../data/api.ts'
+import { useAuth, useDealsFrom, useMonthData, useMySpaces, useProfiles, useWeek } from '../data/api.ts'
 import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, pushSupport } from '../push/index.ts'
 import { isWeekPaused, pauseView } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
@@ -164,6 +164,7 @@ export function SpacesScreen() {
 
 function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () => void }) {
   const nowMs = useNow()
+  const dealsFrom = useDealsFrom()
   const { pressed, handlers } = usePress(true, 70)
   const weekId = weekIdFor(nowMs, space.timezone)
   const monthId = monthIdForWeek(weekId)
@@ -209,7 +210,7 @@ function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () 
     }
   }
 
-  const verdictLine = fresh && verdict ? verdictStatus(fresh, verdict, uid, name) : null
+  const verdictLine = fresh && verdict ? verdictStatus(fresh, verdict, uid, name, dealsFrom, space.threshold) : null
   const seen = (key: string) => readLocal(key) !== null
   const request = space.pause
   const pause = request ? pauseView(space, uid, nowMs, weekFor(space, request.weekId, [weekDoc])) : null

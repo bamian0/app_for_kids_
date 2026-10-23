@@ -6,7 +6,7 @@ import type { UID } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import type { AuthState } from './api.ts'
 import { toProfile } from './convert.ts'
-import { MSG } from './errors.ts'
+import { errorCode, MSG } from './errors.ts'
 import { signal } from './store.ts'
 
 const SIGNED_OUT: AuthState = { status: 'signedOut', uid: null, email: null, profile: null }
@@ -119,4 +119,29 @@ export function cleanText(value: string, max: number, label: string): string {
   if (!clean) throw new Error(`${label} can't be empty.`)
   if (clean.length > max) throw new Error(`${label} is too long (${max} characters max).`)
   return clean
+}
+
+/** How long createSpace waits to hear from the server before calling it offline. */
+const REACH_TIMEOUT_MS = 8_000
+
+/**
+ * Resolves once the server answers, or throws the offline message. Writes made while offline wait
+ * in a queue and land later, which for a new space means a spinner that never ends and a duplicate
+ * when the user tries again.
+ */
+export async function requireServer(uid: UID): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error(MSG.offline)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(MSG.offline)), REACH_TIMEOUT_MS)
+  })
+  try {
+    await Promise.race([getDocFromServer(profileRef(getFirebase().db, uid)), timeout])
+  } catch (e) {
+    if (e instanceof Error && e.message === MSG.offline) throw e
+    // Denied or missing profile still proves the server answered.
+    if (errorCode(e) === 'unavailable' || errorCode(e) === 'deadline-exceeded') throw new Error(MSG.offline)
+  } finally {
+    clearTimeout(timer)
+  }
 }

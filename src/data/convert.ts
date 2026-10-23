@@ -3,6 +3,7 @@
 import { Timestamp, type DocumentData, type DocumentSnapshot, type QueryDocumentSnapshot } from 'firebase/firestore'
 import {
   decodeCheckin,
+  decodeDeal,
   decodeFriendship,
   decodeMemberStakes,
   decodeMonthResults,
@@ -16,6 +17,7 @@ import {
 } from '../domain/decode.ts'
 import type {
   Checkin,
+  Deal,
   Earning,
   Friendship,
   Goal,
@@ -277,4 +279,12 @@ export function toSharedGoal(snap: Snap): SharedGoal | null {
 /** sharedGoals/{goalId}/checkins/{weekId}_{uid} in real units; null when malformed. */
 export function toCheckin(snap: Snap): Checkin | null {
   return snap.exists() ? decodeCheckin(snap.id, data(snap), msOrNull) : null
+}
+
+// ---------- Deals (SPEC §12.4) ----------
+
+/** spaces/{spaceId}/deals/{uid}_{seq}, through the shared decoder (server timestamps as the SDK's estimate); null
+ *  when it can't be a deal. */
+export function toDeal(snap: Snap, spaceId: string): Deal | null {
+  return snap.exists() ? decodeDeal(snap.id, data(snap), spaceId, msOrNull) : null
 }

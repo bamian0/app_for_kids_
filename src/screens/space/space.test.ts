@@ -7,8 +7,8 @@ import type { PauseRequest, Space, UID, Week } from '../../domain/types.ts'
 import {
   changeSentence,
   dayOptions,
+  HOUSE_SAVED,
   houseFooter,
-  houseSaved,
   judgeConfirm,
   judgeSelf,
   memberSubtitle,
@@ -385,19 +385,19 @@ describe('Only Rate Friends', () => {
 })
 
 describe('house stakes in Settings', () => {
-  const now = { month: '2026-10', thisMonth: '2026-10', window: false }
-  const later = { month: '2026-11', thisMonth: '2026-10', window: true }
-
-  it('says changes count right away, for the month that counts', () => {
-    expect(houseFooter(now, true, 'Lena')).toBe('They count between two friends until they agree on their own. Changes count right away, for October.')
-    expect(houseFooter(later, true, 'Lena')).toBe(
-      'They count between two friends until they agree on their own. Changes count right away, for November. October is final.',
-    )
-    expect(houseFooter(now, false, 'Lena')).toBe('Only Lena can change the house stakes. Set your own on the Stakes screen.')
+  it('says new deals start from them (SPEC §12.10)', () => {
+    expect(houseFooter(true, 'Lena', null)).toBe('New deals start from these. They don’t count on their own.')
+    expect(houseFooter(false, 'Lena', null)).toBe('Only Lena can change the house stakes. New deals start from them.')
+    expect(houseFooter(false, 'Lena', '2026-10')).toBe('Only Lena can change the house stakes. New deals start from them.')
   })
 
-  it('toasts when they count', () => {
-    expect(houseSaved(now)).toBe('The new house stakes count now.')
-    expect(houseSaved(later)).toBe('The new house stakes count from November. October is final.')
+  it('keeps October’s set in the October window, naming the months', () => {
+    expect(houseFooter(true, 'Lena', '2026-10')).toBe('October’s house stakes are set. You can change them from November; new deals start from them.')
+    // A late ship: November is the month still on stakes.
+    expect(houseFooter(true, 'Lena', '2026-11')).toBe('November’s house stakes are set. You can change them from December; new deals start from them.')
+  })
+
+  it('toasts what they’re for', () => {
+    expect(HOUSE_SAVED).toBe('New deals start from these.')
   })
 })

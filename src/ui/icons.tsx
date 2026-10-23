@@ -370,6 +370,19 @@ const ICONS = {
   pause: { weight: 2.6, body: <path d="M8.75 5.75v12.5M15.25 5.75v12.5" /> },
   /** Undo (arrow.uturn.backward): brings a crossed-out task back. */
   undo: { weight: 2, body: <path d="M8.75 4.75 4.5 9l4.25 4.25M4.75 9h9.5a5.25 5.25 0 0 1 0 10.5H10.5" /> },
+  /** Deal (handshake): two hands meeting under one line, the cuffs at the sides. Deals, the stakes card. */
+  handshake: {
+    weight: 1.7,
+    body: (
+      <>
+        <path d="M2.5 6.75h8.35" />
+        <path d="M21.5 6.75h-3.25l-2.3-1.3a2.6 2.6 0 0 0-2.75.1L9.4 7.9a1.15 1.15 0 0 0 1.2 1.95l2.65-1.35 5.4 5.35a1.15 1.15 0 1 1-1.65 1.65" />
+        <path d="m16.35 15.55-2.1-2.1M16.35 15.55a1.15 1.15 0 1 1-1.65 1.65l-1.95-1.95M14.7 17.2a1.15 1.15 0 1 1-1.65 1.65l-1.5-1.5" />
+        <path d="M5.75 6.75 4.6 14.3l2.05 2.05a1.15 1.15 0 0 0 1.65-1.65M8.3 14.7l1.2 1.2a1.15 1.15 0 1 1-1.65 1.65l-.5-.5M9.5 15.9l.5.5a1.15 1.15 0 1 1-1.65 1.65" />
+        <path d="m18.25 6.75 1.2 7.4" />
+      </>
+    ),
+  },
   /** Help (questionmark). */
   questionmark: {
     weight: 2,

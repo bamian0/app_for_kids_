@@ -145,7 +145,7 @@ export function JoinSheet({ close, initialCode, onJoined }: Props) {
             </div>
           </Section>
           {!alreadyIn && invite.reward && invite.penalty && (
-            <Section header="What’s at stake" footer="Everyone can set their own stakes after joining. Until you agree to theirs, these count.">
+            <Section header="What’s at stake" footer="After you join, make a deal with your friends. Deals here start from these.">
               <StakesList reward={invite.reward} penalty={invite.penalty} />
             </Section>
           )}

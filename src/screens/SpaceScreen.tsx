@@ -191,7 +191,7 @@ function SpaceContent({ space, initialTab, initialMonth }: { space: Space; initi
       ) : notice ? (
         <ScheduleNotice view={notice} onOpen={openSchedule} onDismiss={dismiss} />
       ) : null}
-      <StakesCard space={space} profiles={profiles} me={me} nowMs={nowMs} onInvite={openInvite} thisWeek={weekDoc} monthly={monthly?.monthly ?? null} />
+      <StakesCard space={space} profiles={profiles} me={me} nowMs={nowMs} onInvite={openInvite} thisWeek={weekDoc} weekData={week.data ?? null} monthly={monthly?.monthly ?? null} />
       <div className="s-tabs">
         <SegmentedControl<Tab>
           aria-label="View"

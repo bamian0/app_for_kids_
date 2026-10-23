@@ -194,3 +194,40 @@ export async function agreeToStakes(space: Space, owner: UID, seen: PairTerms): 
     throw humanError(e, MSG.noAccess)
   }
 }
+
+/**
+ * Saves your streak rewards (SPEC §12.9, §9.8) in your stakes doc: the tiers validated and sorted with the stakes
+ * editor's messages ("Up to 5 streak rewards." · "Each streak length can only be used once." · "A streak is 2 to 36
+ * months." · "Fill in each streak reward." · "Keep each one under 120 characters."), with both lines set to the house
+ * stakes, Same for everyone: from `dealsFrom` they no longer count, and plain house lines keep every friend able to
+ * agree (a per-friend line without a text for a newcomer would block their Agree). A transaction re-reads the space and
+ * your doc and creates it (`agreed: {}`), or updates exactly those keys, or writes nothing when it already holds them.
+ * Friends agree with agreeToStakes as before. No date rule of its own (the screens offer it outside the October
+ * window). Fails at once offline.
+ */
+export async function saveStreakRewards(space: Space, tiers: StreakTier[]): Promise<void> {
+  const me = requireUser().uid
+  const house = (s: Pick<Space, 'reward' | 'penalty'>): StakesInput => ({ rewardMode: 'group', penaltyMode: 'group', reward: s.reward, penalty: s.penalty, per: {}, tiers })
+  // The editor's messages first (the house texts are the space's, valid by the rules).
+  cleanStakes(house(space), me, space.memberIds)
+  await requireServer(me)
+  try {
+    await runTransaction(getFirebase().db, async (tx) => {
+      const spaceSnap = await tx.get(spaceRef(space.id))
+      if (!spaceSnap.exists()) throw new Error(MSG.noAccess)
+      const fresh = toSpace(spaceSnap)
+      if (!fresh.memberIds.includes(me)) throw new Error(MSG.noAccess)
+      const terms = cleanStakes(house(fresh), me, fresh.memberIds)
+      const ref = stakesRef(space.id, me)
+      const snap = await tx.get(ref)
+      if (!snap.exists()) {
+        tx.set(ref, { ...terms, agreed: {}, updatedAt: serverTimestamp() })
+        return
+      }
+      if (sameStored(toMemberStakes(snap), terms)) return
+      tx.update(ref, { ...terms, updatedAt: serverTimestamp() })
+    })
+  } catch (e) {
+    throw humanError(e, MSG.noAccess)
+  }
+}

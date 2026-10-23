@@ -29,10 +29,10 @@ describe('help content', () => {
     expect(section('review')).toContain('everyone has submitted, or the deadline passes')
     expect(section('review')).toContain('before Friday at midnight')
     expect(section('review')).toContain('final')
-    expect(section('review')).toContain('5 points off your month')
+    expect(section('review')).toContain('5 points off your month, and off that week in a deal')
     expect(section('scores')).toContain('minus 5 points for each review you missed')
     expect(section('scores')).toContain('the month its Friday falls in')
-    expect(section('scores')).toContain('Hit 90% for the month')
+    expect(section('spaces')).toContain('needs 90%; the first miss ends it')
     expect(section('scores')).toContain('Settled')
     expect(section('money')).toContain('Only you see this part')
     expect(section('reminders')).toContain('installed app')
@@ -45,7 +45,8 @@ describe('help content', () => {
 
   it('takes its numbers from the rules it is given', () => {
     const other = helpSections({ threshold: 80, latePenalty: 1, maxMembers: 4, maxSteps: 3 }).flatMap((s) => s.paragraphs).join(' ')
-    expect(other).toContain('Hit 80% for the month')
+    expect(other).toContain('Every week or month in it needs 80%; the first miss ends it')
+    expect(other).toContain('a month under 80% starts it over')
     expect(other).toContain('costs you 1 point off your month')
     expect(other).toContain('up to 3 friends')
     expect(other).toContain('up to 3 steps')
@@ -53,11 +54,10 @@ describe('help content', () => {
   })
 
   it('covers the batch-2 features (SPEC §9.12)', () => {
-    // Stakes: the house stakes, your own, Agree, and a month's stakes set when it ends (not at its first lock).
-    expect(section('spaces')).toContain('house stakes, set by the owner')
-    expect(section('spaces')).toContain('count as soon as friends tap Agree')
-    expect(section('spaces')).toContain('the same for everyone needs all of them')
-    expect(section('spaces')).toContain('A month’s stakes are set when it ends.')
+    // Stakes are deals now (SPEC §12.12): what was said about house stakes, own stakes and month stakes went.
+    expect(section('spaces')).not.toContain('house stakes, set by the owner')
+    expect(section('spaces')).not.toContain('count as soon as friends tap Agree')
+    expect(section('spaces')).not.toContain('A month’s stakes are set when it ends.')
     expect(section('spaces')).not.toContain('first lists lock')
     expect(section('spaces')).not.toContain('Anyone in the space can change the stakes')
     // Judges and custom times.
@@ -72,12 +72,30 @@ describe('help content', () => {
     expect(section('scores')).toContain('One pause a month.')
     expect(section('scores')).toContain('several months in a row for streak rewards')
     expect(section('scores')).toContain('a month under 90% starts it over')
-    expect(section('scores')).toContain('your friends owe you your reward')
+    expect(section('scores')).not.toContain('your friends owe you your reward')
     expect(section('scores')).toContain('marks each one Settled')
     expect(section('reminders')).toContain('Spaces with their own times follow them;')
     expect(REMINDER_TIMES).toBe(
-      'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK. Shared goals remind you to check in as each week ends.',
+      'Monday evening if your list is empty, Wednesday evening if nothing is ticked yet, Thursday evening if tasks are still open, Friday to review, and when results are in. A space with its own times follows them, and you hear when a friend needs your OK or a deal ends. Shared goals remind you to check in as each week ends.',
     )
+  })
+
+  it('covers deals (SPEC §12.12)', () => {
+    expect(section('spaces')).toContain('Make a deal with friends')
+    expect(section('spaces')).toContain('how many weeks or months')
+    expect(section('spaces')).toContain('every friend taps Agree')
+    expect(section('spaces')).toContain('the first miss ends it')
+    expect(section('spaces')).toContain('nothing’s at stake until a new deal')
+    expect(section('review')).toContain('and off that week in a deal')
+    expect(section('scores')).toContain('a paused or skipped week adds one more')
+    expect(section('scores')).toContain('a month under 90% starts it over')
+    expect(section('scores')).not.toContain('Done counts fully')
+    expect(section('scores')).not.toContain('Sitting a month out')
+    // The deal paragraph takes the bar from the rules.
+    expect(helpSections({ ...RULES, threshold: 80 }).find((s) => s.id === 'spaces')?.paragraphs.join(' ')).toContain('needs 80%; the first miss ends it')
+    expect(pages.find((p) => p.id === 'welcome')?.text).toBe('Plan your week, let friends review it on Friday, and make deals on how you do.')
+    expect(pages.find((p) => p.id === 'month')?.title).toBe('Hit 90% and they owe you')
+    expect(pages.find((p) => p.id === 'month')?.text).toBe('Make a deal for a few weeks or months. Keep each one at 90% and they owe you; miss one and you owe them.')
   })
 
   it('covers monthly adds, crossing out and the fair vote (SPEC §10.9)', () => {
@@ -105,8 +123,8 @@ describe('help content', () => {
     // The two clauses that went (the task sheet and the monthly card show them).
     expect(section('week')).not.toContain('it’s done when every step is')
     expect(section('week')).not.toContain('Plan it in its first week')
-    // The 5-point line stays where people review.
-    expect(section('review')).toContain('Every friend you don’t review costs you 5 points off your month.')
+    // The 5-point line stays where people review (SPEC §12.12: and off that week in a deal).
+    expect(section('review')).toContain('Every friend you don’t review costs you 5 points off your month, and off that week in a deal.')
     expect(introPages().find((p) => p.id === 'money')?.text).toBe(
       'Mark tasks that earn money, watch your balance and save for goals. It’s private unless you choose to show it.',
     )
@@ -114,8 +132,8 @@ describe('help content', () => {
 
   it('reads in about three minutes', () => {
     const words = helpText.split(/\s+/).filter(Boolean).length
-    // SPEC §11.11: 697 words with the batch-3 section and trims; the cap is 700.
-    expect(words).toBe(697)
+    // SPEC §12.12: 696 words with deals; the cap is 700.
+    expect(words).toBe(696)
     expect(words).toBeLessThanOrEqual(700)
     for (const s of sections) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })
@@ -239,8 +257,8 @@ describe('help for a space’s own times', () => {
 
   it('stays within the limits', () => {
     const text = custom.flatMap((s) => [s.title, ...s.paragraphs]).join('\n')
-    // SPEC §11.11: 700 words on these times.
-    expect(text.split(/\s+/).filter(Boolean).length).toBe(700)
+    // SPEC §12.12: 699 words on these times.
+    expect(text.split(/\s+/).filter(Boolean).length).toBe(699)
     expect(text).not.toMatch(/['"]/)
     for (const s of custom) for (const p of s.paragraphs) expect(p.length, p).toBeLessThanOrEqual(190)
   })

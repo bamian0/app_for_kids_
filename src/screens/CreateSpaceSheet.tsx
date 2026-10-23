@@ -1,4 +1,5 @@
-// New space: name, the house stakes and your role, then straight to inviting friends.
+// New space: name, the house stakes (what new deals start from, SPEC §12.10) and your role, then straight to
+// inviting friends.
 import { useState } from 'react'
 import { createSpace } from '../data/api.ts'
 import type { Space } from '../domain/types.ts'
@@ -69,12 +70,12 @@ function CreateSpaceForm({ close, onOpen }: Props) {
       <Section header="Name">
         <TextFieldRow value={name} onChange={setName} placeholder="Film Crew" maxLength={40} autoCapitalize="words" enterKeyHint="next" aria-label="Space name" />
       </Section>
-      <Section header="If you hit 90%, they owe you…" footer="Whoever clears the bar for the month collects this from the others.">
+      <Section header="If you hit 90%, they owe you…">
         <TextArea value={reward} onChange={setReward} placeholder="Dinner, on them" maxLength={120} minRows={2} maxRows={4} aria-label="Reward" />
       </Section>
       <Section
         header="If you miss, you owe them…"
-        footer={`Everyone starts on these. Each friend can set their own once they’re in. Deadlines run on ${cityOf(deviceZone())} time.`}
+        footer={`New deals start from these. Deadlines run on ${cityOf(deviceZone())} time.`}
       >
         <TextArea value={penalty} onChange={setPenalty} placeholder="Coffee for everyone, for a week" maxLength={120} minRows={2} maxRows={4} aria-label="Penalty" />
       </Section>

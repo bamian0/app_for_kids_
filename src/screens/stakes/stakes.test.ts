@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { debtLines, nextAgreement, pairTerms } from '../../domain/stakes.ts'
+import { DEALS_FROM_MONTH, debtLines, nextAgreement, pairTerms } from '../../domain/stakes.ts'
 import type { Debt } from '../../domain/stakes.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
 import { weekBounds } from '../../domain/time.ts'
@@ -592,7 +592,7 @@ describe('the month view’s debt lines', () => {
   const agreed = agree(agree(GROUP, 'lena', MID - 2 * H), 'sam', MID - H)
 
   it('a month in progress quotes what counts now, by the score so far', () => {
-    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(false, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(false, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null, dealsFrom: DEALS_FROM_MONTH })
     const marco = view.lines.filter((l) => l.subject === 'marco')
     expect(marco.map((l) => debtLineText(l, 'marco', name))).toEqual(['Lena and Sam owe you: Dinner, on you'])
     expect(view.streaks).toBeNull()
@@ -602,12 +602,12 @@ describe('the month view’s debt lines', () => {
 
   it('a finished month never changes: agreements after it was complete count from the next month', () => {
     const late = agree(agree(GROUP, 'lena', OCT_END + H), 'sam', OCT_END + 2 * H)
-    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: late }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    const view = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: late }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null, dealsFrom: DEALS_FROM_MONTH })
     expect(view.lines.filter((l) => l.subject === 'marco').map((l) => l.what)).toEqual(['Dinner on me'])
     // October is the first results month: streaks start there.
     expect(view.streaks?.streaks.marco).toBe(1)
     // Agreed before it was complete: those terms are October's.
-    const before = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null })
+    const before = monthDebtView({ space: sp, monthId: '2026-10', results: month(true, { marco: 95, lena: 80, sam: 92 }), stakes: { marco: agreed }, house: HOUSE, completeAt: OCT_END, firstLockAt, stored: null, prev: null, dealsFrom: DEALS_FROM_MONTH })
     expect(before.lines.filter((l) => l.subject === 'marco').map((l) => l.what)).toEqual(['Dinner, on you'])
   })
 
@@ -622,12 +622,16 @@ describe('the month view’s debt lines', () => {
       createdAt: OCT_END + 36 * D,
     }
     const results = Object.fromEntries(Object.entries(month(true, { marco: 95, lena: 80, sam: 92 })).map(([k, r]) => [k, { ...r, monthId: '2026-11' }]))
-    const view = monthDebtView({ space: sp, monthId: '2026-11', results, stakes: {}, house: HOUSE, completeAt: OCT_END + 35 * D, firstLockAt, stored, prev: null })
+    // November with stakes: deals shipped late, so the cutover month is December (SPEC §12.3).
+    const view = monthDebtView({ space: sp, monthId: '2026-11', results, stakes: {}, house: HOUSE, completeAt: OCT_END + 35 * D, firstLockAt, stored, prev: null, dealsFrom: '2026-12' })
     const marco = view.lines.filter((l) => l.subject === 'marco')
     expect(marco.map((l) => [debtLineText(l, 'marco', name), l.tier])).toEqual([
       ['Lena and Sam owe you: Dinner, on you', undefined],
       ['Lena and Sam owe you: Weekend away', 3],
     ])
     expect(view.streaks?.streaks.marco).toBe(3)
+    // From the cutover only the streak reward is owed (SPEC §12.10).
+    const deals = monthDebtView({ space: sp, monthId: '2026-11', results, stakes: {}, house: HOUSE, completeAt: OCT_END + 35 * D, firstLockAt, stored, prev: null, dealsFrom: DEALS_FROM_MONTH })
+    expect(deals.lines.map((l) => [debtLineText(l, 'marco', name), l.tier])).toEqual([['Lena and Sam owe you: Weekend away', 3]])
   })
 })

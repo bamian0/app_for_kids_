@@ -423,3 +423,274 @@ button.sk-line,
   background: var(--tertiary-system-fill);
   color: var(--secondary-label);
 }
+
+/* ---------- Deals (SPEC §12.10) ---------- */
+
+/* The card's block: a handshake tile, the title and one line under it, then the deal's rows. */
+.dl-main .s-stakes__item:first-child {
+  padding-right: 16px;
+}
+.dl-head {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 13px 40px 12px 16px;
+}
+.dl-glyph {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
+  border-radius: 9px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+}
+.dl-glyph--won {
+  background: var(--label);
+  color: var(--on-label);
+}
+.dl-head__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dl-title {
+  font: 600 17px/22px var(--font);
+  letter-spacing: -0.022em;
+  color: var(--label);
+  text-wrap: pretty;
+}
+.dl-text {
+  font: 400 15px/20px var(--font);
+  letter-spacing: -0.009em;
+  color: var(--secondary-label);
+  text-wrap: pretty;
+}
+.dl-chevron {
+  position: absolute;
+  top: 18px;
+  right: 14px;
+  color: var(--tertiary-label);
+}
+/* The deal's rows sit under the block, separated by a hairline inset like the rows' own. */
+.dl-main .s-stakes {
+  position: relative;
+  padding-top: 0;
+}
+.dl-main .s-stakes::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+}
+/* Who a waiting deal is with: agreed in full, the rest faded. */
+.dl-avatars {
+  display: flex;
+  margin-top: 6px;
+}
+.dl-avatars__item {
+  display: flex;
+  border-radius: 50%;
+  background: var(--secondary-system-grouped-background);
+  box-shadow: 0 0 0 2px var(--secondary-system-grouped-background);
+}
+.dl-avatars__item + .dl-avatars__item {
+  margin-left: -6px;
+}
+.dl-avatars__item--waiting > * {
+  opacity: 0.4;
+}
+/* Make a Deal / Same Again under the block, lined up with its words. */
+.dl-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 14px 60px;
+}
+.dl-actions__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dl-actions__caption {
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+.dl-note .sk-line__text {
+  color: var(--label);
+}
+/* October's rows (the October window), read-only under your block. */
+.dl-october {
+  position: relative;
+}
+.dl-october .sk-subhead {
+  padding-top: 14px;
+}
+.dl-october__also {
+  margin: -2px 16px 0 60px;
+  padding-bottom: 14px;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+}
+
+/* ---------- Stakes screen and a deal's screen ---------- */
+
+.dl-tile {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+}
+.dl-tile--filled {
+  background: var(--label);
+  color: var(--on-label);
+}
+.dl-sub {
+  display: block;
+}
+.dl-sub--quiet {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--secondary-label);
+}
+.dl-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dl-subhead--first::before {
+  display: none;
+}
+
+.dl-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 4px calc(var(--gutter) + var(--ui-safe-right) + 8px) 24px calc(var(--gutter) + var(--ui-safe-left) + 8px);
+  text-align: center;
+}
+.dl-hero__glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 8px;
+  border-radius: 18px;
+  background: var(--secondary-system-grouped-background);
+  color: var(--label);
+}
+.dl-hero__glyph--won {
+  background: var(--label);
+  color: var(--on-label);
+}
+.dl-hero__title {
+  font: 700 22px/28px var(--font);
+  letter-spacing: -0.026em;
+  color: var(--label);
+}
+.dl-hero__line {
+  font: 400 15px/20px var(--font);
+  color: var(--secondary-label);
+  text-wrap: balance;
+}
+.dl-hero__note {
+  max-width: 340px;
+  margin-top: 6px;
+  font: 400 13px/18px var(--font);
+  color: var(--secondary-label);
+  text-wrap: pretty;
+}
+.dl-hero-action {
+  margin: -8px calc(var(--gutter) + var(--ui-safe-right)) 28px calc(var(--gutter) + var(--ui-safe-left));
+}
+.dl-period {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dl-result {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+.dl-result--pass {
+  background: var(--label);
+  color: var(--on-label);
+}
+.dl-result--miss {
+  background: var(--tertiary-system-fill);
+  color: var(--secondary-label);
+}
+.dl-result__zero {
+  font: 700 11px/1 var(--font);
+}
+
+/* ---------- Editor ---------- */
+
+/* The length picker: a capsule like the week schedule's, a native picker under it. */
+.dl-capsule {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border-radius: 8px;
+  background: var(--tertiary-system-fill);
+  color: var(--label);
+  font: 400 17px/22px var(--font);
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dl-capsule:has(.dl-capsule__select:focus-visible) {
+  outline: 2px solid var(--tint);
+  outline-offset: 1px;
+}
+.dl-capsule__up,
+.dl-capsule__down {
+  color: var(--secondary-label);
+}
+.dl-capsule__up {
+  margin-bottom: 8px;
+}
+.dl-capsule__down {
+  margin-left: -16px;
+  margin-top: 8px;
+}
+.dl-capsule__select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+  appearance: none;
+}
+.dl-editor-error {
+  margin: 0 calc(var(--gutter) + var(--ui-safe-right) + 16px) 16px calc(var(--gutter) + var(--ui-safe-left) + 16px);
+  font: 400 15px/20px var(--font);
+}

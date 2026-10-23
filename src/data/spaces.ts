@@ -30,8 +30,9 @@ import { addWeeks, monthIdForWeek, utcOffsetMinutes, weekIdFor, weekIdsInMonth }
 import type { Invite, MonthId, Space, UID, WeekId } from '../domain/types.ts'
 import { getFirebase } from '../firebase/app.ts'
 import { toInvite, toMonthly, toMonthStakes, toSpace, toWeek } from './convert.ts'
-import { errorCode, humanError, isDenied, MSG } from './errors.ts'
-import { cleanText, myName, profileRef, requireUser } from './session.ts'
+import { dealHistoryKey, dealsKey, withdrawWaitingDeal } from './deals.ts'
+import { humanError, isDenied, MSG } from './errors.ts'
+import { cleanText, myName, requireServer, requireUser } from './session.ts'
 import { forgetWhere, type Start } from './store.ts'
 import { periodRef, rawJudges, weekRef } from './weeks.ts'
 
@@ -80,30 +81,8 @@ export function startSpace(spaceId: string): Start<Space | null> {
     )
 }
 
-/** How long createSpace waits to hear from the server before calling it offline. */
-const REACH_TIMEOUT_MS = 8_000
-
-/**
- * Resolves once the server answers, or throws the offline message. Writes made while offline wait
- * in a queue and land later, which for a new space means a spinner that never ends and a duplicate
- * when the user tries again.
- */
-export async function requireServer(uid: UID): Promise<void> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error(MSG.offline)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(MSG.offline)), REACH_TIMEOUT_MS)
-  })
-  try {
-    await Promise.race([getDocFromServer(profileRef(getFirebase().db, uid)), timeout])
-  } catch (e) {
-    if (e instanceof Error && e.message === MSG.offline) throw e
-    // Denied or missing profile still proves the server answered.
-    if (errorCode(e) === 'unavailable' || errorCode(e) === 'deadline-exceeded') throw new Error(MSG.offline)
-  } finally {
-    clearTimeout(timer)
-  }
-}
+// requireServer lives in session.ts (deals.ts uses it without importing this module); re-exported for the others.
+export { requireServer }
 
 /** Creating the same space twice at once (tap, cancel, tap again) returns the first attempt. */
 const creating = new Map<string, Promise<Space>>()
@@ -252,8 +231,9 @@ async function dropStaleJudge(ref: DocumentReference, uid: UID): Promise<void> {
 
 /** Drops everything cached about a space for this user (after joining or leaving it). */
 export function forgetSpace(uid: UID, spaceId: string): void {
-  const exact = [`${uid}|space|${spaceId}`, `${uid}|stakes|${spaceId}`]
+  const exact = [`${uid}|space|${spaceId}`, `${uid}|stakes|${spaceId}`, dealsKey(uid, spaceId), dealHistoryKey(uid, spaceId)]
   const prefixes = [
+    `${dealsKey(uid, spaceId)}|`,
     `${uid}|week|${spaceId}|`,
     `${uid}|month|${spaceId}|`,
     `${uid}|months|${spaceId}|`,
@@ -343,10 +323,17 @@ async function leave(snap: DocumentSnapshot, uid: string): Promise<void> {
   forgetSpace(uid, space.id)
 }
 
+/**
+ * Leaves the space. With deals (SPEC §12.13), first, best effort, your deal there still waiting for agreement is
+ * withdrawn (a failure is ignored: leaving never fails over it, and the job withdraws it otherwise). An agreed deal is
+ * lost by the leave itself (a miss at the next lock it needs); the screens warn before, the data layer doesn't refuse.
+ */
 export async function leaveSpace(spaceId: string): Promise<void> {
   const uid = requireUser().uid
   try {
-    await leave(await getDoc(spaceRef(spaceId)), uid)
+    const snap = await getDoc(spaceRef(spaceId))
+    if (snap.exists() && toSpace(snap).hasDeals && toSpace(snap).memberIds.includes(uid)) await withdrawWaitingDeal(spaceId, uid).catch(() => {})
+    await leave(snap, uid)
   } catch (e) {
     // Denied reading the space: already not a member.
     if (!isDenied(e)) throw humanError(e)

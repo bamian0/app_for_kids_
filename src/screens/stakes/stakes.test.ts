@@ -19,30 +19,16 @@ import {
   weekDetail,
 } from '../components/month.ts'
 import {
-  agreeConfirm,
-  agreeOutcomeNow,
-  agreeToast,
-  draftFrom,
-  draftInput,
-  draftValid,
   friendRows,
-  friendStatus,
   groupedText,
   isJudging,
   myStatus,
-  ownFooter,
-  saveMessage,
-  stakesAfterSave,
   stakesCard,
   stakesFromLive,
-  streakLine,
   streakNote,
-  switchMode,
   termsInForceNow,
   termsNow,
   unusedTierChoices,
-  waitingAfterSave,
-  waitingFooter,
 } from './stakes.ts'
 import { waitingFor } from '../../domain/stakes.ts'
 
@@ -230,17 +216,14 @@ describe('the stakes card', () => {
     expect(marco.rows.map((r) => r.text)).toEqual(['Dinner, on you', 'Pizza for all'])
     expect(marco.pending).toEqual({ kind: 'agreed', text: 'Everyone agreed' })
     const now = termsNow(three, MID)
-    expect(friendStatus(back, 'lena', termsInForceNow(three, 'marco', { marco: back }, now))).toEqual({ kind: 'agreed' })
+    expect(waitingFor(back, ['lena', 'sam'], termsInForceNow(three, 'marco', { marco: back }, now))).toEqual([])
     // Lena hears Marco has new stakes, but isn't asked to agree.
     const lena = stakesCard({ space: three, me: 'lena', stakes: { marco: back }, nowMs: MID, name })
     expect(lena.news).toMatchObject({ kind: 'friend', uid: 'marco' })
     expect(myStatus(three, 'marco', 'lena', { marco: back }, now)).toBe('agreed')
-    // The save toast for the change back.
-    expect(saveMessage(waitingAfterSave(three, 'marco', back, { marco: lunch }, now).map(name), 2, now)).toBe('Counts now.')
     // While Sam hasn't agreed to Dinner, Lena's Agree to Lunch doesn't make it count: both are asked.
     const onlyLena = { ...back, agreed: { lena: back.agreed.lena } }
     expect(stakesCard({ space: three, me: 'marco', stakes: { marco: onlyLena }, nowMs: MID, name }).pending).toMatchObject({ kind: 'waiting', uids: ['lena', 'sam'] })
-    expect(saveMessage(waitingAfterSave(three, 'marco', onlyLena, { marco: onlyLena }, now).map(name), 2, now)).toBe('Counts as soon as Lena and Sam agree.')
   })
 
   it('asks for stakes for a friend who has none, and tells a judge nothing is owed', () => {
@@ -281,84 +264,9 @@ describe('when it counts', () => {
     expect(termsNow(sp, OCT_END - H).window).toBe(false)
   })
 
-  it('says “from November” only in the completion window', () => {
-    const sp = space(['marco', 'lena', 'sam'])
-    const mid = termsNow(sp, MID)
-    const sat = termsNow(sp, SAT)
-    expect(saveMessage(['Lena'], 2, mid)).toBe('Counts as soon as Lena agrees.')
-    expect(saveMessage(['Lena', 'Sam'], 2, mid)).toBe('Counts as soon as Lena and Sam agree.')
-    expect(saveMessage(['Lena', 'Sam', 'Kim', 'Ana'], 4, mid)).toBe('Counts as soon as all 4 friends agree.')
-    expect(saveMessage([], 2, mid)).toBe('Counts now.')
-    expect(saveMessage([], 0, mid)).toBeUndefined()
-    expect(saveMessage([], 2, sat)).toBe('Counts from November. October is final.')
-    expect(saveMessage(['Lena'], 2, sat)).toBe('Counts from November, as soon as Lena agrees.')
-    for (const text of [saveMessage(['Lena'], 2, mid), saveMessage([], 2, mid)]) expect(text).not.toContain('November')
-  })
-
-  it('tells the save toast who has to agree, from the saved terms', () => {
-    const agreed = agree(agree(GROUP, 'lena', MID - D), 'sam', MID - H)
-    // Back to terms everyone agreed to: counts now.
-    const same = stakesAfterSave('marco', draftInput(draftFrom(agreed, HOUSE, ['lena', 'sam']), ['lena', 'sam']), agreed, MID)
-    expect(waitingFor(same, ['lena', 'sam'])).toEqual([])
-    // Switching a line to per friend changes every pair: everyone has to agree again.
-    const d = switchMode(draftFrom(agreed, HOUSE, ['lena', 'sam']), 'penalty', 'each')
-    const switched = stakesAfterSave('marco', draftInput(d, ['lena', 'sam']), agreed, MID)
-    expect(waitingFor(switched, ['lena', 'sam'])).toEqual(['lena', 'sam'])
-    // Then only Lena's penalty changes: only Lena has to agree.
-    const both = agree(agree(switched, 'lena', MID), 'sam', MID + H)
-    const e = draftFrom(both, HOUSE, ['lena', 'sam'])
-    const lenaOnly = stakesAfterSave('marco', draftInput({ ...e, per: { ...e.per, lena: { reward: '', penalty: 'Two coffees' } } }, ['lena', 'sam']), both, MID + 2 * H)
-    expect(waitingFor(lenaOnly, ['lena', 'sam'])).toEqual(['lena'])
-  })
 })
 
-describe('agreeing', () => {
-  const three = space(['marco', 'lena', 'sam'])
-  const mixed = own('marco', { reward: 'Dinner, on you', penaltyMode: 'each', per: { lena: { reward: '', penalty: 'A coffee' }, sam: { reward: '', penalty: 'A beer' } }, tiers: [{ months: 3, reward: 'Weekend away' }] })
-
-  it('confirms the lines as they apply to you and when they count (partly)', () => {
-    const now = termsNow(three, MID)
-    const outcome = agreeOutcomeNow(three, 'marco', 'lena', { marco: mixed }, now, MID)
-    expect(outcome).toEqual({ counts: 'partly', waitingFor: ['sam'] })
-    const confirm = agreeConfirm('Marco', pairTerms(mixed, 'lena')!, outcome, now, name)
-    expect(confirm.title).toBe('Agree to Marco’s stakes?')
-    expect(confirm.lines).toEqual([
-      'Marco hits 90%: you all owe “Dinner, on you”, together.',
-      'If Marco misses, you get “A coffee”.',
-      '3 months in a row: you all owe “Weekend away”, together.',
-      'Your own part counts right away, the shared part once Sam agrees too.',
-    ])
-    expect(agreeToast('Marco', outcome, now, name)).toEqual({ title: 'You agreed to Marco’s stakes', message: 'Part counts now, the rest once Sam agrees.' })
-  })
-
-  it('counts right away for the last one, and once the others agree for a group line', () => {
-    const now = termsNow(three, MID)
-    const afterLena = agree(mixed, 'lena', MID - D)
-    const sam = agreeOutcomeNow(three, 'marco', 'sam', { marco: afterLena }, now, MID)
-    expect(sam.counts).toBe('now')
-    expect(agreeConfirm('Marco', pairTerms(afterLena, 'sam')!, sam, now, name).lines.at(-1)).toBe('They count right away.')
-    expect(agreeToast('Marco', sam, now, name).message).toBe('They count now.')
-
-    const group = own('marco', { reward: 'Dinner', penalty: 'Coffee for a week, the lot' })
-    const later = agreeOutcomeNow(three, 'marco', 'lena', { marco: group }, now, MID)
-    expect(later).toEqual({ counts: 'later', waitingFor: ['sam'] })
-    const lines = agreeConfirm('Marco', pairTerms(group, 'lena')!, later, now, name).lines
-    expect(lines[1]).toBe('If Marco misses, the group gets “Coffee for a week, the lot”.')
-    expect(lines.at(-1)).toBe('They count once Sam agrees too.')
-    expect(agreeToast('Marco', later, now, name).message).toBe('They count once Sam agrees too.')
-  })
-
-  it('on the Saturday after the month’s last Friday, an Agree counts from November', () => {
-    const now = termsNow(three, SAT)
-    const afterLena = agree(mixed, 'lena', SAT - H)
-    const sam = agreeOutcomeNow(three, 'marco', 'sam', { marco: afterLena }, now, SAT)
-    expect(agreeToast('Marco', sam, now, name).message).toBe('They count from November.')
-    expect(agreeConfirm('Marco', pairTerms(afterLena, 'sam')!, sam, now, name).lines.at(-1)).toBe('They count from November. October is final.')
-    const partly = agreeOutcomeNow(three, 'marco', 'lena', { marco: mixed }, now, SAT)
-    expect(agreeToast('Marco', partly, now, name).message).toBe('Part counts from November, the rest once Sam agrees.')
-    expect(agreeConfirm('Marco', pairTerms(mixed, 'lena')!, partly, now, name).lines.at(-1)).toBe('Your own part counts from November, the shared part once Sam agrees too.')
-  })
-
+describe('a friend’s terms', () => {
   it('shows a friend’s terms as they apply to you', () => {
     const rows = friendRows('Lena', {
       reward: { text: 'Dinner', together: true, source: 'agreed' },
@@ -375,34 +283,7 @@ describe('agreeing', () => {
   })
 })
 
-describe('footers and waiting lines', () => {
-  it('never says “Everyone agreed” while anyone is still waiting', () => {
-    const waiting = ownFooter({ waiting: ['Sam'], total: 2, leavers: [], month: '2026-10', allAgreed: false })
-    expect(waiting).toBe('Your new stakes count as soon as Sam agrees.')
-    expect(ownFooter({ waiting: ['Sam', 'Ana'], total: 3, leavers: [], month: '2026-10', allAgreed: false })).toBe('Your new stakes count as soon as Sam and Ana agree.')
-    expect(ownFooter({ waiting: [], total: 2, leavers: [], month: '2026-10', allAgreed: true, streak: 3 })).toBe('Everyone agreed: they count now. Your streak: 3 months in a row.')
-    expect(ownFooter({ waiting: [], total: 2, leavers: ['Ben'], month: '2026-10', allAgreed: false })).toBe(
-      'Everyone here agreed. Ben left before agreeing, so your shared stakes count from November.',
-    )
-    for (const f of [waiting, ownFooter({ waiting: ['Sam'], total: 2, leavers: ['Ben'], month: '2026-10', allAgreed: true })]) {
-      expect(f).not.toContain('Everyone agreed')
-    }
-  })
-
-  it('names who a friend’s stakes wait for', () => {
-    expect(waitingFooter(['sam', 'lena'], 'lena', name)).toBe('Waiting for Sam and you')
-    expect(waitingFooter(['sam'], 'lena', name)).toBe('Waiting for Sam')
-    expect(waitingFooter(['sam', 'ana'], 'lena', name)).toBe('Waiting for Sam and Ana')
-    expect(waitingFooter(['sam', 'ana', 'kim', 'ben'], 'lena', name)).toBe('Waiting for 4 friends')
-    expect(waitingFooter([], 'lena', name)).toBe('Everyone agreed')
-  })
-
-  it('shows your streak from 2 months on', () => {
-    expect(streakLine(1)).toBeNull()
-    expect(streakLine(2)).toBe('Your streak: 2 months in a row.')
-    expect(streakLine(null)).toBeNull()
-  })
-
+describe('streaks', () => {
   it('says when streaks are late, only for a complete month from October 2026 on', () => {
     expect(streakNote(false, true, '2026-10', '2026-10', OCT_END, OCT_END + D)).toBe('Streaks update within a day of the month ending.')
     expect(streakNote(false, true, '2026-10', '2026-10', OCT_END, OCT_END + 4 * D)).toBe('Streaks are running late. They’ll catch up.')
@@ -412,35 +293,7 @@ describe('footers and waiting lines', () => {
   })
 })
 
-describe('the editor', () => {
-  const friends = ['lena', 'sam', 'kim']
-
-  it('prefills the house stakes, the same for everyone', () => {
-    const d = draftFrom(undefined, HOUSE, friends)
-    expect(d).toMatchObject({ rewardMode: 'group', penaltyMode: 'group', reward: 'Dinner on me', penalty: 'Coffee for a week', tiers: [] })
-    expect(draftValid(d, friends, [])).toBe(true)
-  })
-
-  it('switching a line prefills its empty fields from the other mode', () => {
-    const d = switchMode(draftFrom(undefined, HOUSE, friends), 'reward', 'each')
-    expect(Object.values(d.per).map((e) => e.reward)).toEqual(['Dinner on me', 'Dinner on me', 'Dinner on me'])
-    expect(Object.values(d.per).map((e) => e.penalty)).toEqual(['', '', ''])
-    const back = switchMode({ ...d, reward: '', per: { ...d.per, lena: { reward: 'Lunch', penalty: '' } } }, 'reward', 'group')
-    expect(back.reward).toBe('Lunch')
-  })
-
-  it('lets a judge’s fields stay empty, and leaves them out', () => {
-    const d = switchMode(draftFrom(undefined, HOUSE, friends), 'penalty', 'each')
-    const filled = { ...d, per: { lena: { reward: '', penalty: 'A coffee' }, sam: { reward: '', penalty: 'A beer' }, kim: { reward: '', penalty: '' } } }
-    expect(draftValid(filled, friends, [])).toBe(false)
-    expect(draftValid(filled, friends, ['kim'])).toBe(true)
-    expect(Object.keys(draftInput(filled, friends).per)).toEqual(['lena', 'sam'])
-    // A line for everyone left empty, a duplicate streak length, or text over 120: no Save.
-    expect(draftValid({ ...filled, reward: '  ' }, friends, ['kim'])).toBe(false)
-    expect(draftValid({ ...filled, tiers: [{ months: 3, reward: 'A' }, { months: 3, reward: 'B' }] }, friends, ['kim'])).toBe(false)
-    expect(draftValid({ ...filled, reward: 'x'.repeat(121) }, friends, ['kim'])).toBe(false)
-  })
-
+describe('streak rewards', () => {
   it('offers the streak lengths not used yet', () => {
     expect(unusedTierChoices([2, 3, 4, 6], [{ months: 3, reward: 'A' }])).toEqual([2, 4, 6])
   })

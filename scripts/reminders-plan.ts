@@ -4,9 +4,12 @@
 // dropped hourly run still sends it on the next run. The sent log (keys from reminderKey) makes
 // sure each one goes out once. Weekly windows follow each week's own times (its schedule, in nominal
 // wall-clock minutes from its Monday) and close at its stored bounds; on the usual times they are
-// exactly the windows from before batch 2 (scripts/reminders-legacy-oracle.ts is the test oracle).
+// exactly the windows from before batch 2 (scripts/reminders-legacy-oracle.ts is the test oracle). Deals (SPEC §12.11)
+// add two event pushes, `deal` and `deal-end`, and from `dealsFrom` change the verdict, `house` and `stakes`; on spaces
+// without deals and before the cutover the planner decides exactly what scripts/reminders-predeals-oracle.ts decides.
 import { DateTime } from 'luxon'
 import { isCancelled } from '../src/domain/cancel.ts'
+import { DEAL_PUSH_DAYS, DEALS_FROM_MONTH, dealClock, dealLengthText, dealPairTerms, dealPeriodKey, dealState, periodLabel } from '../src/domain/deals.ts'
 import { isWeekPaused, pauseNeeded } from '../src/domain/pause.ts'
 import { boundsFor, momentText, scheduleOf } from '../src/domain/schedule.ts'
 import { goalEndsAt, goalWeek, isGoalId, progressText } from '../src/domain/shared.ts'
@@ -30,10 +33,11 @@ import {
   FIRST_RESULTS_MONTH,
   inLockedWeek,
   memberTerms,
-  monthDebts,
+  monthHasStakes,
   monthHouse,
   monthLocks,
   monthTerms,
+  stakesDebts,
   termsFriends,
   termsMonth,
   type Debt,
@@ -54,6 +58,7 @@ import {
 } from '../src/domain/time.ts'
 import type {
   Checkin,
+  Deal,
   MemberStakes,
   MonthId,
   MonthlyData,
@@ -62,6 +67,7 @@ import type {
   ScoreEntry,
   SharedGoal,
   Space,
+  StreakTier,
   TermsInForce,
   UID,
   UserProfile,
@@ -86,6 +92,9 @@ export type ReminderKind =
   | 'house'
   // Batch 3 (SPEC §11.10): a shared goal's weekly check-in, to members who haven't checked in; opens `./?goal=<id>`.
   | 'checkin'
+  // Deals (SPEC §12.11), event pushes tagged per deal: a deal waits on your Agree; a deal you're in ended.
+  | 'deal'
+  | 'deal-end'
 
 /** The midweek nudges: they need only the plans and progress of the members still waiting for one. */
 export function isNudge(kind: ReminderKind): boolean {
@@ -105,7 +114,7 @@ function serves(have: WeekLoad, need: WeekLoad): boolean {
 
 /** Kinds that, in a month's last week, also carry that month's list as a part with its own key. */
 const MONTHLY_PARTS: ReadonlySet<ReminderKind> = new Set(['review', 'last-call', 'results'])
-const EVENT_KINDS: ReadonlySet<ReminderKind> = new Set(['pause-ask', 'paused', 'schedule', 'stakes', 'house'])
+const EVENT_KINDS: ReadonlySet<ReminderKind> = new Set(['pause-ask', 'paused', 'schedule', 'stakes', 'house', 'deal', 'deal-end'])
 
 export interface DueWindow {
   kind: ReminderKind
@@ -173,6 +182,12 @@ export interface SpaceInput {
   /** How much of each week the job loaded (absent: everything). A window is decided only on weeks loaded as far
    *  as its kind needs (weekLoad), so a week read just for a pause request never decides its review push. */
   loads?: Record<WeekId, WeekLoad>
+  /** Deals (SPEC §12.11), loaded only for a space with `hasDeals` during its event hours: the deals in play and the
+   *  ones that ended in the last 3 days. Absent: no deal pushes, and everything else exactly as without deals. */
+  deals?: { open: Deal[]; recent: Deal[] }
+  /** The first month without month stakes (SPEC §12.3; absent = DEALS_FROM_MONTH): from it the verdict quotes only
+   *  streak rewards, `house` sends nothing and `stakes` is about streak rewards. */
+  dealsFrom?: MonthId
 }
 
 export type WeekLoad = 'full' | 'nudge' | 'doc'
@@ -449,7 +464,26 @@ export function planWindows(input: SpaceInput, nowMs: number): DueWindow[] {
   windows.push(...byId.values())
   const stakes = input.memberStakes ? stakesWindow(input.space, nowMs) : null
   if (stakes) windows.push(stakes)
+  if (input.deals) windows.push(...dealWindows(input.space, nowMs))
   return windows
+}
+
+/**
+ * The deal pushes' windows (SPEC §12.11): every day 09:00–21:00 local, once the deals are loaded. Like `stakes`, their
+ * keys depend on the deals (dealCandidates), so they have no period of their own.
+ */
+export function dealWindows(space: Space, nowMs: number): DueWindow[] {
+  if (!eventHours(space, nowMs)) return []
+  const tz = space.timezone
+  const today = DateTime.fromMillis(nowMs, { zone: tz }).toISODate() ?? ''
+  const opensAt = localTime(today, 0, 9, tz)
+  const closesAt = localTime(today, 0, 21, tz)
+  return (['deal', 'deal-end'] as const).map((kind) => ({ kind, period: null, weekIds: [], opensAt, closesAt, expiresAt: closesAt }))
+}
+
+/** Whether deal pushes can go out now in a space (its 09:00–21:00): the job loads deals for them only then. */
+export function dealHours(space: Pick<Space, 'timezone'>, nowMs: number): boolean {
+  return eventHours(space, nowMs)
 }
 
 /**
@@ -532,7 +566,7 @@ function weekPhrase(weekId: WeekId, nowMs: number, tz: string): string {
 /** One member's answer for one key: a push to send (carrying every key in `keys`), or a skip. */
 type Outcome =
   | { uid: UID; key: string; skip: 'final' | 'not-yet' }
-  | { uid: UID; keys: string[]; title: string; body: string; expiresAt?: number }
+  | { uid: UID; keys: string[]; title: string; body: string; expiresAt?: number; tag?: string }
 
 interface Context {
   input: SpaceInput
@@ -755,7 +789,8 @@ function decideNudge(ctx: Context, window: DueWindow): Outcome[] {
 /**
  * Last month's verdict per member (SPEC §9.11), quoting the terms that counted: the month's results doc's terms
  * (written earlier in the same run), else monthTerms with the month's completion and its house stakes (its
- * freeze when it binds, else the space's). Not yet while the month isn't complete.
+ * freeze when it binds, else the space's). Not yet while the month isn't complete. From `dealsFrom` on (SPEC §12.11)
+ * a month has no stakes of its own: it says how the month went and names only the streak rewards owed.
  */
 function decideVerdict(ctx: Context, window: DueWindow): Outcome[] {
   const { space, nowMs, input } = ctx
@@ -772,7 +807,9 @@ function decideVerdict(ctx: Context, window: DueWindow): Outcome[] {
   const terms = monthTerms(space, monthId, month, input.memberStakes ?? {}, house, { completeAt, firstLockAt }, results)
   // Streak rewards only once the results doc knows the runs.
   const tierRuns = results ? Object.fromEntries(Object.entries(results.members).map(([uid, e]) => [uid, e.tierRuns ?? {}])) : null
-  const debts = monthDebts(monthId, month, terms, tierRuns)
+  const dealsFrom = input.dealsFrom ?? DEALS_FROM_MONTH
+  const debts = stakesDebts(monthId, month, terms, tierRuns, dealsFrom)
+  const stakes = monthHasStakes(monthId, dealsFrom)
   const label = monthName(monthId)
   return space.memberIds.map((uid): Outcome => {
     const key = reminderKey(space.id, monthId, 'verdict', uid)
@@ -786,6 +823,15 @@ function decideVerdict(ctx: Context, window: DueWindow): Outcome[] {
     const mine = (kind: Debt['kind']) => debts.filter((d) => d.subject === uid && d.kind === kind)
     const uniform = (owed: Debt[]) => owed.every((d) => d.what === owed[0].what)
     const others = (owed: Debt[]) => listNames(owed.map((d) => ctx.name(d.other)))
+    if (!stakes) {
+      if (!result.passed) return { uid, keys: [key], title: `You fell short: ${score}`, body: done }
+      const tierTexts = [...new Set(mine('tier').map((d) => d.what))]
+      const streak = results?.members[uid]?.streak ?? 0
+      const title = tierTexts.length > 0 && streak >= 2 ? `${streak} months in a row: ${score}` : `You made it: ${score}`
+      const collect =
+        tierTexts.length === 0 ? '' : tierTexts.length === 1 ? ` Collect your streak reward: ${tierTexts[0]}.` : ` Collect your streak rewards: ${listNames(tierTexts)}.`
+      return { uid, keys: [key], title, body: `${done}${collect}` }
+    }
     if (result.passed) {
       const rewards = mine('reward')
       const tiers = mine('tier')
@@ -862,6 +908,8 @@ function decideEvent(ctx: Context, window: DueWindow): Outcome[] {
       // A change made between a month's completion and the next month's first week counts from the next month.
       const weekId = weekIdFor(note.at, space.timezone)
       const counts = termsMonth(space, note.at, ctx.weeks[weekId]?.week ?? ctx.input.stored?.[weekId] ?? null, ctx.monthly[monthIdForWeek(weekId)]?.monthly ?? null)
+      // From `dealsFrom` house stakes no longer change what anyone owes (SPEC §12.11): nothing to tell.
+      if (!monthHasStakes(counts, ctx.input.dealsFrom ?? DEALS_FROM_MONTH)) return space.memberIds.map((uid) => final(uid, key(uid)))
       const when = counts === monthIdForWeek(weekId) ? 'now' : `from ${monthName(counts)}`
       const body = `${capital(ctx.name(note.by))} changed them: “${space.reward}” if you hit ${space.threshold}%, “${space.penalty}” if you miss. They count ${when}, where friends haven’t agreed on their own.`
       return space.memberIds.map((uid) => (uid === note.by || !joinedBefore(space, uid, note.at) ? final(uid, key(uid)) : send(uid, `New house stakes in ${space.name}`, body)))
@@ -879,6 +927,13 @@ export interface StakesCandidate {
   key: string
   /** A week after the change. */
   expiresAt: number
+  /** A change from `dealsFrom` on (SPEC §12.11): only its streak rewards matter ("New streak rewards from …"). */
+  tiers?: true
+}
+
+/** The same streak rewards, in order. */
+function sameTiers(a: StreakTier[], b: StreakTier[]): boolean {
+  return a.length === b.length && a.every((t, i) => t.months === b[i].months && t.reward === b[i].reward)
 }
 
 /**
@@ -886,8 +941,10 @@ export interface StakesCandidate {
  * days, each current friend who doesn't judge and whose agreement is 'waiting' by what counts now (as on the
  * stakes card, on computed times: a change back to terms everyone agreed to waits for nobody). Keys depend on the
  * change (`${spaceId}_${owner}@${updatedAtMs}_stakes_${friend}`), so the job reads them from the sent log after loading.
+ * A change whose termsMonth is `dealsFrom` or later is about streak rewards (SPEC §12.11): only friends whose agreement's
+ * streak rewards differ from the doc's are asked (`tiers: true`).
  */
-export function stakesCandidates(space: Space, memberStakes: Record<UID, MemberStakes> | undefined, nowMs: number): StakesCandidate[] {
+export function stakesCandidates(space: Space, memberStakes: Record<UID, MemberStakes> | undefined, nowMs: number, dealsFrom: MonthId = DEALS_FROM_MONTH): StakesCandidate[] {
   const judges = spaceJudges(space)
   const month = termsMonth(space, nowMs)
   const firstLockAt = boundsFor(space, weekIdsInMonth(month)[0]).lockAt
@@ -896,6 +953,15 @@ export function stakesCandidates(space: Space, memberStakes: Record<UID, MemberS
   for (const owner of space.memberIds) {
     const stakes = memberStakes?.[owner]
     if (!stakes || !(stakes.updatedAt > nowMs - STAKES_DAYS * DAY_MS)) continue
+    const key = (friend: UID) => reminderKey(space.id, `${owner}@${stakes.updatedAt}`, 'stakes', friend)
+    const expiresAt = stakes.updatedAt + STAKES_DAYS * DAY_MS
+    if (!monthHasStakes(termsMonth(space, stakes.updatedAt), dealsFrom)) {
+      for (const friend of space.memberIds) {
+        if (friend === owner || judges.includes(friend) || sameTiers(stakes.agreed[friend]?.terms.tiers ?? [], stakes.tiers)) continue
+        out.push({ owner, friend, key: key(friend), expiresAt, tiers: true })
+      }
+      continue
+    }
     let inForce: Record<UID, TermsInForce> | undefined
     const counted = () => {
       const friends = termsFriends(space, owner, firstLockAt, judges, (uid) => inLockedWeek(space, uid, locks))
@@ -905,17 +971,159 @@ export function stakesCandidates(space: Space, memberStakes: Record<UID, MemberS
     for (const friend of space.memberIds) {
       if (friend === owner || judges.includes(friend) || agreementStatus(stakes, friend) !== 'waiting') continue
       if (agreementStatus(stakes, friend, counted()) !== 'waiting') continue
-      out.push({ owner, friend, key: reminderKey(space.id, `${owner}@${stakes.updatedAt}`, 'stakes', friend), expiresAt: stakes.updatedAt + STAKES_DAYS * DAY_MS })
+      out.push({ owner, friend, key: key(friend), expiresAt })
     }
   }
   return out
 }
 
 function decideStakes(ctx: Context): Outcome[] {
-  return stakesCandidates(ctx.space, ctx.input.memberStakes, ctx.nowMs).map(({ owner, friend, key, expiresAt }) => {
+  return stakesCandidates(ctx.space, ctx.input.memberStakes, ctx.nowMs, ctx.input.dealsFrom ?? DEALS_FROM_MONTH).map(({ owner, friend, key, expiresAt, tiers }) => {
     const who = capital(ctx.name(owner))
-    return { uid: friend, keys: [key], title: `New stakes from ${who}`, body: `${who} has new stakes in ${ctx.space.name}. Take a look, and tap Agree if you’re in.`, expiresAt }
+    const what = tiers ? 'streak rewards' : 'stakes'
+    return { uid: friend, keys: [key], title: `New ${what} from ${who}`, body: `${who} has new ${what} in ${ctx.space.name}. Take a look, and tap Agree if you’re in.`, expiresAt }
   })
+}
+
+// ---------- Deals (SPEC §12.11) ----------
+
+export interface DealCandidate {
+  kind: 'deal' | 'deal-end'
+  deal: Deal
+  /** Who would get it. */
+  to: UID
+  /** `${spaceId}_${uid}@${seq}_${kind}_${to}` (the deal's period has no `_`). */
+  key: string
+  opensAt: number
+  expiresAt: number
+  /** `deal` only: nothing to send any more (they agreed, or the deal no longer waits, or its person left): logged as
+   *  final so later runs don't decide it again. */
+  final?: true
+}
+
+/** How a lost deal's missed period went for the copy: judged it, not in it ('left'), or a score. */
+function lostWhy(deal: Deal): 'judge' | 'left' | null {
+  const end = deal.ended
+  if (end?.outcome !== 'lost') return null
+  const entry = deal.track?.find((e) => e.id === end.period)
+  if (entry?.why === 'judge' || entry?.why === 'left') return entry.why
+  return typeof end.score === 'number' ? null : 'left'
+}
+
+/**
+ * The deal pushes that may be decided now (SPEC §12.11), on computed times. `deal`: for each deal in play proposed less
+ * than DEAL_PUSH_DAYS ago, each friend in it who is a current member: to send while it waits on their Agree and its
+ * person is a member, else final. `deal-end`: for each deal that ended won, lost or off (not withdrawn), its person
+ * (not after leaving: a 'left' loss) and its parties who are current members, from laterAwakeAt(ended.at) until 3 days
+ * after it. Keys `${spaceId}_${uid}@${seq}_${kind}_${to}`, read from the sent log after loading the deals.
+ */
+export function dealCandidates(space: Space, open: Deal[], recent: Deal[], nowMs: number): DealCandidate[] {
+  const members = space.memberIds
+  const out: DealCandidate[] = []
+  const key = (deal: Deal, kind: DealCandidate['kind'], to: UID) => reminderKey(space.id, dealPeriodKey(deal), kind, to)
+  for (const deal of open) {
+    if (deal.ended) continue
+    const opensAt = deal.createdAt
+    const expiresAt = deal.createdAt + DEAL_PUSH_DAYS * DAY_MS
+    if (nowMs < opensAt || nowMs >= expiresAt) continue
+    const asking = members.includes(deal.uid) && dealState(deal, space, nowMs, dealClock(space, deal.unit)).phase === 'waiting'
+    for (const to of deal.friends) {
+      if (to === deal.uid || !members.includes(to)) continue
+      const c: DealCandidate = { kind: 'deal', deal, to, key: key(deal, 'deal', to), opensAt, expiresAt }
+      if (!asking || typeof deal.agreed[to] === 'number') c.final = true
+      out.push(c)
+    }
+  }
+  const seen = new Set<string>()
+  for (const deal of recent) {
+    const end = deal.ended
+    if (!end || end.outcome === 'withdrawn' || seen.has(deal.id)) continue
+    seen.add(deal.id)
+    const opensAt = laterAwakeAt(end.at, space.timezone)
+    const expiresAt = end.at + EVENT_DAYS * DAY_MS
+    if (nowMs < opensAt || nowMs >= expiresAt) continue
+    const parties = dealState(deal, space, nowMs, dealClock(space, deal.unit)).parties
+    const to = [...(lostWhy(deal) === 'left' ? [] : [deal.uid]), ...parties].filter((uid, i, all) => members.includes(uid) && all.indexOf(uid) === i)
+    for (const uid of to) out.push({ kind: 'deal-end', deal, to: uid, key: key(deal, 'deal-end', uid), opensAt, expiresAt })
+  }
+  return out
+}
+
+/** "minus 5 for a missed review", "minus 10 for 2 missed reviews". */
+function missedText(space: Space, missed: number): string {
+  return `minus ${space.latePenalty * missed} for ${missed === 1 ? 'a missed review' : `${missed} missed reviews`}`
+}
+
+/** The copy of one deal push (SPEC §12.11 verbatim), or null when there's nothing to say to `to`. */
+function dealCopy(ctx: Context, c: DealCandidate): { title: string; body: string } | null {
+  const { space } = ctx
+  const { deal, to } = c
+  const who = capital(ctx.name(deal.uid))
+  const length = dealLengthText(deal.unit, deal.count)
+  const bar = `${space.threshold}%+`
+  if (c.kind === 'deal') {
+    return { title: `New deal from ${who}`, body: `${who} wants a deal in ${space.name}: ${length} at ${bar}. Take a look, and tap Agree if you’re in.` }
+  }
+  const end = deal.ended
+  if (!end) return null
+  const parties = dealState(deal, space, ctx.nowMs, dealClock(space, deal.unit)).parties
+  const names = listNames(parties.map(ctx.name))
+  const label = end.period ? periodLabel(deal.unit, end.period) : ''
+  const why = lostWhy(deal)
+  if (to === deal.uid) {
+    if (end.outcome === 'won') {
+      const what = deal.rewardMode === 'group' ? `: ${deal.reward}` : ''
+      return { title: `You made it: ${length} at ${bar}`, body: `Your deal in ${space.name} is done. Collect from ${names}${what}.` }
+    }
+    if (end.outcome === 'lost') {
+      if (why === 'left') return null
+      const payUp = `Pay up to ${names}${deal.penaltyMode === 'group' ? `: ${deal.penalty}` : ''}.`
+      if (why === 'judge') return { title: 'Your deal ended', body: `You judged ${label} in ${space.name}, so it counts as a miss. ${payUp}` }
+      const score = end.score ?? 0
+      const missed = deal.track?.find((e) => e.id === end.period)?.missed ?? 0
+      const was =
+        missed > 0
+          ? `was ${formatPercent(score)} for your deal (${formatPercent(score + space.latePenalty * missed)}, ${missedText(space, missed)})`
+          : `was ${formatPercent(score)}`
+      return { title: 'Your deal ended', body: `${capital(label)} in ${space.name} ${was}. ${payUp}` }
+    }
+    if (end.outcome === 'off') {
+      return {
+        title: 'Your deal is off',
+        body: end.reason === 'alone' ? `Everyone in your deal left ${space.name}, so nothing’s owed.` : `Everyone in ${space.name} called it off. Nothing’s owed.`,
+      }
+    }
+    return null
+  }
+  const terms = dealPairTerms(deal, to)
+  if (end.outcome === 'won') {
+    if (!terms) return null
+    return { title: `${who} made it`, body: `${length} at ${bar} in ${space.name}. You owe ${who}: ${terms.reward}.` }
+  }
+  if (end.outcome === 'lost') {
+    if (!terms) return null
+    const owes = `${who} owes you: ${terms.penalty}.`
+    const title = `${who}’s deal ended`
+    if (why === 'judge') return { title, body: `${who} judged ${label} in ${space.name}, so it counts as a miss. ${owes}` }
+    if (why === 'left') return { title, body: `${who} left ${space.name} during the deal, so it counts as a miss. ${owes}` }
+    return { title, body: `${who}’s ${label.replace(/^the /, '')} in ${space.name} was ${formatPercent(end.score ?? 0)}. ${owes}` }
+  }
+  if (end.outcome === 'off' && end.reason !== 'alone') return { title: `${who}’s deal is off`, body: 'Everyone called it off. Nothing’s owed.' }
+  return null
+}
+
+/** The `deal` or `deal-end` pushes of a space with its deals loaded: one per candidate, tagged per deal. */
+function decideDeals(ctx: Context, kind: DealCandidate['kind']): Outcome[] {
+  const deals = ctx.input.deals
+  if (!deals) return []
+  return dealCandidates(ctx.space, deals.open, deals.recent, ctx.nowMs)
+    .filter((c) => c.kind === kind)
+    .flatMap((c): Outcome[] => {
+      if (c.final) return [final(c.to, c.key)]
+      const copy = dealCopy(ctx, c)
+      if (!copy) return []
+      return [{ uid: c.to, keys: [c.key], ...copy, expiresAt: c.expiresAt, tag: `deal-${ctx.space.id}-${dealPeriodKey(c.deal)}` }]
+    })
 }
 
 function decide(ctx: Context, window: DueWindow): Outcome[] {
@@ -933,6 +1141,9 @@ function decide(ctx: Context, window: DueWindow): Outcome[] {
       return decideVerdict(ctx, window)
     case 'stakes':
       return decideStakes(ctx)
+    case 'deal':
+    case 'deal-end':
+      return decideDeals(ctx, window.kind)
     default:
       return decideEvent(ctx, window)
   }
@@ -979,7 +1190,7 @@ export function planSpace(input: SpaceInput, profiles: PlanInput['profiles'], se
         title: outcome.title,
         body: outcome.body,
         url: EVENT_KINDS.has(window.kind) ? `./?space=${space.id}` : './',
-        tag: `${TAG_GROUP[window.kind] ?? window.kind}-${space.id}`,
+        tag: outcome.tag ?? `${TAG_GROUP[window.kind] ?? window.kind}-${space.id}`,
         expiresAt: outcome.expiresAt ?? window.expiresAt,
       }
       if (keys.length > 1) reminder.parts = keys

@@ -657,6 +657,8 @@ describe('Past Deals', () => {
     const now = at('2026-11-18T10:00')
     expect(historyRow(r, stateAt(r, now), 90, TZ)).toEqual({ title: '4 weeks · Week 2 of 4', subtitle: 'All 90%+ so far' })
     expect(historyRow(deal(), stateAt(deal(), now), 90, TZ).title).toBe('2 weeks · Waiting for agreement')
+    const sched = running({ start: W2 })
+    expect(historyRow(sched, stateAt(sched, at('2026-11-10T10:00')), 90, TZ)).toEqual({ title: '2 weeks · Starts the week of Nov 16', subtitle: 'Everyone agreed' })
   })
 })
 

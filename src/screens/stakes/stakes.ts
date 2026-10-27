@@ -1,14 +1,14 @@
-// The words and rows of the stakes screens (SPEC §9.7, §9.8), pure so they are unit-tested without a DOM:
-// what the Space screen's stakes card shows, the Stakes screen's sections and footers, the Agree confirm and
-// its toast, and the editor's draft and its save toast. Every "counts now" row is memberTerms for termsMonth
+// The rows of month stakes (SPEC §9.7, §9.8), pure so they are unit-tested without a DOM. From deals (SPEC §12)
+// they show only October's stakes read-only, in the October window (the stakes card's and the Stakes screen's
+// rows), plus the streak rewards' rows and helpers; deals have their own words in deals.ts. Every "counts now" row is memberTerms for termsMonth
 // with termsFriends of that row's subject and the space's own house stakes (the month whose terms count now is
 // never complete, so no freeze binds for it and nothing here reads a months/ doc).
 import { judgesOf, spaceJudges } from '../../domain/scoring.ts'
 import { boundsFor } from '../../domain/schedule.ts'
-import { agreementStatus, agreeOutcome, inLockedWeek, memberTerms, missingFor, monthLocks, pairTerms, termsFriends, termsMonth, waitingFor } from '../../domain/stakes.ts'
+import { agreementStatus, inLockedWeek, memberTerms, missingFor, monthLocks, pairTerms, termsFriends, termsMonth, waitingFor } from '../../domain/stakes.ts'
 import type { House } from '../../domain/stakes.ts'
 import { addMonths, monthIdForWeek, weekIdFor, weekIdsInMonth } from '../../domain/time.ts'
-import type { MemberStakes, MonthId, MonthlyList, PairTerms, Space, StakesMode, StreakTier, TermsInForce, UID, Week } from '../../domain/types.ts'
+import type { MemberStakes, MonthId, MonthlyList, PairTerms, Space, StreakTier, TermsInForce, UID, Week } from '../../domain/types.ts'
 import { monthName } from '../components/format.ts'
 import { listNames } from '../components/people.ts'
 
@@ -84,20 +84,9 @@ export function playingFriends(space: Space, me: UID): UID[] {
 
 // ---------- Names ----------
 
-/** "Lena", "Lena and Sam", up to three names, then "4 friends" ("all 4 friends" when that's every friend). */
-export function whoPhrase(names: string[], total = Infinity): string {
-  if (names.length <= 3) return listNames(names)
-  return `${names.length === total ? 'all ' : ''}${names.length} friends`
-}
-
 /** A short list for a one-line status: "Sam", "Sam and Ana", then "3 friends". */
 export function shortWho(names: string[]): string {
   return names.length <= 2 ? listNames(names) : `${names.length} friends`
-}
-
-/** "Lena agrees" / "Lena and Sam agree". */
-function agreesPhrase(names: string[], total = Infinity): string {
-  return `${whoPhrase(names, total)} ${names.length === 1 ? 'agrees' : 'agree'}`
 }
 
 // ---------- Grouping texts by friend ----------
@@ -146,17 +135,6 @@ export function tierRows(tiers: StreakTier[]): StakesRow[] {
   return tiers.map((t) => ({ icon: 'sparkles', label: `${t.months} months in a row`, text: t.reward }))
 }
 
-/** Your own current stakes as rows (the "Your new stakes" group): each line for everyone, or grouped per friend. */
-export function proposedRows(own: MemberStakes, shown: UID[], name: Name, threshold = 90): StakesRow[] {
-  const line = (mode: StakesMode, text: string, key: 'reward' | 'penalty') =>
-    mode === 'group' ? text : groupedText(shown.flatMap((f) => (own.per[f]?.[key] ? [[f, own.per[f][key]] as [UID, string]] : [])), name) || 'Not set yet'
-  return [
-    { icon: 'trophy', label: `Hit ${threshold}%, they owe you`, text: line(own.rewardMode, own.reward, 'reward') },
-    { icon: 'flame', label: 'Miss, you owe them', text: line(own.penaltyMode, own.penalty, 'penalty') },
-    ...tierRows(own.tiers),
-  ]
-}
-
 /** A pair's current terms in the shape of terms in force, to compare and to show as "New". */
 function asInForce(t: PairTerms): TermsInForce {
   return {
@@ -192,11 +170,6 @@ export function friendRows(subject: string, terms: TermsInForce, threshold = 90,
     { icon: 'flame', label: `${subject} misses, you get`, text: all(terms.penalty.text, terms.penalty.together, 'shared with everyone') },
     ...terms.tiers.map((t): StakesRow => ({ icon: 'sparkles', label: `${subject}: ${t.months} months in a row, you owe`, text: t.reward, note: alone ? undefined : 'Together with everyone' })),
   ]
-}
-
-/** A friend's current terms for you as "New" rows. */
-export function newFriendRows(subject: string, terms: PairTerms, threshold = 90, alone = false): StakesRow[] {
-  return friendRows(subject, asInForce(terms), threshold, alone)
 }
 
 // ---------- The Space screen's stakes card ----------
@@ -334,213 +307,7 @@ export function leaverText(names: string[], month: MonthId): string {
   return `${listNames(names)} left before agreeing, so your shared stakes count from ${monthName(addMonths(month, 1))}.`
 }
 
-// ---------- The Stakes screen ----------
-
-/** The footer of "Your stakes": who your new stakes wait for, or that everyone agreed, then your streak. */
-export function ownFooter(opts: { waiting: string[]; total: number; leavers: string[]; month: MonthId; allAgreed: boolean; streak?: number | null }): string | null {
-  const parts: string[] = []
-  if (opts.waiting.length > 0) parts.push(`Your new stakes count as soon as ${agreesPhrase(opts.waiting, opts.total)}.`)
-  else if (opts.leavers.length > 0) parts.push(`Everyone here agreed. ${leaverText(opts.leavers, opts.month)}`)
-  else if (opts.allAgreed) parts.push('Everyone agreed: they count now.')
-  const line = streakLine(opts.streak)
-  if (line) parts.push(line)
-  return parts.length > 0 ? parts.join(' ') : null
-}
-
-/** "Your streak: 3 months in a row." from 2 on. */
-export function streakLine(streak: number | null | undefined): string | null {
-  return typeof streak === 'number' && streak >= 2 ? `Your streak: ${streak} months in a row.` : null
-}
-
-export const NO_OWN_FOOTER = 'Set what you get and what you give, the same for everyone or per friend. They count as soon as your friends tap Agree.'
-
-/** A friend's status row in "Your stakes": "Agreed", "Waiting" (with what counts meanwhile), or missing terms.
- *  `terms`: what counts now with your friends (memberTerms), so terms that already count read as agreed. */
-export function friendStatus(own: MemberStakes, friend: UID, terms?: Record<UID, TermsInForce>): { kind: 'agreed' } | { kind: 'waiting'; subtitle: string } | { kind: 'missing' } {
-  const status = agreementStatus(own, friend, terms)
-  if (status === 'agreed') return { kind: 'agreed' }
-  if (status === 'missing') return { kind: 'missing' }
-  const inForce = terms?.[friend]
-  const earlier = inForce ? inForce.reward.source === 'agreed' || inForce.penalty.source === 'agreed' || inForce.tiers.length > 0 : !!own.agreed[friend]
-  return { kind: 'waiting', subtitle: earlier ? 'What they agreed before counts for now' : 'The house stakes count for now' }
-}
-
-/** A friend's section footer: "Waiting for Sam and you" / "Waiting for Sam" / "Everyone agreed". */
-export function waitingFooter(waiting: UID[], me: UID, name: Name): string {
-  if (waiting.length === 0) return 'Everyone agreed'
-  const others = waiting.filter((f) => f !== me).map(name)
-  const names = waiting.includes(me) ? [...(others.length > 3 ? [`${others.length} friends`] : others), 'you'] : others.length > 3 ? [`${others.length} friends`] : others
-  return `Waiting for ${listNames(names)}`
-}
-
-/** Friend sections in order: those whose stakes wait on you first, then join order. */
-export function friendOrder(space: Space, me: UID, stakes: StakesDocs | undefined, judge: boolean, now: TermsNow): UID[] {
-  const friends = playingFriends(space, me)
-  if (judge || !stakes) return friends
-  const waits = (f: UID) => (stakes[f] && myStatus(space, f, me, stakes, now) === 'waiting' ? 0 : 1)
-  return [...friends].sort((a, b) => waits(a) - waits(b))
-}
-
-export function houseFooter(ownerName: string, isOwner: boolean): string {
-  return isOwner
-    ? 'These count between two friends until they agree on their own. Change them in Settings.'
-    : `These count between two friends until they agree on their own. Only ${ownerName} can change them; changes count right away.`
-}
-
-export const JUDGE_NOTE = 'You’re judging, so nothing’s owed either way. Your stakes count again when you play.'
-
-// ---------- Agreeing ----------
-
-export interface AgreeOutcome {
-  counts: 'now' | 'partly' | 'later'
-  waitingFor: UID[]
-}
-
-/** What `me`'s Agree to `subject`'s current terms would do right now. */
-export function agreeOutcomeNow(space: Space, subject: UID, me: UID, stakes: StakesDocs | undefined, now: TermsNow, nowMs: number): AgreeOutcome {
-  return agreeOutcome(space, subject, me, friendsOf(space, subject, now), stakes, houseOf(space), nowMs)
-}
-
-/** The Agree confirm: "Agree to Lena’s stakes?", the lines as they apply to you, then when they count. */
-export function agreeConfirm(subject: string, terms: PairTerms, outcome: AgreeOutcome, now: TermsNow, name: Name, threshold = 90): { title: string; lines: string[] } {
-  const lines = [
-    terms.rewardMode === 'group'
-      ? `${subject} hits ${threshold}%: you all owe “${terms.reward}”, together.`
-      : `${subject} hits ${threshold}%: you owe “${terms.reward}”.`,
-    terms.penaltyMode === 'group' ? `If ${subject} misses, the group gets “${terms.penalty}”.` : `If ${subject} misses, you get “${terms.penalty}”.`,
-    ...terms.tiers.map((t) => `${t.months} months in a row: you all owe “${t.reward}”, together.`),
-  ]
-  lines.push(agreeWhen(outcome, now, name))
-  return { title: `Agree to ${subject}’s stakes?`, lines }
-}
-
-function waitingNames(outcome: AgreeOutcome, name: Name): string {
-  return outcome.waitingFor.length > 0 ? agreesPhrase(outcome.waitingFor.map(name)) : 'everyone agrees'
-}
-
-/** When an Agree counts, for the confirm. */
-export function agreeWhen(outcome: AgreeOutcome, now: TermsNow, name: Name): string {
-  const from = `from ${monthName(now.month)}`
-  const who = waitingNames(outcome, name)
-  if (outcome.counts === 'now') return now.window ? `They count ${from}. ${monthName(now.thisMonth)} is final.` : 'They count right away.'
-  if (outcome.counts === 'later') return now.window ? `They count ${from}, once ${who} too.` : `They count once ${who} too.`
-  return now.window ? `Your own part counts ${from}, the shared part once ${who} too.` : `Your own part counts right away, the shared part once ${who} too.`
-}
-
-/** The toast after an Agree: "You agreed to Lena’s stakes" · "They count now." */
-export function agreeToast(subject: string, outcome: AgreeOutcome, now: TermsNow, name: Name): { title: string; message: string } {
-  const from = `from ${monthName(now.month)}`
-  const who = waitingNames(outcome, name)
-  let message: string
-  if (outcome.counts === 'now') message = now.window ? `They count ${from}.` : 'They count now.'
-  else if (outcome.counts === 'later') message = now.window ? `They count ${from}, once ${who} too.` : `They count once ${who} too.`
-  else message = now.window ? `Part counts ${from}, the rest once ${who}.` : `Part counts now, the rest once ${who}.`
-  return { title: `You agreed to ${subject}’s stakes`, message }
-}
-
-// ---------- The editor ----------
-
-export interface EditorDraft {
-  rewardMode: StakesMode
-  penaltyMode: StakesMode
-  reward: string
-  penalty: string
-  per: Record<UID, { reward: string; penalty: string }>
-  tiers: StreakTier[]
-}
-
-const MAX_TEXT = 120
-
-/** Your doc, else the house stakes on Same for Everyone; a field per friend (empty when new). */
-export function draftFrom(own: MemberStakes | undefined, house: House, friends: UID[]): EditorDraft {
-  const per: EditorDraft['per'] = {}
-  for (const f of friends) per[f] = { reward: own?.per[f]?.reward ?? '', penalty: own?.per[f]?.penalty ?? '' }
-  if (!own) return { rewardMode: 'group', penaltyMode: 'group', reward: house.reward, penalty: house.penalty, per, tiers: [] }
-  return { rewardMode: own.rewardMode, penaltyMode: own.penaltyMode, reward: own.reward, penalty: own.penalty, per, tiers: own.tiers.map((t) => ({ ...t })) }
-}
-
-/** Switching a line's mode prefills its empty fields from the other mode. */
-export function switchMode(draft: EditorDraft, line: 'reward' | 'penalty', mode: StakesMode): EditorDraft {
-  const key = line === 'reward' ? 'rewardMode' : 'penaltyMode'
-  if (draft[key] === mode) return draft
-  const next: EditorDraft = { ...draft, [key]: mode, per: { ...draft.per } }
-  if (mode === 'each') {
-    for (const f of Object.keys(next.per)) if (next.per[f][line].trim() === '') next.per[f] = { ...next.per[f], [line]: draft[line] }
-  } else if (draft[line].trim() === '') {
-    const first = Object.values(draft.per).find((e) => e[line].trim() !== '')
-    if (first) next[line] = first[line]
-  }
-  return next
-}
-
-const blank = (s: string) => s.trim() === ''
-const tooLong = (s: string) => s.trim().length > MAX_TEXT
-
-/** Save is allowed: Same-for-everyone lines filled, each playing friend's per-friend fields filled (a judge's may
- *  be left empty, but not half), streak rewards filled with distinct lengths, everything under 120. */
-export function draftValid(d: EditorDraft, friends: UID[], judges: UID[]): boolean {
-  if ((d.rewardMode === 'group' && blank(d.reward)) || (d.penaltyMode === 'group' && blank(d.penalty))) return false
-  if (tooLong(d.reward) || tooLong(d.penalty)) return false
-  for (const f of friends) {
-    const e = d.per[f] ?? { reward: '', penalty: '' }
-    const fields = [d.rewardMode === 'each' ? e.reward : null, d.penaltyMode === 'each' ? e.penalty : null].filter((v): v is string => v !== null)
-    if (fields.some(tooLong)) return false
-    const empty = fields.filter(blank).length
-    if (empty > 0 && !(judges.includes(f) && empty === fields.length)) return false
-  }
-  if (d.tiers.some((t) => blank(t.reward) || tooLong(t.reward))) return false
-  return new Set(d.tiers.map((t) => t.months)).size === d.tiers.length
-}
-
-/** What the editor saves: trimmed, per-friend entries only while a line is per friend (a judge left empty is left out), tiers sorted. */
-export function draftInput(d: EditorDraft, friends: UID[]): EditorDraft {
-  const anyEach = d.rewardMode === 'each' || d.penaltyMode === 'each'
-  const per: EditorDraft['per'] = {}
-  if (anyEach) {
-    for (const f of friends) {
-      const e = d.per[f] ?? { reward: '', penalty: '' }
-      const reward = d.rewardMode === 'each' ? e.reward.trim() : ''
-      const penalty = d.penaltyMode === 'each' ? e.penalty.trim() : ''
-      if ((d.rewardMode === 'each' && reward === '') || (d.penaltyMode === 'each' && penalty === '')) continue
-      per[f] = { reward, penalty }
-    }
-  }
-  return {
-    rewardMode: d.rewardMode,
-    penaltyMode: d.penaltyMode,
-    reward: d.reward.trim(),
-    penalty: d.penalty.trim(),
-    per,
-    tiers: d.tiers.map((t) => ({ months: t.months, reward: t.reward.trim() })).sort((a, b) => a.months - b.months),
-  }
-}
-
-/** The draft differs from what is stored (or, with no doc, from the prefill). */
-export function draftChanged(d: EditorDraft, initial: EditorDraft, friends: UID[]): boolean {
-  return JSON.stringify(draftInput(d, friends)) !== JSON.stringify(draftInput(initial, friends))
-}
-
-/** Your stakes as they will read once saved (agreements kept), to tell who has to agree. */
-export function stakesAfterSave(me: UID, input: EditorDraft, own: MemberStakes | undefined, nowMs: number): MemberStakes {
-  return { uid: me, ...input, agreed: own?.agreed ?? {}, updatedAt: nowMs }
-}
-
-/** The friends (in the space) whose Agree your stakes wait for once saved as `after`, by what counts now: going back
- *  to terms everyone agreed to waits for nobody, though some agreed to a change in between. */
-export function waitingAfterSave(space: Space, me: UID, after: MemberStakes, stakes: StakesDocs | undefined, now: TermsNow): UID[] {
-  const shown = friendsOf(space, me, now).filter((f) => space.memberIds.includes(f))
-  return waitingFor(after, shown, termsInForceNow(space, me, { ...stakes, [me]: after }, now))
-}
-
-/** The save toast's message: when your stakes count ("Counts now.", "Counts as soon as Lena agrees."); none alone. */
-export function saveMessage(waiting: string[], total: number, now: TermsNow): string | undefined {
-  if (total === 0) return undefined
-  if (waiting.length === 0) return now.window ? `Counts from ${monthName(now.month)}. ${monthName(now.thisMonth)} is final.` : 'Counts now.'
-  return now.window ? `Counts from ${monthName(now.month)}, as soon as ${agreesPhrase(waiting, total)}.` : `Counts as soon as ${agreesPhrase(waiting, total)}.`
-}
-
-export const EDITOR_FOOTER = 'Changes count as soon as your friends agree; a line that’s the same for everyone needs all of them. A month that has ended keeps its stakes.'
-export const TIERS_FOOTER = 'Hit 90% this many months in a row and your friends owe you this too, together. A month you sit out doesn’t break a streak.'
+// ---------- Streak rewards ----------
 
 /** "Add Streak Reward" choices: the unused lengths. */
 export function unusedTierChoices(choices: readonly number[], tiers: StreakTier[]): number[] {

@@ -598,9 +598,15 @@ describe('event pushes', () => {
     )
     expect(result.send[0]).toMatchObject({ key: `s1_house@${noteAt}_house_b`, tag: 'stakes-s1', url: './?space=s1' })
     // Changed on the Saturday after October's last Friday: October is complete, so they count from November.
+    // November 2026 has no month stakes, SPEC §12: from the cutover (dealsFrom, November by default) the house stakes
+    // no longer change what anyone owes, so the note is final for everyone and nothing is sent (§12.11).
     const saturday = local('2026-10-31T10:00')
     const late = run(makeSpace({ stakesNote: { by: 'a', at: saturday } }), local('2026-10-31T10:17'))
-    expect(late.send.find((r) => r.kind === 'house')?.body).toBe(
+    expect(late.send.find((r) => r.kind === 'house')).toBeUndefined()
+    expect(late.skipped.filter((k) => k.includes('_house_')).sort()).toEqual(['a', 'b', 'c', 'd'].map((u) => `s1_house@${saturday}_house_${u}`))
+    // A cutover recorded later (a late ship, dealsFrom December): November still has stakes, and the note says so.
+    const lateShip = run(makeSpace({ stakesNote: { by: 'a', at: saturday } }), local('2026-10-31T10:17'), { dealsFrom: '2026-12' })
+    expect(lateShip.send.find((r) => r.kind === 'house')?.body).toBe(
       'Anna changed them: “Dinner on me” if you hit 90%, “Coffee for a week” if you miss. They count from November, where friends haven’t agreed on their own.',
     )
   })

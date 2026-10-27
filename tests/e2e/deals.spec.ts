@@ -497,6 +497,9 @@ test('Call Off: everyone in it has to tap, and then it’s off', async ({ browse
     await visibleButton(kim, 'Call Off').click()
     await answer(kim, 'Call Off')
     await expect(toast(kim, 'Deal called off')).toContainText('It’s confirmed within a few hours.')
+    expect(Object.keys(((await readDeal(SPACE_ID, `${p.lena}_1`))?.off ?? {}) as object).sort()).toEqual([p.lena, p.sam, p.kim].sort())
+    // The taps' times decide when it's off: seeded on the phones' clock, not the real time of the taps.
+    await dealDoc(SPACE_ID, `${p.lena}_1`).update({ [`off.${p.lena}`]: ts(now - 3 * HOUR), [`off.${p.sam}`]: ts(now - 2 * HOUR), [`off.${p.kim}`]: ts(now - HOUR) })
     await expect(shown(card(lena), 'Everyone called it off. It’s confirmed within a few hours.')).toBeVisible()
   })
 

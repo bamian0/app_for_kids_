@@ -856,7 +856,10 @@ export function historyRow(deal: Deal, state: DealState, threshold: number, tz: 
   const end = deal.ended
   if (!end) {
     if (state.phase === 'waiting') return { title: `${length} · Waiting for agreement`, subtitle: `At ${threshold}%+ each` }
-    if (state.phase === 'scheduled') return { title: `${length} · Starts ${state.start ? periodTitle(deal.unit, state.start) : 'soon'}`, subtitle: 'Everyone agreed' }
+    if (state.phase === 'scheduled') {
+      const when = !state.start ? 'soon' : deal.unit === 'week' ? periodLabel('week', state.start) : `in ${monthName(state.start)}`
+      return { title: `${length} · Starts ${when}`, subtitle: 'Everyone agreed' }
+    }
     return { title: `${length} · ${positionText(deal.unit, state.position, deal.count)}`, subtitle: state.passes > 0 ? `All ${threshold}%+ so far` : `Every ${deal.unit} needs ${threshold}%+` }
   }
   if (end.outcome === 'won') {

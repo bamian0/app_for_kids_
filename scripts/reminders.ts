@@ -12,24 +12,32 @@
 // tasks. Each run first writes the month results (streaks) of months that are complete (ensureResults) and, once a
 // week's deadline has passed, each member's scores, ring and stats (ensureScores, batch 3); between Saturday 15:00 and
 // Monday 13:00 UTC it also sends the shared goals' weekly check-in push. The summary it logs counts every doc it read.
+// Deals (SPEC §12.11): only in a space with `hasDeals`, it confirms each deal's periods and end (ensureDeals) and sends
+// the `deal` and `deal-end` pushes; it records the month stakes cutover (public/config.dealsFrom) once, from the first
+// deal. A space without `hasDeals` costs and gets exactly what it did before deals.
 import { pathToFileURL } from 'node:url'
 import { cert, deleteApp, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app'
 import { FieldValue, getFirestore, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore, type Query } from 'firebase-admin/firestore'
 import { IANAZone } from 'luxon'
 import webpush from 'web-push'
 import { decodeTasks } from '../src/data/tasks.ts'
-import { decodeCheckin, decodeMemberStakes, decodeMonthResults, decodeScores, decodeSharedGoal, decodeSpaceExtras, decodeWeekExtras } from '../src/domain/decode.ts'
+import { dealClock, dealPeriodsToLoad, dealState, monthDealPeriod, weekDealPeriod } from '../src/domain/deals.ts'
+import { decodeCheckin, decodeDeal, decodeMemberStakes, decodeMonthResults, decodeScores, decodeSharedGoal, decodeSpaceExtras, decodeWeekExtras } from '../src/domain/decode.ts'
 import { boundsFor } from '../src/domain/schedule.ts'
 import { computeMonth, judgesOf, monthEndsAt, monthEndsAtFor } from '../src/domain/scoring.ts'
 import { isGoalId } from '../src/domain/shared.ts'
 import { ringOf, statsOf } from '../src/domain/showcase.ts'
-import { buildMonthResults, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
+import { buildMonthResults, DEALS_FROM_MONTH, dealsFromAt, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
 import { addMonths, addWeeks, firstMonthOf, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
 import type {
+  Deal,
+  DealEnd,
+  DealPeriod,
   LineInForce,
   MemberStakes,
   MonthId,
   MonthlyData,
+  MonthlyList,
   MonthResults,
   Plan,
   Progress,
@@ -47,6 +55,8 @@ import type {
 import {
   checkinCandidates,
   checkinGateOpen,
+  dealCandidates,
+  dealHours,
   dueWindows,
   isMuted,
   isNudge,
@@ -114,6 +124,21 @@ const STAKES_RECENT_MS = 7 * DAY_MS
  *  left in (and its list) is written as final for them (SPEC §11.10): at most ~6 weeks to the month's end, plus a week. */
 export const EMPTIED_SCORES_MS = 60 * DAY_MS
 
+/** Deal period loads (SPEC §12.11): a whole week, or a whole month with its list, per space and per run. Loads the
+ *  results and scores writers already made in the run are free. The rest wait for the next run. */
+export const DEAL_LOADS_PER_SPACE = 4
+export const DEAL_LOADS_PER_RUN = 16
+/** The deals whose end the `deal-end` push may still tell (SPEC §12.11): ended in the last 3 days. */
+const DEAL_RECENT_MS = 3 * DAY_MS
+
+const MONTH_ID = /^\d{4}-(0[1-9]|1[0-2])$/
+
+/** A stored `dealsFrom`: a 'YYYY-MM' at or after DEALS_FROM_MONTH (the floor), else null (absent or malformed). */
+export function storedDealsFrom(v: unknown): MonthId | null {
+  if (typeof v !== 'string' || !MONTH_ID.test(v)) return null
+  return v >= DEALS_FROM_MONTH ? v : DEALS_FROM_MONTH
+}
+
 /** Delivers one push; rejects with an error carrying `statusCode` when the push service refuses it. */
 export type SendPush = (subscription: PushKeys, payload: string, options: SendOptions) => Promise<unknown>
 
@@ -126,6 +151,13 @@ export interface RunOptions {
   /** Overrides for tests. */
   sendTimeoutMs?: number
   spaceBudgetMs?: number
+  /**
+   * The month stakes cutover (SPEC §12.3, §12.11), as main read it from public/config (ensureVapidKeys): a month →
+   * every space's planner and verdicts use it; null (read, absent) → the run records it from the first deal it finds
+   * (a space with `hasDeals`), once ever, and uses it; undefined (not given, as in the tests) → DEALS_FROM_MONTH,
+   * never recorded.
+   */
+  dealsFrom?: MonthId | null
 }
 
 export interface RunSummary {
@@ -150,6 +182,10 @@ export interface RunSummary {
   cleaned: number
   /** Shared goals looked at for the check-in push (only between Saturday 15:00 and Monday 13:00 UTC). */
   goals: number
+  /** Deal docs the job updated (stamps, periods, ends, its withdrawals; in a dry run: that would have been). */
+  deals: number
+  /** Deals it ended won, lost or off. */
+  dealsEnded: number
   /** Docs read, as Firestore bills them: each doc fetched, one for a missing doc or an empty query. */
   reads: number
 }
@@ -352,8 +388,9 @@ export interface VapidKeys {
 }
 
 /** Reads the VAPID keys from _private/vapid, creating them on the first run, and mirrors the
- *  public key to public/config where the app reads it. */
-export async function ensureVapidKeys(db: Firestore, generate: () => VapidKeys): Promise<VapidKeys> {
+ *  public key to public/config where the app reads it. Also gives that config's `dealsFrom` (SPEC §12.11; null when
+ *  absent or malformed), which main passes to the run. */
+export async function ensureVapidKeys(db: Firestore, generate: () => VapidKeys): Promise<VapidKeys & { dealsFrom: MonthId | null }> {
   const ref = db.doc('_private/vapid')
   const read = async (): Promise<VapidKeys | null> => {
     const snap = await ref.get()
@@ -381,10 +418,11 @@ export async function ensureVapidKeys(db: Firestore, generate: () => VapidKeys):
   }
 
   const config = db.doc('public/config')
-  if ((await config.get()).get('vapidPublicKey') !== keys.publicKey) {
+  const snap = await config.get()
+  if (snap.get('vapidPublicKey') !== keys.publicKey) {
     await config.set({ vapidPublicKey: keys.publicKey }, { merge: true })
   }
-  return keys
+  return { ...keys, dealsFrom: storedDealsFrom(snap.get('dealsFrom')) }
 }
 
 // ---------- the run ----------
@@ -397,11 +435,16 @@ export async function runReminders({
   log = console.log,
   sendTimeoutMs = SEND_TIMEOUT_MS,
   spaceBudgetMs = SPACE_BUDGET_MS,
+  dealsFrom: givenDealsFrom,
 }: RunOptions): Promise<RunSummary> {
   const summary: RunSummary = {
     spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0, results: 0, reads: 0,
-    rings: 0, stats: 0, cleaned: 0, goals: 0,
+    rings: 0, stats: 0, cleaned: 0, goals: 0, deals: 0, dealsEnded: 0,
   }
+  /** The cutover in force for this run (SPEC §12.3): given, recorded below from the first deal, or the floor. */
+  let dealsFrom: MonthId = (givenDealsFrom && storedDealsFrom(givenDealsFrom)) || DEALS_FROM_MONTH
+  /** Deal period loads this run may still make, across all spaces. */
+  let dealLoadsLeft = DEAL_LOADS_PER_RUN
   const deviceCache = new Map<UID, Promise<Device[]>>()
   const profiles: PlanInput['profiles'] = {}
   /** Month results docs this run may still write, across all spaces. */
@@ -511,6 +554,45 @@ export async function runReminders({
     else if (failed > 0) for (const key of claimed) await logRef(db, key).delete()
   }
 
+  // ----- Deals (SPEC §12.11): each space's two deal queries, read at most once per run (the cutover's recording may
+  // read them before the space's turn), and the deals this run changed, so its pushes see them.
+  const dealQueries = new Map<string, { open?: Promise<Deal[]>; recent?: Promise<Deal[]> }>()
+  const dealChanges = new Map<string, Map<string, Deal>>()
+  const decodeDeals = (spaceId: string, docs: DocumentSnapshot[]): Deal[] =>
+    docs.flatMap((d) => {
+      const deal = decodeDeal(d.id, d.data(), spaceId, toMs)
+      if (!deal) log(`deal ${spaceId}/${d.id} skipped: malformed`)
+      return deal ?? []
+    })
+  const queriesOf = (spaceId: string) => {
+    let q = dealQueries.get(spaceId)
+    if (!q) dealQueries.set(spaceId, (q = {}))
+    return q
+  }
+  const changesOf = (spaceId: string) => dealChanges.get(spaceId) ?? new Map<string, Deal>()
+  /** `deals where ended == null` (one query), with this run's changes: a deal it ended is no longer open. */
+  const dealsOpen = async (spaceId: string): Promise<Deal[]> => {
+    const q = queriesOf(spaceId)
+    q.open ??= readQuery(db.collection(`spaces/${spaceId}/deals`).where('ended', '==', null)).then((snap) => decodeDeals(spaceId, snap.docs))
+    const changed = changesOf(spaceId)
+    return (await q.open).map((d) => changed.get(d.id) ?? d).filter((d) => d.ended === null)
+  }
+  /** `deals where ended.at >= now − 3 days` (one query), plus the ends this run wrote (or, dry, would have). */
+  const dealsRecent = async (spaceId: string): Promise<Deal[]> => {
+    const q = queriesOf(spaceId)
+    q.recent ??= readQuery(db.collection(`spaces/${spaceId}/deals`).where('ended.at', '>=', Timestamp.fromMillis(nowMs - DEAL_RECENT_MS))).then((snap) =>
+      decodeDeals(spaceId, snap.docs),
+    )
+    const recent = await q.recent
+    const ids = new Set(recent.map((d) => d.id))
+    return [...recent, ...[...changesOf(spaceId).values()].filter((d) => d.ended !== null && !ids.has(d.id))]
+  }
+  const dealChanged = (deal: Deal) => {
+    const changed = dealChanges.get(deal.spaceId) ?? new Map<string, Deal>()
+    changed.set(deal.id, deal)
+    dealChanges.set(deal.spaceId, changed)
+  }
+
   /** One space's reads, each made at most once per run: week docs and monthly lists (with their plans, progress
    *  and reviews when needed), results and freeze docs, and the stakes docs. */
   const makeLoader = (spaceId: string) => {
@@ -610,6 +692,24 @@ export async function runReminders({
         allStakes ??= readQuery(db.collection(`spaces/${spaceId}/stakes`)).then((snap) => stakesOf(snap.docs))
         return allStakes
       },
+      /** Whether a week or a list was already loaded whole this run (a deal's period load is then free). */
+      hasWhole(coll: 'weeks' | 'monthly', id: string): boolean {
+        return full.has(`${coll}/${id}`)
+      },
+      /** Every week doc and list read so far this run (no new reads): their stored bounds make a deal's clock. */
+      async known(): Promise<{ weeks: Record<WeekId, Week>; lists: Record<MonthId, MonthlyList> }> {
+        const out: { weeks: Record<WeekId, Week>; lists: Record<MonthId, MonthlyList> } = { weeks: {}, lists: {} }
+        for (const [path, pending] of docs) {
+          const d = (await pending.catch(() => null))?.data()
+          if (!d) continue
+          const [coll, id] = path.split('/')
+          if (coll === 'weeks') out.weeks[id] = toPeriod(spaceId, id, d)
+          else out.lists[id] = toPeriod(spaceId, id, d)
+        }
+        return out
+      },
+      dealsOpen: () => dealsOpen(spaceId),
+      dealsRecent: () => dealsRecent(spaceId),
       /** The stakes changed in the last 7 days (one query), for the `stakes` push; all of them if already read. */
       stakesRecent(): Promise<Record<UID, MemberStakes>> {
         if (allStakes) return allStakes
@@ -819,6 +919,205 @@ export async function runReminders({
     for (const key of markers) await claim(db, key, { kind: 'scores', spaceId: space.id })
   }
 
+  // ---------- Deals (SPEC §12.11) ----------
+
+  /** One finished period of a weeks deal for its person: null while its stored deadline (computed without a doc)
+   *  is ahead, or when the loads are used up for this space and run. */
+  const weekPeriod = async (space: Space, load: Loader, deal: Deal, weekId: WeekId, loads: { left: number }): Promise<DealPeriod | null> => {
+    const doc = await load.period('weeks', weekId)
+    if (nowMs < boundsFor(space, weekId, doc).deadlineAt) return null
+    if (!doc) return weekDealPeriod(space, deal.uid, { spaceId: space.id, weekId, week: null, plans: {}, progress: {}, reviews: [] }, nowMs)
+    if (!load.hasWhole('weeks', weekId)) {
+      if (loads.left <= 0 || dealLoadsLeft <= 0) return null
+      loads.left -= 1
+      dealLoadsLeft -= 1
+    }
+    return weekDealPeriod(space, deal.uid, await load.week(weekId), nowMs)
+  }
+
+  /** One finished month of a months deal: null until it is complete by its stored deadlines (two reads, shared with
+   *  the results writer), or when the loads are used up. A month and its list are one load. */
+  const monthPeriod = async (space: Space, load: Loader, deal: Deal, monthId: MonthId, loads: { left: number }): Promise<DealPeriod | null> => {
+    const weekIds = weekIdsInMonth(monthId)
+    const [lastWeek, list] = await Promise.all([load.period('weeks', weekIds[weekIds.length - 1]), load.period('monthly', monthId)])
+    if (nowMs < monthEndsAtFor(space, monthId, lastWeek, list)) return null
+    if (!weekIds.every((id) => load.hasWhole('weeks', id)) || !load.hasWhole('monthly', monthId)) {
+      if (loads.left <= 0 || dealLoadsLeft <= 0) return null
+      loads.left -= 1
+      dealLoadsLeft -= 1
+    }
+    const weeks = await Promise.all(weekIds.map((id) => load.week(id)))
+    const monthly = await load.monthly(monthId)
+    // monthDealPeriod can't tell a month without a result is complete: only complete months get here.
+    if (nowMs < monthEndsAt(space, monthId, weeks, monthly)) return null
+    return monthDealPeriod(deal.uid, computeMonth(space, monthId, weeks, nowMs, monthly)[deal.uid], weeks)
+  }
+
+  /** A track entry or an end as stored: no undefined values, times as Timestamps. */
+  const periodData = (e: DealPeriod): Record<string, unknown> => ({
+    id: e.id,
+    result: e.result,
+    score: e.score,
+    ...(e.missed !== undefined ? { missed: e.missed } : {}),
+    ...(e.why !== undefined ? { why: e.why } : {}),
+  })
+  const endData = (end: DealEnd): Record<string, unknown> => ({
+    outcome: end.outcome,
+    at: Timestamp.fromMillis(end.at),
+    ...(end.by !== undefined ? { by: end.by } : {}),
+    ...(end.period !== undefined ? { period: end.period } : {}),
+    ...(end.score !== undefined ? { score: end.score } : {}),
+    ...(end.reason !== undefined ? { reason: end.reason } : {}),
+  })
+
+  /**
+   * What the job writes to a deal now (SPEC §12.11 step 2 and 4), from `deal` as stored and the periods it loaded
+   * (`extra`): a waiting deal whose person is no longer a member is withdrawn for them (at their leftAt); a fully agreed
+   * one gets its missing `agreedAt`/`start` stamps, the track entries after its stored track and, when the walk
+   * determines it, its end; with `checkedAt` beside them. null when nothing changes. Also the deal as it would read.
+   */
+  const dealPatch = (space: Space, deal: Deal, rawTrack: unknown, extra: DealPeriod[], clock: ReturnType<typeof dealClock>): { patch: Record<string, unknown>; next: Deal } | null => {
+    if (deal.ended) return null
+    const state = dealState(deal, space, nowMs, clock, extra)
+    if (state.phase === 'waiting') {
+      if (space.memberIds.includes(deal.uid)) return null
+      const end: DealEnd = { outcome: 'withdrawn', at: space.leftAt?.[deal.uid] ?? nowMs, by: deal.uid }
+      return { patch: { ended: endData(end), checkedAt: Timestamp.fromMillis(nowMs) }, next: { ...deal, ended: end, checkedAt: nowMs } }
+    }
+    const patch: Record<string, unknown> = {}
+    const next: Deal = { ...deal }
+    if (deal.agreedAt === undefined && state.agreedAt !== null) {
+      patch.agreedAt = Timestamp.fromMillis(state.agreedAt)
+      next.agreedAt = state.agreedAt
+    }
+    if (deal.start === undefined && state.start !== null) {
+      patch.start = state.start
+      next.start = state.start
+    }
+    const added = state.track.slice((deal.track ?? []).length)
+    if (added.length > 0) {
+      // Appended to the track exactly as stored (a concurrent run's entries are kept as they are).
+      const stored = rawTrack === undefined ? (deal.track ?? []).map(periodData) : Array.isArray(rawTrack) ? rawTrack : []
+      patch.track = [...stored, ...added.map(periodData)]
+      next.track = state.track
+    }
+    if (state.provisional && state.end) {
+      patch.ended = endData(state.end)
+      next.ended = state.end
+    }
+    if (Object.keys(patch).length === 0) return null
+    patch.checkedAt = Timestamp.fromMillis(nowMs)
+    next.checkedAt = nowMs
+    return { patch, next }
+  }
+
+  /** Writes a deal's patch in a transaction that re-reads it and decides again on the stored doc (an end or a
+   *  concurrent run's entries that landed meanwhile win); nothing when nothing changes then. */
+  const writeDeal = async (space: Space, deal: Deal, extra: DealPeriod[], clock: ReturnType<typeof dealClock>, rawTrack: unknown) => {
+    const planned = dealPatch(space, deal, rawTrack, extra, clock)
+    if (!planned) return
+    const ref = db.doc(`spaces/${space.id}/deals/${deal.id}`)
+    const count = (next: Deal, patch: Record<string, unknown>) => {
+      summary.deals += 1
+      const outcome = next.ended?.outcome
+      if (patch.ended && outcome && outcome !== 'withdrawn') summary.dealsEnded += 1
+      dealChanged(next)
+    }
+    if (dryRun) {
+      log(`[dry run] would update spaces/${space.id}/deals/${deal.id}: ${JSON.stringify(planned.patch)}`)
+      count(planned.next, planned.patch)
+      return
+    }
+    const done = await db.runTransaction(async (tx) => {
+      summary.reads += 1
+      const snap = await tx.get(ref)
+      const fresh = snap.exists ? decodeDeal(snap.id, snap.data(), space.id, toMs) : null
+      const again = fresh ? dealPatch(space, fresh, snap.get('track'), extra, clock) : null
+      if (!again) return null
+      tx.update(ref, again.patch)
+      return again
+    })
+    if (!done) return
+    count(done.next, done.patch)
+    if (done.next.ended) log(`deal ${space.id}/${deal.id} ended: ${done.next.ended.outcome}`)
+  }
+
+  /**
+   * The deal results (SPEC §12.11), only in a space with `hasDeals`: the deals in play (one query); for each, in uid
+   * and seq order, the job's withdrawal when it waits and its person left, else, once fully agreed, its stamps, the
+   * periods it needs (at most DEAL_LOADS_PER_SPACE loads here, DEAL_LOADS_PER_RUN per run) and its end. Waiting deals
+   * cost nothing more. Nothing is deleted.
+   */
+  const ensureDeals = async (space: Space, load: Loader) => {
+    if (!space.hasDeals) return
+    const open = [...(await load.dealsOpen())].sort((a, b) => a.uid.localeCompare(b.uid) || a.seq - b.seq)
+    const loads = { left: DEAL_LOADS_PER_SPACE }
+    for (const deal of open) {
+      try {
+        const before = dealClock(space, deal.unit, await load.known())
+        const extra: DealPeriod[] = []
+        if (dealState(deal, space, nowMs, before).phase !== 'waiting') {
+          // dealPeriodsToLoad assumes each unknown period passes: after skips, ask again (within the load caps).
+          let open = true
+          for (let round = 0; open && round < 24; round++) {
+            const known = { ...deal, track: [...(deal.track ?? []), ...extra] }
+            const ids = dealPeriodsToLoad(known, space, nowMs, before)
+            if (ids.length === 0) break
+            for (const id of ids) {
+              const period = deal.unit === 'week' ? await weekPeriod(space, load, deal, id, loads) : await monthPeriod(space, load, deal, id, loads)
+              // Not final yet by its stored deadline, or no loads left: the rest waits for the next run.
+              if (!period) {
+                open = false
+                break
+              }
+              extra.push(period)
+              // Nothing after a miss counts.
+              if (period.result === 'miss') {
+                open = false
+                break
+              }
+            }
+          }
+        }
+        // The stored bounds of what was just loaded decide the final times.
+        const clock = dealClock(space, deal.unit, await load.known())
+        await writeDeal(space, deal, extra, clock, undefined)
+      } catch (e) {
+        summary.errors++
+        log(`deal ${space.id}/${deal.id} failed: ${message(e)}`)
+      }
+    }
+  }
+
+  /**
+   * Records the month stakes cutover (SPEC §12.3, §12.11) when main read none: the first space with `hasDeals` (in the
+   * loop's order) whose deal queries find a deal gives `dealsFromAt(space, earliest createdAt)`, written to
+   * public/config in a transaction only while it has none (another run's value wins and is used). A stray flag
+   * without deal docs records nothing. Dry run: logged, not written.
+   */
+  const recordDealsFrom = async (spaces: Space[]): Promise<MonthId> => {
+    for (const space of spaces) {
+      const deals = [...(await dealsOpen(space.id)), ...(await dealsRecent(space.id))]
+      if (deals.length === 0) continue
+      const month = dealsFromAt(space, Math.min(...deals.map((d) => d.createdAt)))
+      if (dryRun) {
+        log(`[dry run] would record dealsFrom ${month} in public/config (from space ${space.id})`)
+        return month
+      }
+      const ref = db.doc('public/config')
+      const used = await db.runTransaction(async (tx) => {
+        summary.reads += 1
+        const had = storedDealsFrom((await tx.get(ref)).get('dealsFrom'))
+        if (had) return had
+        tx.set(ref, { dealsFrom: month, dealsFromAt: Timestamp.fromMillis(nowMs) }, { merge: true })
+        return month
+      })
+      log(`dealsFrom ${used}${used === month ? ' recorded' : ' (recorded by another run)'} from space ${space.id}`)
+      return used
+    }
+    return DEALS_FROM_MONTH
+  }
+
   const runSpace = async (space: Space) => {
     const load = makeLoader(space.id)
     const members = space.memberIds
@@ -830,6 +1129,11 @@ export async function runReminders({
         await ensureScores(space, load, {}).catch((e: unknown) => {
           summary.errors++
           log(`space ${space.id} scores failed: ${message(e)}`)
+        })
+        // Its deals still end (their people left: lost, or withdrawn while waiting), as the record (SPEC §12.4).
+        await ensureDeals(space, load).catch((e: unknown) => {
+          summary.errors++
+          log(`space ${space.id} deals failed: ${message(e)}`)
         })
       }
       return
@@ -858,17 +1162,26 @@ export async function runReminders({
       summary.errors++
       log(`space ${space.id} scores failed: ${message(e)}`)
     })
+    // Deal results (SPEC §12.11), night runs included; only with `hasDeals` (else no read at all).
+    await ensureDeals(space, load).catch((e: unknown) => {
+      summary.errors++
+      log(`space ${space.id} deals failed: ${message(e)}`)
+    })
 
     // Nothing is sent between 00:00 and 08:00 local: the windows stay open for a later run.
     if (isMuted(space, nowMs)) return
     const windows = dueWindows(space, nowMs, { weeks: stored })
     const stakesOpen = stakesWindow(space, nowMs) !== null
-    if (windows.length === 0 && !stakesOpen) return
-    summary.windows += windows.length + (stakesOpen ? 1 : 0)
+    // The deal pushes, only in a space with deals, during its 09:00–21:00.
+    const dealsOpen = space.hasDeals === true && dealHours(space, nowMs)
+    if (windows.length === 0 && !stakesOpen && !dealsOpen) return
+    summary.windows += windows.length + (stakesOpen ? 1 : 0) + (dealsOpen ? 1 : 0)
 
-    // The sent log for every key these windows decide; `stakes` keys depend on the stakes docs.
+    // The sent log for every key these windows decide; `stakes` keys depend on the stakes docs, deal keys on the deals.
     const recentStakes = stakesOpen ? await load.stakesRecent() : undefined
-    const candidates = recentStakes ? stakesCandidates(space, recentStakes, nowMs) : []
+    const candidates = recentStakes ? stakesCandidates(space, recentStakes, nowMs, dealsFrom) : []
+    const deals = dealsOpen ? { open: await load.dealsOpen(), recent: await load.dealsRecent() } : undefined
+    const dealPushes = deals ? dealCandidates(space, deals.open, deals.recent, nowMs) : []
     const read = new Set<string>()
     const sent = new Set<string>()
     const readSent = async (keys: string[]) => {
@@ -877,7 +1190,7 @@ export async function runReminders({
       for (const snap of await readAll(fresh.map((key) => logRef(db, key)))) if (snap.exists) sent.add(snap.id)
     }
     const keysOf = (window: DueWindow, uid: UID) => windowKeys(space.id, window, uid)
-    await readSent([...windows.flatMap((w) => members.flatMap((uid) => keysOf(w, uid))), ...candidates.map((c) => c.key)])
+    await readSent([...windows.flatMap((w) => members.flatMap((uid) => keysOf(w, uid))), ...candidates.map((c) => c.key), ...dealPushes.map((c) => c.key)])
 
     // Load a window's data only if someone with a device is still waiting for it; for a nudge, only what those
     // people need.
@@ -904,7 +1217,11 @@ export async function runReminders({
       if (!isNudge(window.kind)) named = true
     }
     const stakesWaiting = (await reachable([...new Set(candidates.filter((c) => !sent.has(c.key)).map((c) => c.friend))])).length > 0
-    if (need.size === 0 && lists.size === 0 && !named && !stakesWaiting) return
+    const dealsDue = dealPushes.filter((c) => !c.final && !sent.has(c.key))
+    const dealsWaiting = (await reachable([...new Set(dealsDue.map((c) => c.to))])).length > 0
+    // Finals to log (a friend who agreed, a deal that no longer waits), so later runs don't decide them again.
+    const dealFinals = dealPushes.some((c) => c.final && !sent.has(c.key))
+    if (need.size === 0 && lists.size === 0 && !named && !stakesWaiting && !dealsWaiting && !dealFinals) return
 
     const weeks: Record<WeekId, WeekData> = {}
     const loads: Record<WeekId, WeekLoad> = {}
@@ -917,7 +1234,8 @@ export async function runReminders({
     }
     const monthly: Record<MonthId, MonthlyData> = {}
     for (const monthId of lists) monthly[monthId] = await load.monthly(monthId)
-    const input: SpaceInput = { space, weeks, stored, monthly, loads }
+    const input: SpaceInput = { space, weeks, stored, monthly, loads, dealsFrom }
+    if (deals) input.deals = deals
     if (verdict) {
       const frozen = await load.frozen(verdict)
       if (frozen) input.stakes = { [verdict]: frozen }
@@ -929,14 +1247,16 @@ export async function runReminders({
     }
 
     // Windows that only the loaded docs open (stored times later than computed ones): their keys too.
-    const extra = planWindows(input, nowMs).filter((w) => w.kind !== 'stakes')
+    const extra = planWindows(input, nowMs).filter((w) => w.kind !== 'stakes' && w.kind !== 'deal' && w.kind !== 'deal-end')
     await readSent(extra.flatMap((w) => members.flatMap((uid) => keysOf(w, uid))))
 
     // Names for everything but the nudges. Period members too: someone who left after lock is still named as a
     // friend to review.
-    if (named || stakesWaiting) {
+    if (named || stakesWaiting || dealsWaiting) {
       const periods = [...Object.values(weeks).map((w) => w.week), ...Object.values(monthly).map((m) => m.monthly)]
-      await loadProfiles([...new Set([...members, ...periods.flatMap((p) => p?.members ?? [])])])
+      // The people of the deals due (their person, their friends: a party who left is still named).
+      const dealPeople = dealsDue.flatMap((c) => [c.deal.uid, ...c.deal.friends])
+      await loadProfiles([...new Set([...members, ...periods.flatMap((p) => p?.members ?? []), ...dealPeople])])
     }
     const plan = planSpace(input, profiles, sent, nowMs)
 
@@ -1002,6 +1322,18 @@ export async function runReminders({
 
   const spaces = await readQuery(db.collection('spaces'))
   summary.spaces = spaces.size
+  // The month stakes cutover (SPEC §12.3): when main found none recorded, the first deal records it, before any space
+  // is planned, so the whole run follows it. Only spaces with `hasDeals` are read for it.
+  if (givenDealsFrom === null) {
+    const withDeals = spaces.docs.map(toSpace).filter((space) => space.hasDeals === true && IANAZone.isValidZone(space.timezone))
+    if (withDeals.length > 0) {
+      dealsFrom = await recordDealsFrom(withDeals).catch((e: unknown) => {
+        summary.errors++
+        log(`recording dealsFrom failed: ${message(e)}`)
+        return DEALS_FROM_MONTH
+      })
+    }
+  }
   for (const snap of spaces.docs) {
     const space = toSpace(snap)
     // A zone the runtime doesn't know (anyone can create a space with any zone-shaped string) is that
@@ -1080,6 +1412,7 @@ async function main(): Promise<void> {
     const dryRun = ['1', 'true'].includes(process.env.DRY_RUN ?? '')
     const appUrl = process.env.APP_URL?.trim() || DEFAULT_APP_URL
 
+    // Also the recorded month stakes cutover (SPEC §12.11), from the same read of public/config.
     const vapid = await ensureVapidKeys(db, () => webpush.generateVAPIDKeys())
     // Apple rejects pushes whose VAPID subject isn't a real https: or mailto: contact.
     webpush.setVapidDetails(appUrl, vapid.publicKey, vapid.privateKey)
@@ -1088,6 +1421,7 @@ async function main(): Promise<void> {
       db,
       nowMs,
       dryRun,
+      dealsFrom: vapid.dealsFrom,
       // web-push's own socket timeout; runReminders also races each send against the same limit.
       send: (sub, payload, options) => webpush.sendNotification(sub, payload, options),
     })

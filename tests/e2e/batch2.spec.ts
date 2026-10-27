@@ -1,21 +1,19 @@
 // Batch 2 end to end (SPEC §9), in iPhone-sized browsers against the emulators with the real rules: a space's
-// own times, pausing a week, judges, switching role, a monthly list, per-person stakes per line, agreed changes
-// that count at once while finished months keep theirs, the house stakes (with the previous app's early
-// freeze), and settling per pair. Accounts, spaces and the stored timelines are seeded; what people do goes
-// through the UI.
+// own times, pausing a week, judges, switching role, a monthly list, and settling per pair (in the last months
+// with month stakes, SPEC §12.3; the per-person and house stakes tests retired with deals, SPEC §12.15).
+// Accounts, spaces and the stored timelines are seeded; what people do goes through the UI.
 //
 // Time. `?now=` moves only the client's clock; the emulator stamps every write with the real time, and that is
 // what the rules judge plans, reviews, freezes and stakes edits by, and what an Agree is stamped with. So each
 // test seeds the stored bounds that decide something relative to the real clock (`Date.now()`), so the phone
 // and the server agree: a month the phone sees as complete has its last week's (and list's) stored deadline in
-// the real past, and a review the server must accept has its stored window open in real time. "This month" in
-// the stakes tests is the month after the real one, so `?now=` is ahead of real time.
+// the real past, and a review the server must accept has its stored window open in real time.
 //
 // Run with the other specs (see flow.spec.ts), or alone:
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test batch2"
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
 import { scheduleProblem, scheduleProblemText } from '../../src/domain/schedule.ts'
-import { houseFreezeMonths } from '../../src/domain/stakes.ts'
+import { DEALS_FROM_MONTH } from '../../src/domain/stakes.ts'
 import {
   addMonths,
   addWeeks,
@@ -33,14 +31,11 @@ import type { WeekSchedule } from '../../src/domain/types.ts'
 import {
   createAccount,
   db,
-  endMonthAt,
   monthlyDoc,
-  monthStakesDoc,
   pairOf,
   resetEmulators,
   setMonthly,
   setMonthlyPlan,
-  setMonthStakes,
   setPlan,
   setPlayedWeek,
   setResults,
@@ -164,8 +159,6 @@ const section = (page: Page | Locator, text: string | RegExp) => page.locator('.
 const toast = (page: Page, text: string) => page.getByRole('status').filter({ hasText: text }).first()
 /** The week's header pill ("Locks in 2d 4h", "Paused"). */
 const weekHead = (page: Page) => page.locator('.s-week-head').filter({ visible: true }).first()
-/** The Space screen's stakes card. */
-const stakesCard = (page: Page) => page.locator('.sk-card').filter({ visible: true }).first()
 
 async function openSettings(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Space settings' }).click()
@@ -193,7 +186,6 @@ async function showMonth(page: Page, monthId: string): Promise<void> {
 
 /** A week's row in the month view (it opens the week). */
 const weekRow = (page: Page, weekId: string) => page.getByRole('button', { name: new RegExp(`^${esc(formatWeekRange(weekId))}`) }).filter({ visible: true }).first()
-const stakesHeading = (page: Page) => page.getByRole('heading', { name: 'Stakes', exact: true })
 /** The week's Judges list (a section headed "Judges"). */
 const judgesSection = (page: Page) =>
   page.locator('.ui-section').filter({ visible: true }).filter({ has: page.getByRole('heading', { name: 'Judges', exact: true }) }).first()
@@ -991,371 +983,10 @@ test('a monthly list: planned in the first week, locked, ticked, reviewed in the
 })
 
 // =====================================================================================================
-// 6–8. Per-person stakes, when they count, the house stakes (SPEC §9.7)
-// =====================================================================================================
-
-test('stakes per line: a group reward, a penalty per friend and a streak reward, agreed friend by friend', async ({ browser }) => {
-  await resetEmulators()
-  const t0 = Date.now()
-  const [marcoUid, lenaUid, samUid] = await accounts(t0 - 60 * DAY, MARCO, LENA, SAM)
-  await seedSpace([marcoUid, lenaUid, samUid], t0 - 50 * DAY, { joinedAt: { [lenaUid]: t0 - 49 * DAY, [samUid]: t0 - 48 * DAY } })
-  // Mid-month on every phone (the month after the real one), so every "counts now" means now.
-  const { next: month } = realMonths(t0)
-  const midMonth = on(weekIdsInMonth(month)[1], 2, 12)
-
-  const a = await phone(browser)
-  const b = await phone(browser)
-  const c = await phone(browser)
-  const [marco, lena, sam] = [a.page, b.page, c.page]
-
-  const openStakes = async (page: Page) => {
-    await stakesCard(page).getByRole('button', { name: /they owe you/ }).click()
-    await expect(stakesHeading(page)).toBeVisible()
-  }
-  const editor = (page: Page) => page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Your Stakes' }) })
-  const marcoSection = (page: Page) => section(page, 'Marco hits 90%, you owe')
-
-  await test.step('Marco sets a reward for everyone, a penalty per friend and a 3-month streak reward', async () => {
-    await signIn(marco, MARCO, midMonth)
-    await openSpace(marco)
-    await expect(stakesCard(marco)).toContainText(SPACE.reward)
-    await expect(stakesCard(marco)).toContainText('Same stakes for everyone, for now.')
-    await openStakes(marco)
-    await marco.getByRole('button', { name: 'Edit', exact: true }).click()
-    const form = editor(marco)
-    await expect(form.getByRole('radiogroup', { name: 'Reward' }).getByRole('radio', { name: 'Same for Everyone' })).toBeChecked()
-    await form.getByLabel('What they owe you').fill('Dinner, on you')
-    await form.getByRole('radiogroup', { name: 'Penalty' }).getByRole('radio', { name: 'Different per Friend' }).click()
-    await form.getByLabel('You owe Lena…').fill('A coffee')
-    await form.getByLabel('You owe Sam…').fill('A beer')
-    await form.getByRole('button', { name: 'Add Streak Reward' }).click()
-    await marco.getByRole('dialog', { name: 'How many months in a row?' }).getByRole('button', { name: '3 months', exact: true }).click()
-    await form.getByLabel('Reward for 3 months in a row').fill('Weekend away')
-    await snap(marco, 'b2-34-editor-mixed')
-    await form.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(toast(marco, 'Saved')).toContainText('Counts as soon as Lena and Sam agree.')
-    await expect
-      .poll(async () => (await db.doc(`spaces/${SPACE_ID}/stakes/${marcoUid}`).get()).data())
-      .toMatchObject({
-        rewardMode: 'group',
-        penaltyMode: 'each',
-        reward: 'Dinner, on you',
-        per: { [lenaUid]: { penalty: 'A coffee' }, [samUid]: { penalty: 'A beer' } },
-        tiers: [{ months: 3, reward: 'Weekend away' }],
-        agreed: {},
-      })
-    await back(marco)
-    // Nothing counts yet: the house stakes, and what's pending.
-    await expect(stakesCard(marco)).toContainText(SPACE.reward)
-    await expect(stakesCard(marco)).toContainText(SPACE.penalty)
-    await expect(stakesCard(marco)).toContainText('Your new stakes: waiting for Lena and Sam to agree')
-    await snap(marco, 'b2-35-card-waiting')
-  })
-
-  await test.step('Lena takes a look and agrees: her own penalty counts now, the shared part waits for Sam', async () => {
-    await signIn(lena, LENA, midMonth)
-    await openSpace(lena)
-    await expect(stakesCard(lena)).toContainText('New stakes from Marco')
-    await snap(lena, 'b2-36-card-new-stakes')
-    await stakesCard(lena).getByRole('button', { name: /Take a Look/ }).click()
-    await expect(stakesHeading(lena)).toBeVisible()
-    await expect(marcoSection(lena)).toBeInViewport()
-    await marcoSection(lena).getByRole('button', { name: 'Agree to Marco’s Stakes' }).click()
-    const alert = lena.getByRole('alertdialog')
-    await expect(alert).toContainText('Agree to Marco’s stakes?')
-    await expect(alert).toContainText('Marco hits 90%: you all owe “Dinner, on you”, together.')
-    await expect(alert).toContainText('If Marco misses, you get “A coffee”.')
-    await expect(alert).toContainText('3 months in a row: you all owe “Weekend away”, together.')
-    await expect(alert).toContainText('Your own part counts right away, the shared part once Sam agrees too.')
-    await snap(lena, 'b2-37-agree-partly', 400)
-    await answer(lena, 'Agree')
-    await expect(toast(lena, 'You agreed to Marco’s stakes')).toContainText('Part counts now, the rest once Sam agrees.')
-    await expect(stakesCard(marco)).toContainText(`Lena: A coffee · Sam: ${SPACE.penalty}`)
-    await expect(stakesCard(marco)).toContainText(SPACE.reward)
-    await expect(stakesCard(marco)).toContainText('Your new stakes: waiting for Sam to agree')
-  })
-
-  await test.step('Sam agrees: it all counts, live on Marco’s card', async () => {
-    await signIn(sam, SAM, midMonth)
-    await openSpace(sam)
-    await stakesCard(sam).getByRole('button', { name: /Take a Look/ }).click()
-    await marcoSection(sam).getByRole('button', { name: 'Agree to Marco’s Stakes' }).click()
-    await expect(sam.getByRole('alertdialog')).toContainText('They count right away.')
-    await answer(sam, 'Agree')
-    await expect(toast(sam, 'You agreed to Marco’s stakes')).toContainText('They count now.')
-    await expect(stakesCard(marco)).toContainText('Dinner, on you')
-    await expect(stakesCard(marco)).toContainText('Lena: A coffee · Sam: A beer')
-    await expect(stakesCard(marco)).toContainText('Everyone agreed')
-    await snap(marco, 'b2-38-card-everyone-agreed')
-  })
-
-  await test.step('Marco changes only Lena’s penalty: it counts with Lena’s Agree alone', async () => {
-    await openStakes(marco)
-    await marco.getByRole('button', { name: 'Edit', exact: true }).click()
-    const form = editor(marco)
-    await form.getByLabel('You owe Lena…').fill('Two coffees')
-    await form.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(toast(marco, 'Saved')).toContainText('Counts as soon as Lena agrees.')
-    await back(marco)
-    await expect(stakesCard(marco)).toContainText('Lena: A coffee · Sam: A beer')
-    await expect(stakesCard(marco)).toContainText('Your new stakes: waiting for Lena to agree')
-    await marcoSection(lena).getByRole('button', { name: 'Agree to Marco’s Stakes' }).click()
-    await expect(lena.getByRole('alertdialog')).toContainText('They count right away.')
-    await answer(lena, 'Agree')
-    await expect(toast(lena, 'You agreed to Marco’s stakes')).toContainText('They count now.')
-    await expect(stakesCard(marco)).toContainText('Lena: Two coffees · Sam: A beer')
-    await expect(stakesCard(marco)).toContainText('Everyone agreed')
-  })
-
-  await closeAll(browser, a, b, c)
-})
-
-test('an agreed change counts at once; a finished month keeps its terms', async ({ browser }) => {
-  await resetEmulators()
-  const t0 = Date.now()
-  const [marcoUid, lenaUid, samUid] = await accounts(t0 - 90 * DAY, MARCO, LENA, SAM)
-  const members = [marcoUid, lenaUid, samUid]
-  await seedSpace(members, t0 - 80 * DAY)
-  const { real: previous, next: month } = realMonths(t0)
-  const bounds = (w: string) => weekBounds(w, TZ)
-  const plans = { [marcoUid]: MARCO_TASKS, [lenaUid]: LENA_TASKS, [samUid]: SAM_TASKS }
-
-  // The previous month (the real one) is complete: its last week's stored deadline was two days ago. Everyone
-  // played and passed. No results doc yet.
-  const prevWeeks = weekIdsInMonth(previous)
-  for (const weekId of prevWeeks.slice(0, -1)) await setPlayedWeek(SPACE_ID, weekId, bounds(weekId), plans)
-  await setPlayedWeek(SPACE_ID, prevWeeks[prevWeeks.length - 1], { startAt: t0 - 8 * DAY, lockAt: t0 - 7 * DAY, reviewOpenAt: t0 - 3 * DAY, deadlineAt: t0 - 2 * DAY }, plans)
-  // This month: every week played and reviewed (everyone passes); its last week (seeded) is due after the
-  // phone's mid-month.
-  const weeks = weekIdsInMonth(month)
-  for (const weekId of weeks) await setPlayedWeek(SPACE_ID, weekId, bounds(weekId), plans)
-  const lastWeek = weeks[weeks.length - 1]
-  // Marco's stakes, agreed by both before the previous month was complete.
-  const before: SeedStakes = { rewardMode: 'group', penaltyMode: 'group', reward: 'Lunch, on you', penalty: 'Breakfast for everyone', updatedAt: t0 - 4 * DAY }
-  await setStakes(SPACE_ID, marcoUid, {
-    ...before,
-    agreed: { [lenaUid]: { at: t0 - 3 * DAY, terms: pairOf(before, lenaUid) }, [samUid]: { at: t0 - 3 * DAY, terms: pairOf(before, samUid) } },
-  })
-
-  const midMonth = on(weeks[2], 2, 12)
-  const N = monthName(addMonths(month, 1))
-  const M = monthName(month)
-
-  const a = await phone(browser)
-  const b = await phone(browser)
-  const c = await phone(browser)
-  const [marco, lena, sam] = [a.page, b.page, c.page]
-
-  const editStakes = async (reward: string, penalty: string) => {
-    await stakesCard(marco).getByRole('button', { name: /they owe you/ }).click()
-    await marco.getByRole('button', { name: 'Edit', exact: true }).click()
-    const form = marco.getByRole('dialog').filter({ has: marco.getByRole('heading', { name: 'Your Stakes' }) })
-    await form.getByLabel('What they owe you').fill(reward)
-    await form.getByLabel('What you owe them').fill(penalty)
-    await form.getByRole('button', { name: 'Save', exact: true }).click()
-  }
-  const agree = async (page: Page, confirmText: string, toastText: string) => {
-    await travelIfNeeded(page)
-    await page.getByRole('button', { name: 'Agree to Marco’s Stakes' }).filter({ visible: true }).click()
-    await expect(page.getByRole('alertdialog')).toContainText(confirmText)
-    await answer(page, 'Agree')
-    await expect(toast(page, 'You agreed to Marco’s stakes')).toContainText(toastText)
-  }
-  // Each friend agrees from the Stakes screen (opened on Marco's section from the card).
-  const travelIfNeeded = async (page: Page) => {
-    if (await stakesHeading(page).isVisible()) return
-    await stakesCard(page).getByRole('button', { name: /Take a Look/ }).click()
-    await expect(stakesHeading(page)).toBeVisible()
-  }
-
-  await test.step('Mid-month: the earlier agreement counts, and the finished month quotes it', async () => {
-    await signIn(marco, MARCO, midMonth)
-    await openSpace(marco)
-    await expect(stakesCard(marco)).toContainText('Lunch, on you')
-    await expect(stakesCard(marco)).toContainText('Breakfast for everyone')
-    await expect(stakesCard(marco)).toContainText('Everyone agreed')
-    await showMonth(marco, previous)
-    await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
-    await expect(shown(marco, 'Lena and Sam owe you: Lunch, on you')).toBeVisible()
-    await expect(marco.locator('.s-month-hero')).toContainText('You cleared the bar')
-    await viewTab(marco, 'This Week').click()
-  })
-
-  await test.step('Marco changes his stakes; both agree; his card and Lena’s Stakes screen show it without a reload', async () => {
-    await editStakes('Dinner, on you', 'Coffee for a week')
-    await expect(toast(marco, 'Saved')).toContainText('Counts as soon as Lena and Sam agree.')
-    await back(marco)
-    await signIn(lena, LENA, midMonth)
-    await openSpace(lena)
-    await agree(lena, 'They count once Sam agrees too.', 'They count once Sam agrees too.')
-    await signIn(sam, SAM, midMonth)
-    await openSpace(sam)
-    await agree(sam, 'They count right away.', 'They count now.')
-    await expect(stakesCard(marco)).toContainText('Dinner, on you')
-    await expect(stakesCard(marco)).toContainText('Coffee for a week')
-    await expect(section(lena, 'Marco hits 90%, you owe')).toContainText('Dinner, on you')
-  })
-
-  await test.step('This month’s debt lines quote the new terms; the finished month still quotes its own', async () => {
-    await showMonth(marco, month)
-    await expect(shown(marco, 'Lena and Sam owe you: Dinner, on you')).toBeVisible()
-    await showMonth(marco, previous)
-    await expect(shown(marco, 'Lena and Sam owe you: Lunch, on you')).toBeVisible()
-    await expect(marco.getByText('Lena and Sam owe you: Dinner, on you').filter({ visible: true })).toHaveCount(0)
-    await expect(marco.locator('.s-month-hero')).toContainText('You cleared the bar')
-    await centerOn(shown(marco, 'Lena and Sam owe you: Lunch, on you'))
-    await snap(marco, 'b2-39-finished-month-keeps')
-    await viewTab(marco, 'This Week').click()
-  })
-
-  // This month ends just after those agreements, as the server sees it.
-  const agreedAt = async (uid: string) => ((await db.doc(`spaces/${SPACE_ID}/stakes/${marcoUid}`).get()).get(`agreed.${uid}.at`) as { toMillis(): number }).toMillis()
-  const lastAgree = Math.max(await agreedAt(lenaUid), await agreedAt(samUid))
-  await endMonthAt(SPACE_ID, lastWeek, month, lastAgree + 1000)
-  const weekend = on(lastWeek, 5, 10)
-
-  await test.step('The Saturday after the month’s last Friday: a new change counts from next month', async () => {
-    for (const page of [marco, lena, sam]) await travel(page, weekend)
-    await openSpace(marco)
-    await editStakes('Pizza night, on you', 'Croissants for a week')
-    await expect(toast(marco, 'Saved')).toContainText(`Counts from ${N}, as soon as Lena and Sam agree.`)
-    await back(marco)
-    await openSpace(sam)
-    await agree(sam, `They count from ${N}, once Lena agrees too.`, `They count from ${N}, once Lena agrees too.`)
-    await openSpace(lena)
-    await agree(lena, `They count from ${N}. ${M} is final.`, `They count from ${N}.`)
-    await expect(stakesCard(marco)).toContainText('Pizza night, on you')
-    await expect(stakesCard(marco)).toContainText('Croissants for a week')
-  })
-
-  await test.step('The month that just ended keeps the terms it had', async () => {
-    await showMonth(marco, month)
-    await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
-    await expect(shown(marco, 'Lena and Sam owe you: Dinner, on you')).toBeVisible()
-    await expect(marco.getByText(/owe you: Pizza night, on you/).filter({ visible: true })).toHaveCount(0)
-    await centerOn(shown(marco, 'Lena and Sam owe you: Dinner, on you'))
-    await snap(marco, 'b2-40-month-final-terms')
-  })
-
-  await closeAll(browser, a, b, c)
-})
-
-test('the house stakes: the owner’s edit counts at once (the early freeze doesn’t bind), and a finished month keeps its own', async ({ browser }) => {
-  await resetEmulators()
-  const t0 = Date.now()
-  const [lenaUid, kimUid] = await accounts(t0 - 60 * DAY, LENA, KIM)
-  const members = [lenaUid, kimUid]
-  // Created this (UTC) month, so the rules only check the months since (SPEC §9.7, editsSpaceText).
-  const now = new Date(t0)
-  const created = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
-  await seedSpace(members, created)
-  const { real: previous, next: month } = realMonths(t0)
-  const bounds = (w: string) => weekBounds(w, TZ)
-  // The previous month (the real one) is complete as the server sees it.
-  await setWeek(SPACE_ID, lastWeekOf(previous), { startAt: t0 - 8 * DAY, lockAt: t0 - 7 * DAY, reviewOpenAt: t0 - 3 * DAY, deadlineAt: t0 - 2 * DAY, members, submittedBy: members })
-  // This month: played and passed by both; the previous app froze its house stakes early (seeded before its
-  // completion as the server will see it).
-  const weeks = weekIdsInMonth(month)
-  for (const weekId of weeks) await setPlayedWeek(SPACE_ID, weekId, bounds(weekId), { [lenaUid]: LENA_TASKS, [kimUid]: KIM_TASKS })
-  await setMonthStakes(SPACE_ID, month, { reward: 'Pizza, on them', penalty: 'Gelato for everyone', createdAt: t0 - 2 * DAY })
-  const midMonth = on(weeks[1], 2, 12)
-  const M = monthName(month)
-  const N = monthName(addMonths(month, 1))
-  const FIRST = { reward: 'Lunch at the market, on them', penalty: 'Breakfast for everyone' }
-  const SECOND = { reward: 'Pasta night, on them', penalty: 'Espresso for everyone' }
-
-  const l = await phone(browser)
-  const k = await phone(browser)
-  const [lena, kim] = [l.page, k.page]
-
-  const editHouse = async (s: { reward: string; penalty: string }) => {
-    await lena.getByLabel('Reward', { exact: true }).fill(s.reward)
-    await lena.getByLabel('Penalty', { exact: true }).fill(s.penalty)
-    await lena.getByRole('button', { name: 'Save', exact: true }).click()
-  }
-
-  await test.step('Mid-month the owner changes the house stakes in Settings: they count now', async () => {
-    await signIn(lena, LENA, midMonth)
-    await openSpace(lena)
-    await expect(stakesCard(lena)).toContainText(SPACE.reward)
-    await expect(stakesCard(lena)).not.toContainText('Pizza, on them')
-    await openSettings(lena)
-    await expect(shown(lena, `They count between two friends until they agree on their own. Changes count right away, for ${M}.`)).toBeVisible()
-    await snap(lena, 'b2-41-house-owner')
-    await editHouse(FIRST)
-    await expect(toast(lena, 'Saved')).toContainText('The new house stakes count now.')
-    await snap(lena, 'b2-41b-house-saved-toast', 150, { width: 375, height: 812 })
-    await expect.poll(async () => (await spaceDoc(SPACE_ID).get()).get('reward')).toBe(FIRST.reward)
-    expect((await spaceDoc(SPACE_ID).get()).get('stakesNote.by')).toBe(lenaUid)
-    // The finished previous month was frozen first, with the old stakes (when the rules check it).
-    if (houseFreezeMonths({ createdAt: created }, midMonth).includes(previous)) {
-      const frozen = await monthStakesDoc(SPACE_ID, previous).get()
-      expect(frozen.get('reward')).toBe(SPACE.reward)
-      expect((frozen.get('createdAt') as { toMillis(): number }).toMillis()).toBeGreaterThanOrEqual(t0 - 2 * DAY)
-    }
-    await back(lena)
-    await expect(stakesCard(lena)).toContainText(FIRST.reward)
-    await expect(stakesCard(lena)).toContainText(FIRST.penalty)
-    await snap(lena, 'b2-41c-card-after-house-edit')
-  })
-
-  await test.step('Kim sees them on her card at once, with a notice that sticks once dismissed', async () => {
-    // Kim's phone runs on the real clock, within the notice's 7 days.
-    await signIn(kim, KIM)
-    await openSpace(kim)
-    await expect(stakesCard(kim)).toContainText(FIRST.reward)
-    await expect(stakesCard(kim)).toContainText(FIRST.penalty)
-    await expect(stakesCard(kim)).toContainText('Lena changed the house stakes')
-    await snap(kim, 'b2-42-card-house-notice')
-    await stakesCard(kim).getByRole('button', { name: 'Dismiss' }).click()
-    await expect(stakesCard(kim)).not.toContainText('Lena changed the house stakes')
-    await travel(kim, null)
-    await openSpace(kim)
-    await expect(stakesCard(kim)).toContainText(FIRST.reward)
-    await expect(stakesCard(kim)).not.toContainText('Lena changed the house stakes')
-  })
-
-  await test.step('Kim sees them read-only in Settings, with Your Stakes', async () => {
-    await openSettings(kim)
-    await expect(kim.getByLabel('Reward', { exact: true })).toHaveCount(0)
-    const house = section(kim, 'House stakes')
-    await expect(house).toContainText(FIRST.reward)
-    await expect(house).toContainText('Only Lena can change the house stakes. Set your own on the Stakes screen.')
-    await snap(kim, 'b2-43-house-read-only')
-    await kim.getByRole('button', { name: /^Your Stakes/ }).click()
-    await expect(stakesHeading(kim)).toBeVisible()
-  })
-
-  // This month ends, as the server sees it.
-  await endMonthAt(SPACE_ID, lastWeekOf(month), month, Date.now() - HOUR)
-  const endedAt = Date.now() - HOUR
-
-  await test.step('After the month’s last Friday the owner changes them again: the month is final with the first change', async () => {
-    await travel(lena, on(lastWeekOf(month), 5, 10))
-    await openSpace(lena)
-    await openSettings(lena)
-    await expect(shown(lena, `They count between two friends until they agree on their own. Changes count right away, for ${N}. ${M} is final.`)).toBeVisible()
-    await editHouse(SECOND)
-    await expect(toast(lena, 'Saved')).toContainText(`The new house stakes count from ${N}. ${M} is final.`)
-    await expect.poll(async () => (await spaceDoc(SPACE_ID).get()).get('reward')).toBe(SECOND.reward)
-    // The month was re-frozen with the stakes it ended with (the early freeze replaced, once).
-    const frozen = await monthStakesDoc(SPACE_ID, month).get()
-    expect(frozen.data()).toMatchObject(FIRST)
-    expect((frozen.get('createdAt') as { toMillis(): number }).toMillis()).toBeGreaterThanOrEqual(endedAt - MINUTE)
-    await back(lena)
-    await expect(stakesCard(lena)).toContainText(SECOND.reward)
-    await viewTab(lena, 'Month').click()
-    await expect(lena.locator('.s-month-switch__title')).toContainText(formatMonth(month))
-    await expect(lena.locator('.s-month-switch__sub')).toHaveText('Final')
-    await expect(shown(lena, `Kim owes you: ${FIRST.reward}`)).toBeVisible()
-    await expect(lena.getByText(`Kim owes you: ${SECOND.reward}`).filter({ visible: true })).toHaveCount(0)
-    await centerOn(shown(lena, `Kim owes you: ${FIRST.reward}`))
-    await snap(lena, 'b2-44-month-house-final')
-  })
-
-  await closeAll(browser, l, k)
-})
-
+// 6–8. Per-person stakes, when they count, the house stakes (SPEC §9.7): retired with deals (SPEC §12.15).
+// From November 2026 months carry no stakes of their own, so editing and agreeing to per-person or house stakes
+// for "the month after the real one" describes behaviour that no longer exists; October's read-only display, the
+// streak rewards' own editor and its Agree are covered by deals.spec.ts.
 // =====================================================================================================
 // 9. Settling per pair (SPEC §9.7, §9.8)
 // =====================================================================================================
@@ -1364,13 +995,16 @@ test('settling per pair: a streak reward, a group line, a line owed to someone w
   await resetEmulators()
   const t0 = Date.now()
   const [marcoUid, lenaUid, samUid, benUid] = await accounts(t0 - 120 * DAY, MARCO, LENA, SAM, BEN)
-  const { real: month, next } = realMonths(t0)
+  // The last two months with month stakes (SPEC §12.3: from DEALS_FROM_MONTH on, months owe only streak rewards),
+  // whatever the real date: October and September 2026.
+  const month = addMonths(DEALS_FROM_MONTH, -1)
+  const next = DEALS_FROM_MONTH
   const older = addMonths(month, -1)
   const bounds = (w: string) => weekBounds(w, TZ)
   // The older month: everyone played its last week and passed; Ben left after it ended.
   const olderLast = lastWeekOf(older)
   const olderEnd = bounds(olderLast).deadlineAt
-  await seedSpace([marcoUid, lenaUid, samUid], t0 - 100 * DAY, { leftAt: { [benUid]: olderEnd + HOUR } })
+  await seedSpace([marcoUid, lenaUid, samUid], Math.min(t0 - 100 * DAY, weekBounds(weekIdsInMonth(older)[0], TZ).startAt - 30 * DAY), { leftAt: { [benUid]: olderEnd + HOUR } })
   // The space doc above has no Ben; he was a member until he left.
   await setPlayedWeek(SPACE_ID, olderLast, bounds(olderLast), { [marcoUid]: MARCO_TASKS, [lenaUid]: LENA_TASKS, [samUid]: SAM_TASKS, [benUid]: KIM_TASKS })
   // Lena marked Marco's month settled before batch 2 (one doc per member).
@@ -1412,11 +1046,10 @@ test('settling per pair: a streak reward, a group line, a line owed to someone w
   const settledDoc = async (m: string, uid: string, other?: string, tier?: number) => (await settlementDoc(SPACE_ID, m, uid, other, tier).get()).data()
 
   await test.step('The finished month: Lena owes Marco lunch, and his third month in a row brings the streak reward', async () => {
-    await signIn(marco, MARCO, on(weekIdsInMonth(next)[1], 2, 12))
+    // In November (or later, so the phone sees the month complete at its stored end in the real past).
+    await signIn(marco, MARCO, Math.max(on(weekIdsInMonth(next)[1], 2, 12), t0 + HOUR))
     await openSpace(marco)
-    await viewTab(marco, 'Month').click()
-    await marco.getByRole('button', { name: 'Previous month' }).click()
-    await expect(marco.locator('.s-month-switch__title')).toContainText(formatMonth(month))
+    await showMonth(marco, month)
     await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
     await expect(marco.locator('.s-month-hero')).toContainText('3 months in a row')
     await expect(shown(marco, 'Lena owes you: Lunch', true)).toBeVisible()

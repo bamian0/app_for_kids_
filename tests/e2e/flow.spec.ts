@@ -8,7 +8,8 @@
 // Screenshots (light and dark) of every step go to $E2E_SCREENSHOTS when it is set, at the widths in
 // $E2E_WIDTHS (e.g. "375,430") when that is set too.
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { addMonths, monthIdForWeek, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
+import { DEALS_FROM_MONTH } from '../../src/domain/stakes.ts'
+import { addMonths, formatMonth, monthIdForWeek, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import { db, resetEmulators, setPlan, setProgress, setReview, setWeek, ts, uidOf, weekDoc, type SeedTask } from './emulator.ts'
 import { edgeGlows, phone, score, sheet, shown, snap } from './helpers.ts'
 
@@ -58,6 +59,17 @@ async function addTasks(page: Page, titles: string[]): Promise<void> {
 async function planOf(spaceId: string, weekId: string, uid: string): Promise<string[]> {
   const snap = await weekDoc(spaceId, weekId).collection('plans').doc(uid).get()
   return ((snap.get('tasks') as SeedTask[] | undefined) ?? []).map((t) => t.title)
+}
+
+/** Steps the Month tab back to `monthId` (it starts on this month). */
+async function goToMonth(page: Page, monthId: string): Promise<void> {
+  const title = page.locator('.s-month-switch__title').filter({ visible: true })
+  for (let i = 0; i < 12 && !(await title.innerText()).includes(formatMonth(monthId)); i++) {
+    const current = await title.innerText()
+    await page.getByRole('button', { name: 'Previous month' }).click()
+    await expect(title).not.toHaveText(current)
+  }
+  await expect(title).toContainText(formatMonth(monthId))
 }
 
 async function mark(dialog: Locator, title: string, label: 'Done' | 'Half' | 'Not done'): Promise<void> {
@@ -267,8 +279,12 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     expect(reviews.docs.map((d) => d.id).sort()).toEqual([`${lenaUid}_${marcoUid}`, `${marcoUid}_${lenaUid}`].sort())
   })
 
-  // Last month, finished: four or five weeks, Marco clears the bar, Lena misses it and one review.
-  const lastMonth = addMonths(monthIdForWeek(thisWeek), -1)
+  // Last month, finished: four or five weeks, Marco clears the bar, Lena misses it and one review. At the latest
+  // the last month with month stakes (SPEC §12.3: from DEALS_FROM_MONTH on a month owes nothing by itself and
+  // deals settle on the Stakes screen), so the verdict and settling steps read the same in any month.
+  const realLast = addMonths(monthIdForWeek(thisWeek), -1)
+  const stakesLast = addMonths(DEALS_FROM_MONTH, -1)
+  const lastMonth = realLast < stakesLast ? realLast : stakesLast
   const pastWeeks = weekIdsInMonth(lastMonth)
   const marcoPast: SeedTask[] = MARCO_NOW
   const lenaPast: SeedTask[] = LENA_NOW
@@ -299,7 +315,7 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     await expect(marco.getByText('Can’t load this month')).toHaveCount(0)
     await snap(marco, '17-month-in-progress')
     const glowsBefore = await edgeGlows(marco)
-    await marco.getByRole('button', { name: 'Previous month' }).click()
+    await goToMonth(marco, lastMonth)
     await expect(marco.locator('.s-month-switch__sub')).toHaveText('Final')
     await expect(marco.locator('.s-hero-score')).toHaveText(marcoMonth)
     await expect(shown(marco, 'You cleared the bar')).toBeVisible()
@@ -328,7 +344,7 @@ test('two friends plan, review blind on Friday, and settle the month', async ({ 
     // Lena sees the check flip live, and who checked it. She missed: no glow, and she can't mark her own debt.
     const lenaGlows = await edgeGlows(lena)
     await lena.getByRole('radio', { name: 'Month' }).click()
-    await lena.getByRole('button', { name: 'Previous month' }).click()
+    await goToMonth(lena, lastMonth)
     await expect(shown(lena, `You owe Marco: ${SPACE.penalty}`)).toBeVisible()
     await expect(shown(lena, /^Settled · marked by Marco, /)).toBeVisible()
     await expect(shown(lena, 'Only Marco can mark this.')).toBeVisible()

@@ -24,6 +24,7 @@ import {
   dealWhen,
   friendAgreement,
   friendDealRows,
+  heroLine,
   isOn,
   lineFriends,
   lineText,
@@ -32,7 +33,6 @@ import {
   periodRows,
   possessive,
   settleRows,
-  statusLine,
   weekOwnScore,
 } from './deals.ts'
 import type { StakesRow } from './stakes.ts'
@@ -163,7 +163,7 @@ function DealBody({ space, deal, known }: { space: Space; deal: Deal; known: Dea
   if (canSameAgain) actionRows.push(<Row key="same" title="Same Again" action onPress={() => void actions.sameAgain(deal)} />)
   const agreeing = !deal.ended && state.phase === 'waiting' && state.waitingFor.includes(me)
 
-  const hero = statusLine(deal, state, ctx)
+  const hero = heroLine(deal, state, ctx)
   const sections: Array<{ key: string; render: (footer?: string) => ReactNode }> = []
   sections.push({
     key: 'terms',
@@ -243,6 +243,8 @@ function DealBody({ space, deal, known }: { space: Space; deal: Deal; known: Dea
       ),
     })
   }
+  // The hero's note usually says it already ("You asked to call it off. Waiting for Sam and Kim."): not twice.
+  if (callOffNote && note?.text.startsWith(callOffNote)) callOffNote = null
   if (actionRows.length > 0 || callOffNote) {
     sections.push({
       key: 'actions',

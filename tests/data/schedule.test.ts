@@ -155,6 +155,45 @@ describe('setSchedule', () => {
       expect(ms(stored?.lockAt)).toBe(weekBounds(w, tz, after).lockAt)
     }
   })
+
+  /**
+   * A zone and two schedules around its current minute of the week, so the case below runs the same on any day:
+   * `passed` locked this week at least half an hour ago, `soon` locks in two to two and a half hours.
+   */
+  function tightZone(): { tz: string; passed: WeekSchedule; soon: WeekSchedule } | null {
+    for (const tz of ['UTC', 'Etc/GMT+12', 'Pacific/Kiritimati']) {
+      const minute = Math.floor((Date.now() - weekBounds(weekIdFor(Date.now(), tz), tz).startAt) / 60_000)
+      const passedLock = Math.floor((minute - 30) / 30) * 30
+      const soonLock = Math.ceil((minute + 120) / 30) * 30
+      const due = soonLock + 60 + 180
+      if (passedLock >= 0 && due <= 10080) {
+        return { tz, passed: { lock: passedLock, reviewOpen: soonLock + 60, deadline: due }, soon: { lock: soonLock, reviewOpen: soonLock + 60, deadline: due } }
+      }
+    }
+    return null
+  }
+  const tight = tightZone()
+
+  it.skipIf(tight === null)('changing back to times this week already locked on works while it has no doc', async () => {
+    // This week's lists locked on `passed` before the space existed here, so its doc can't be made; `soon` came
+    // less than a day before its lock, so it can't be made on that either. Back on `passed`, nothing can make it.
+    const { tz, passed, soon } = tight as { tz: string; passed: WeekSchedule; soon: WeekSchedule }
+    const space = await freshSpace('back', { schedule: passed }, { timezone: tz, utcOffsetMin: Math.round(utcOffsetMinutes(tz, Date.now())) })
+    const week = weekIdFor(Date.now(), tz)
+    const next = addWeeks(week, 1)
+    await as(lena)
+    await ensureSpace(space)
+    expect((await setSchedule('back', soon)).fromWeek).toBe(next)
+    expect(await adminGet(weekPath('back', week))).toBeUndefined()
+    expect((await setSchedule('back', passed)).fromWeek).toBe(next)
+    const stored = await adminGet('spaces/back')
+    expect(stored?.schedule).toEqual(passed)
+    expect(stored?.scheduleNote).toMatchObject({ before: soon, fromWeek: next })
+    expect(await adminGet(weekPath('back', week))).toBeUndefined()
+    const moved = await adminGet(weekPath('back', next))
+    expect(moved?.schedule).toEqual(passed)
+    expect(ms(moved?.lockAt)).toBe(weekBounds(next, tz, passed).lockAt)
+  })
 })
 
 describe('weeks on the space’s times', () => {

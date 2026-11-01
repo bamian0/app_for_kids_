@@ -154,8 +154,10 @@ export interface RunOptions {
   /**
    * The month stakes cutover (SPEC §12.3, §12.11), as main read it from public/config (ensureVapidKeys): a month →
    * every space's planner and verdicts use it; null (read, absent) → the run records it from the first deal it finds
-   * (a space with `hasDeals`), once ever, and uses it; undefined (not given, as in the tests) → DEALS_FROM_MONTH,
-   * never recorded.
+   * (a space with `hasDeals`), once ever, and uses it; while there is no deal to record it from (before the ship),
+   * each space's is `dealsFromAt(space, nowMs)`, what the first deal would record if made now, so every month the
+   * job decides keeps its stakes as before deals; undefined (not given, as in the tests) → DEALS_FROM_MONTH, never
+   * recorded.
    */
   dealsFrom?: MonthId | null
 }
@@ -441,8 +443,12 @@ export async function runReminders({
     spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0, results: 0, reads: 0,
     rings: 0, stats: 0, cleaned: 0, goals: 0, deals: 0, dealsEnded: 0,
   }
-  /** The cutover in force for this run (SPEC §12.3): given, recorded below from the first deal, or the floor. */
-  let dealsFrom: MonthId = (givenDealsFrom && storedDealsFrom(givenDealsFrom)) || DEALS_FROM_MONTH
+  /** The cutover in force for this run (SPEC §12.3): given, recorded below from the first deal, or the floor; null
+   *  while main read none and no deal exists to record it from (then each space's is cutoverOf's). */
+  let dealsFrom: MonthId | null = givenDealsFrom === null ? null : (givenDealsFrom && storedDealsFrom(givenDealsFrom)) || DEALS_FROM_MONTH
+  /** A space's cutover: the run's, else (nothing recorded, no deal yet: the job runs this code before the ship) the one
+   *  the first deal would record if made now. A late ship then keeps the month in progress's stakes in the pushes too. */
+  const cutoverOf = (space: Space): MonthId => dealsFrom ?? dealsFromAt(space, nowMs)
   /** Deal period loads this run may still make, across all spaces. */
   let dealLoadsLeft = DEAL_LOADS_PER_RUN
   const deviceCache = new Map<UID, Promise<Device[]>>()
@@ -1093,9 +1099,9 @@ export async function runReminders({
    * Records the month stakes cutover (SPEC §12.3, §12.11) when main read none: the first space with `hasDeals` (in the
    * loop's order) whose deal queries find a deal gives `dealsFromAt(space, earliest createdAt)`, written to
    * public/config in a transaction only while it has none (another run's value wins and is used). A stray flag
-   * without deal docs records nothing. Dry run: logged, not written.
+   * without deal docs records nothing (null). Dry run: logged, not written.
    */
-  const recordDealsFrom = async (spaces: Space[]): Promise<MonthId> => {
+  const recordDealsFrom = async (spaces: Space[]): Promise<MonthId | null> => {
     for (const space of spaces) {
       const deals = [...(await dealsOpen(space.id)), ...(await dealsRecent(space.id))]
       if (deals.length === 0) continue
@@ -1115,7 +1121,7 @@ export async function runReminders({
       log(`dealsFrom ${used}${used === month ? ' recorded' : ' (recorded by another run)'} from space ${space.id}`)
       return used
     }
-    return DEALS_FROM_MONTH
+    return null
   }
 
   const runSpace = async (space: Space) => {
@@ -1179,7 +1185,7 @@ export async function runReminders({
 
     // The sent log for every key these windows decide; `stakes` keys depend on the stakes docs, deal keys on the deals.
     const recentStakes = stakesOpen ? await load.stakesRecent() : undefined
-    const candidates = recentStakes ? stakesCandidates(space, recentStakes, nowMs, dealsFrom) : []
+    const candidates = recentStakes ? stakesCandidates(space, recentStakes, nowMs, cutoverOf(space)) : []
     const deals = dealsOpen ? { open: await load.dealsOpen(), recent: await load.dealsRecent() } : undefined
     const dealPushes = deals ? dealCandidates(space, deals.open, deals.recent, nowMs) : []
     const read = new Set<string>()
@@ -1234,7 +1240,7 @@ export async function runReminders({
     }
     const monthly: Record<MonthId, MonthlyData> = {}
     for (const monthId of lists) monthly[monthId] = await load.monthly(monthId)
-    const input: SpaceInput = { space, weeks, stored, monthly, loads, dealsFrom }
+    const input: SpaceInput = { space, weeks, stored, monthly, loads, dealsFrom: cutoverOf(space) }
     if (deals) input.deals = deals
     if (verdict) {
       const frozen = await load.frozen(verdict)
@@ -1323,14 +1329,15 @@ export async function runReminders({
   const spaces = await readQuery(db.collection('spaces'))
   summary.spaces = spaces.size
   // The month stakes cutover (SPEC §12.3): when main found none recorded, the first deal records it, before any space
-  // is planned, so the whole run follows it. Only spaces with `hasDeals` are read for it.
+  // is planned, so the whole run follows it. Only spaces with `hasDeals` are read for it. With no deal yet (or a failed
+  // record, retried next run), each space keeps the cutover the first deal would record now (cutoverOf).
   if (givenDealsFrom === null) {
     const withDeals = spaces.docs.map(toSpace).filter((space) => space.hasDeals === true && IANAZone.isValidZone(space.timezone))
     if (withDeals.length > 0) {
       dealsFrom = await recordDealsFrom(withDeals).catch((e: unknown) => {
         summary.errors++
         log(`recording dealsFrom failed: ${message(e)}`)
-        return DEALS_FROM_MONTH
+        return null
       })
     }
   }

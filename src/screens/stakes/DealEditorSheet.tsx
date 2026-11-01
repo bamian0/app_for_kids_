@@ -2,7 +2,7 @@
 // what you owe them if you miss one, each the same for everyone or different per friend. It says when the deal
 // would start if everyone agrees, and proposes it; friends then tap Agree. Edit proposes the edited deal in place
 // of your waiting one (everyone agrees again).
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { proposeDeal, useAuth, useProfiles } from '../../data/api.ts'
 import { agreeBy, dealFriends, dealLengthText, dealProblem, dealProblemText, firstPeriodAfter, DEAL_COUNTS, DEAL_DEFAULT } from '../../domain/deals.ts'
 import type { DealProblem } from '../../domain/deals.ts'
@@ -94,6 +94,9 @@ export function DealEditorSheet({ space, input, missing = [], replace, close, on
   const friends = dealFriends(space, me)
   const profiles = useProfiles(friends)
   const name = (id: UID) => (profiles[id] || !given ? firstName(nameOf(profiles, id)) : given(id))
+  // The toast names friends once the proposal is in: by then their profiles have loaded, even if the sheet opened first.
+  const latestName = useRef(name)
+  latestName.current = name
   const [initial] = useState(() => draftOf(space, friends, input ?? replace))
   const [draft, setDraft] = useState<Draft>(initial)
   const [busy, setBusy] = useState(false)
@@ -116,7 +119,7 @@ export function DealEditorSheet({ space, input, missing = [], replace, close, on
     try {
       await proposeDeal(space, asInput(draft), replace ? { replace: replace.id } : undefined)
       haptic()
-      const done = proposedToast(friends, name, !!replace)
+      const done = proposedToast(friends, (id) => latestName.current(id), !!replace)
       toast({ title: done.title, message: done.message, icon: 'handshake', tone: 'success' })
       close()
       onProposed?.()

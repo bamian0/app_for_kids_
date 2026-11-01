@@ -19,6 +19,7 @@ import {
   editorLengthFooter,
   friendAgreement,
   friendDealRows,
+  heroLine,
   historyRow,
   houseStakesFooter,
   judgeDealLine,
@@ -304,7 +305,7 @@ describe('the stakes card: your block', () => {
     it('won', () => {
       const b = card(t, { ended: [won] })
       expect([b.kind, b.title, b.text]).toEqual(['won', 'You made it: 2 weeks at 90%+', 'Sam and Kim owe you: Dinner, on us'])
-      expect(b.buttons.map((x) => x.label)).toEqual(['Same Again', 'New Deal'])
+      expect(b.buttons.map((x) => x.label)).toEqual(['New Deal', 'Same Again'])
       expect(card(t, { ended: [{ ...won, rewardMode: 'each', per: PER }] }).text).toBe('Collect from Sam and Kim')
       expect(card(t, { ended: [{ ...won, settled: { sam: mark, kim: mark } }] }).text).toBe('All settled')
       expect(card(t, { ended: [{ ...won, settled: { sam: mark } }] }).text).toBe('Sam and Kim owe you: Dinner, on us')
@@ -507,6 +508,18 @@ describe('a deal’s screen', () => {
       ['December', '94%'],
       ['January', 'In progress'],
     ])
+  })
+
+  it('says the length once in its hero: "You made it" under "2 weeks at 90%+"', () => {
+    const t = at('2026-11-23T10:00')
+    const won = running({ track: [pass(W1), pass(W2)], ended: { outcome: 'won', at: at('2026-11-21T00:00'), period: W2 } })
+    expect(statusLine(won, stateAt(won, t), ctx(t))).toBe('You made it: 2 weeks at 90%+')
+    expect(heroLine(won, stateAt(won, t), ctx(t))).toBe('You made it')
+    expect(heroLine(won, stateAt(won, t), ctx(t, 'sam'))).toBe('Lena made it')
+    const lost = running({ track: [pass(W1), miss(W2, 84)], ended: { outcome: 'lost', at: at('2026-11-21T00:00'), period: W2, score: 84 } })
+    expect(heroLine(lost, stateAt(lost, t), ctx(t))).toBe('Your deal ended: 84% in the week of Nov 16')
+    const r = running({ track: [pass(W1)] })
+    expect(heroLine(r, stateAt(r, at('2026-11-18T10:00')), ctx(at('2026-11-18T10:00')))).toBe('Week 2 of 2 · all 90%+ so far')
   })
 
   it('says how each friend stands while it waits', () => {

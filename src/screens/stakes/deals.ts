@@ -163,6 +163,14 @@ export function statusLine(deal: Deal, state: DealState, ctx: { me: UID; nowMs: 
   return endedTitle(deal, state, ctx.me, ctx.name, ctx.threshold)
 }
 
+/** A deal screen's line under its title ("4 weeks at 90%+"): the state line, without saying the length twice when it
+ *  was won ("You made it", "Lena made it"). */
+export function heroLine(deal: Deal, state: DealState, ctx: { me: UID; nowMs: number; tz: string; threshold: number; name: Name }): string {
+  const line = statusLine(deal, state, ctx)
+  const title = `: ${dealTitle(deal, ctx.threshold)}`
+  return line.endsWith(title) ? line.slice(0, -title.length) : line
+}
+
 /** "Week 2 of 4 · all 90%+ so far" (no pass yet: "Week 1 of 4 · every week needs 90%+"), with " · 1 week added". */
 export function runningLine(deal: Pick<Deal, 'unit' | 'count'>, state: Pick<DealState, 'passes' | 'skips' | 'position'> & Partial<Pick<DealState, 'end' | 'provisional'>>, threshold: number): string {
   const position = positionText(deal.unit, state.position, deal.count)
@@ -333,7 +341,7 @@ export interface DealCardInput {
   /** This week's and next week's stored docs (the clock), and this week's data (its result, once its deadline passed). */
   weeks?: Array<Week | null | undefined>
   live?: WeekData | null
-  /** You judge this week (its snapshot) or have Only Rate Friends on. */
+  /** You have Only Rate Friends on (the space's judges: what proposing a deal checks, not this week's snapshot). */
   judging: boolean
   /** The October window's month (oldStakesMonth), or null. */
   oldMonth: MonthId | null
@@ -434,7 +442,8 @@ function liveBlock(deal: Deal, input: DealCardInput): CardBlock {
 function endedBlock(deal: Deal, state: DealState, input: DealCardInput, same: CardButton[]): CardBlock {
   const { me, name, space } = input
   const end = deal.ended
-  const buttons = [...same, NEW]
+  // New Deal first and prominent, Same Again beside it, as Make a Deal and Same Again when nothing's at stake.
+  const buttons = [NEW, ...same]
   const base = { deal, state, buttons }
   const parties = state.parties
   const settled = allSettled(deal, state)
@@ -455,7 +464,6 @@ function endedBlock(deal: Deal, state: DealState, input: DealCardInput, same: Ca
     kind: 'off',
     title: 'Your deal is off',
     text: end?.reason === 'alone' ? 'Everyone in it left, so nothing’s owed.' : 'Everyone called it off, so nothing’s owed.',
-    buttons: [NEW, ...same],
   }
 }
 

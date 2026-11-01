@@ -6,7 +6,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { Timestamp, type Firestore } from 'firebase-admin/firestore'
 import { ensureVapidKeys, runReminders, type RunSummary } from '../../scripts/reminders.ts'
 import { dealsFromAt } from '../../src/domain/stakes.ts'
-import { allReviews, at, clear, connect, device, fakePush, HOUR, profile, quiet, scoresWritten, seedSpace, seedWeek, sentLog, ts } from './reminders-fixtures.ts'
+import { allReviews, at, clear, connect, device, fakePush, HOUR, profile, quiet, scoresWritten, seedSpace, seedStakes, seedWeek, sentLog, ts } from './reminders-fixtures.ts'
 
 const { db, close } = connect('reminders-deals-test')
 afterAll(close)
@@ -364,6 +364,31 @@ describe('the cutover month (dealsFrom)', () => {
     expect(await ensureVapidKeys(db, () => keys)).toEqual({ ...keys, dealsFrom: '2026-11' })
     await db.doc('public/config').set({ dealsFrom: 'soon' }, { merge: true })
     expect((await ensureVapidKeys(db, () => keys)).dealsFrom).toBeNull()
+  })
+
+  it('none recorded and no deal yet (the job runs this code before the ship): November keeps its stakes in the pushes', async () => {
+    // Saturday Oct 31 (UTC): October is complete, so the house stakes changed then count from November. Until a deal
+    // exists to record the cutover from, each space's is the one the first deal would record now ('2026-12' here), so
+    // the pushes say what the live app still does; the default cutover (option not given) says November has none.
+    const changed = at('2026-10-31T10:00:00Z')
+    const updatedAt = at('2026-11-03T12:00:00Z')
+    const pushes = async (dealsFrom: null | undefined) => {
+      await clear()
+      await seedSpace(db, 's1', ['a', 'b', 'c'], { stakesNote: { by: 'a', at: ts(changed) } })
+      await people(['a', 'b', 'c'])
+      const push = fakePush()
+      await runReminders({ db, send: push.send, nowMs: at('2026-10-31T10:17:00Z'), log: quiet, dealsFrom })
+      // Sam's new lines (no streak rewards) in November: Kim agreed, Lena hasn't.
+      await seedStakes(db, 's1', 'b', { rewardMode: 'group', penaltyMode: 'group', reward: 'Lunch', penalty: 'Coffee', tiers: [] }, { c: updatedAt + 60_000 }, updatedAt)
+      await runReminders({ db, send: push.send, nowMs: at('2026-11-03T12:17:00Z'), log: quiet, dealsFrom })
+      return { lines: push.lines().filter((l) => /stakes/i.test(l)), config: (await db.doc('public/config').get()).exists }
+    }
+    const house = 'New house stakes in s1 | Lena changed them: “Dinner on me” if you hit 90%, “Coffee for a week” if you miss. They count from November, where friends haven’t agreed on their own.'
+    expect(await pushes(null)).toEqual({
+      lines: [`b | ${house}`, `c | ${house}`, 'a | New stakes from Sam | Sam has new stakes in s1. Take a look, and tap Agree if you’re in.'],
+      config: false,
+    })
+    expect(await pushes(undefined)).toEqual({ lines: [], config: false })
   })
 
   it('a stray flag without deal docs records nothing', async () => {

@@ -1,5 +1,6 @@
 // What people do with deals, with their confirms and toasts (SPEC §12.10), shared by the stakes card, the Stakes
 // screen and a deal's own screen: make one (the editor), Same Again, Agree, Withdraw, Call Off and Settled.
+import { useRef } from 'react'
 import { agreeToDeal, callOffDeal, proposeDeal, settleDeal, withdrawDeal } from '../../data/api.ts'
 import { now as appNow } from '../../domain/clock.ts'
 import { dealFriends, sameAgain as sameAgainInput } from '../../domain/deals.ts'
@@ -40,9 +41,13 @@ export function useDealActions(space: Space, me: string, name: Name): DealAction
   const sheet = useSheet()
   const toast = useToast()
   const { confirm } = useAlert()
+  // Names as loaded now: a toast after a server round trip names friends whose profiles arrived meanwhile.
+  const latestName = useRef(name)
+  latestName.current = name
+  const named: Name = (uid) => latestName.current(uid)
 
   const edit: DealActions['edit'] = (opts = {}) => {
-    sheet.present((close) => <DealEditorSheet space={space} input={opts.input} missing={opts.missing} replace={opts.replace} close={close} onProposed={opts.onProposed} name={name} />, { 'aria-label': opts.replace ? 'Edit Deal' : 'New Deal' })
+    sheet.present((close) => <DealEditorSheet space={space} input={opts.input} missing={opts.missing} replace={opts.replace} close={close} onProposed={opts.onProposed} name={named} />, { 'aria-label': opts.replace ? 'Edit Deal' : 'New Deal' })
   }
 
   const sameAgain = async (last: Deal) => {
@@ -58,7 +63,7 @@ export function useDealActions(space: Space, me: string, name: Name): DealAction
     try {
       await proposeDeal(space, input)
       haptic()
-      const done = proposedToast(friends, name, false)
+      const done = proposedToast(friends, named, false)
       toast({ title: done.title, message: done.message, icon: 'handshake', tone: 'success' })
     } catch (e) {
       toast({ title: 'Couldn’t propose the deal', message: failed(e), tone: 'error' })

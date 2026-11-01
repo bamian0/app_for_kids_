@@ -230,6 +230,8 @@ test('propose a deal, friends agree, and it starts with the first lists a day af
     await expect(shown(sam, 'Waiting for Kim and you.')).toBeVisible()
     await snap(sam, 'deals-06-stakes-waiting-on-you')
     await visibleButton(sam, 'Agree to Lena’s Deal').click()
+    await expect(alertBox(sam)).toBeVisible()
+    await snap(sam, 'deals-06b-agree-confirm')
     await answer(sam, 'Agree', [
       'Agree to Lena’s deal?',
       '2 weeks, each at 90%+.',
@@ -288,6 +290,14 @@ test('a running deal: its weeks, a provisional miss, and the job ending it', asy
     await snap(lena, 'deals-11-card-provisional-miss')
     // No New Deal until the job has confirmed the end.
     await expect(card(lena).getByRole('button', { name: 'New Deal' })).toHaveCount(0)
+  })
+
+  await test.step('Three days on and still no word from the job: results are running late', async () => {
+    await travel(lena, at('2026-11-24T10:00'))
+    await expect(shown(card(lena), 'Deal results are running late. They’ll catch up.')).toBeVisible()
+    await expect(card(lena).getByRole('button', { name: 'New Deal' })).toHaveCount(0)
+    await snap(lena, 'deals-11b-card-running-late')
+    await travel(lena, at('2026-11-21T10:00'))
   })
 
   await test.step('The reminders job confirms it: lost, and a new deal can be made', async () => {
@@ -351,12 +361,18 @@ test('won: one tap settles a together line, Past Deals, and Same Again', async (
     await expect(shown(lena, '2 weeks · Made it')).toBeVisible()
     await expect(shown(lena, 'Nov 9 – Nov 21 · Dinner, on us')).toBeVisible()
     await snap(lena, 'deals-15-past-deals')
+    await visibleButton(lena, /^2 weeks · Made it/).click()
+    await expect(lena.getByRole('heading', { name: 'Your Deal' })).toBeVisible()
+    await snap(lena, 'deals-15b-deal-won')
+    await back(lena)
     await back(lena)
     await back(lena)
   })
 
   await test.step('Same Again: the same terms, and friends agree again', async () => {
     await visibleButton(card(lena), 'Same Again').click()
+    await expect(alertBox(lena)).toBeVisible()
+    await snap(lena, 'deals-15c-same-again-confirm')
     await answer(lena, 'Propose', ['Same deal again?', '2 weeks at 90%+ each. Make it: Dinner, on us. Miss one: Coffee for a week. Friends have to agree again.'])
     await expect(toast(lena, 'Deal proposed')).toBeVisible()
     await expectBlock(lena, 'Your deal: waiting for Sam and Kim')
@@ -475,7 +491,11 @@ test('Call Off: everyone in it has to tap, and then it’s off', async ({ browse
     await visibleButton(lena, 'Call Off Deal').click()
     await answer(lena, 'Call Off', ['Call off your deal?', 'It ends only if Sam and Kim call it off too. Then nothing’s owed. You can’t take this back.'])
     await expect(toast(lena, 'Asked to call it off')).toContainText('It’s off once Sam and Kim agree.')
-    await expect(shown(lena, 'You asked to call it off.', true)).toBeVisible()
+    // Said once, under the deal's title (where the Call Off row was, nothing repeats it).
+    await expect(shown(lena, 'You asked to call it off. Waiting for Sam and Kim.', true)).toBeVisible()
+    await expect(lena.getByText('You asked to call it off.', { exact: true }).filter({ visible: true })).toHaveCount(0)
+    await expect(visibleButton(lena, 'Call Off Deal')).toHaveCount(0)
+    await snap(lena, 'deals-19a-deal-call-off-asked')
     await back(lena)
     await back(lena)
     await expect(shown(card(lena), 'You asked to call it off. Waiting for Sam and Kim.')).toBeVisible()
@@ -486,6 +506,7 @@ test('Call Off: everyone in it has to tap, and then it’s off', async ({ browse
     await expect(shown(card(sam), 'Lena wants to call off Lena’s deal')).toBeVisible()
     await shown(card(sam), 'Lena wants to call off Lena’s deal').click()
     await expect(shown(sam, 'Lena asked to call it off. It’s off once everyone taps Call Off.')).toBeVisible()
+    await snap(sam, 'deals-19b-stakes-call-off')
     await visibleButton(sam, 'Call Off').click()
     await answer(sam, 'Call Off', ['Call off Lena’s deal?', 'It ends only if everyone in it calls it off. Then nothing’s owed.'])
     await expect(toast(sam, 'Asked to call it off')).toContainText('It’s off once Kim agrees.')
@@ -586,6 +607,8 @@ test('the October window: October’s stakes read-only, then gone; November owes
     await expect(shown(lena, 'October’s house stakes are set. You can change them from November; new deals start from them.')).toBeVisible()
     await expect(lena.getByLabel('Reward')).toHaveCount(0)
     await expect(visibleButton(lena, 'Deals and Stakes')).toBeVisible()
+    await centerOn(shown(lena, 'October’s house stakes are set. You can change them from November; new deals start from them.'))
+    await snap(lena, 'deals-24b-settings-october')
     await back(lena)
   })
 
@@ -699,6 +722,7 @@ test('leaving or removing someone mid-deal counts as a miss; a waiting deal is w
     await sam.getByRole('button', { name: 'Space settings' }).click()
     await visibleButton(sam, new RegExp(LENA.name)).click()
     await expect(shown(sam, 'Lena’s deal is on. Removing Lena counts as a miss for it, so Lena would owe the penalty.')).toBeVisible()
+    await snap(sam, 'deals-29-remove-confirm')
     await sam.getByRole('button', { name: 'Cancel', exact: true }).filter({ visible: true }).last().click()
   })
 

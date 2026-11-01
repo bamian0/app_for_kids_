@@ -91,7 +91,10 @@ async function retime(tx: Tx, spaceId: string, me: string, next: WeekSchedule, t
     [nextWeek, weeks.nextWeek],
   ] as const) {
     // Still missing while its lists can change: it would be created on the new times without a day's notice.
-    if (!week && at < boundsFor(fresh, weekId).lockAt) throw new Error(MSG.generic)
+    // Once its lock on the new times has passed, nothing can create it any more (the rules want a week created
+    // before its lock, on the space's times), so there's nothing to protect: e.g. this week, missing because the
+    // last change came less than a day before its lock, while the owner changes back to times it already passed.
+    if (!week && at < Math.min(boundsFor(fresh, weekId).lockAt, weekBounds(weekId, fresh.timezone, next).lockAt)) throw new Error(MSG.generic)
   }
   const months = [...new Set([monthIdForWeek(thisWeek), monthIdForWeek(nextWeek)])]
   const lists = new Map<MonthId, DocumentSnapshot>()

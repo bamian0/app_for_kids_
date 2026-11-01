@@ -19,7 +19,7 @@ import {
 import { boundsFor } from '../domain/schedule.ts'
 import { computeMonth, monthEndsAt } from '../domain/scoring.ts'
 import type { MemberMonthResult } from '../domain/scoring.ts'
-import { FIRST_RESULTS_MONTH, lineSettlement, monthHasStakes, monthHouse } from '../domain/stakes.ts'
+import { cutoverAt, FIRST_RESULTS_MONTH, lineSettlement, monthHasStakes, monthHouse } from '../domain/stakes.ts'
 import type { DebtLine } from '../domain/stakes.ts'
 import { addMonths, formatMonth, formatWeekRange, weekIdFor, weekIdsInMonth } from '../domain/time.ts'
 import type { MonthId, Settlement, Space, UID, WeekData, WeekId } from '../domain/types.ts'
@@ -79,7 +79,8 @@ export function MonthView({ space, profiles: spaceProfiles, onOpenWeek, onOpenMo
   const ownResults = useResults(space, monthId)
   const prevResults = useResults(space, addMonths(monthId, -1))
   const settlements = useSettlements(space.id, monthId)
-  const dealsFrom = useDealsFrom()
+  // The cutover in force here (SPEC §12.3): recorded, else the month after the one in progress.
+  const dealsFrom = cutoverAt(space, nowMs, useDealsFrom())
   const playGlow = useEdgeGlow().play
   const toast = useToast()
 

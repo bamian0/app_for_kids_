@@ -6,6 +6,7 @@ import { enablePush, isIOS, isPushEnabled, isStandalone, preloadPushConfig, push
 import { isWeekPaused, pauseView } from '../domain/pause.ts'
 import { boundsFor } from '../domain/schedule.ts'
 import { computeMonth, computeWeek, joinedAfterLock, judgesOf, membersAt, spaceJudges } from '../domain/scoring.ts'
+import { cutoverAt } from '../domain/stakes.ts'
 import { addWeeks, isMonthlyReviewWeek, monthIdForWeek, weekIdFor, weekPhase } from '../domain/time.ts'
 import type { Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, AvatarStack, Button, EmptyState, GlassButton, Icon, Row, ScoreRing, Screen, Section, cx, useAlert, useNav, useSheet, useTabBar, useToast } from '../ui/index.ts'
@@ -164,7 +165,8 @@ export function SpacesScreen() {
 
 function SpaceCard({ space, uid, onOpen }: { space: Space; uid: UID; onOpen: () => void }) {
   const nowMs = useNow()
-  const dealsFrom = useDealsFrom()
+  // The cutover in force here (SPEC §12.3): recorded, else the month after the one in progress.
+  const dealsFrom = cutoverAt(space, nowMs, useDealsFrom())
   const { pressed, handlers } = usePress(true, 70)
   const weekId = weekIdFor(nowMs, space.timezone)
   const monthId = monthIdForWeek(weekId)

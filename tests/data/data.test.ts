@@ -34,6 +34,7 @@ import { combine, peek, watch } from '../../src/data/store.ts'
 import { startWeek } from '../../src/data/weeks.ts'
 import { now } from '../../src/domain/clock.ts'
 import { computeMonth, computeWeek, membersAt, reviewTargets } from '../../src/domain/scoring.ts'
+import { houseFreezeMonths } from '../../src/domain/stakes.ts'
 import { colorForUid, formatInviteCode } from '../../src/domain/ids.ts'
 import { addWeeks, monthIdForWeek, utcOffsetMinutes, weekBounds, weekIdFor, weekIdsInMonth } from '../../src/domain/time.ts'
 import type { Space, WeekData } from '../../src/domain/types.ts'
@@ -694,19 +695,29 @@ describe('months, settlements and profiles', () => {
     await as(sam)
     await ensureSpace(space)
     const live = observe(startMonthStakes(space.id, month))
-    if (complete) {
-      // Run between a month's end and the next month's first week: it is frozen now.
-      await live.until((l) => l.data?.frozen === true)
+    try {
+      if (complete) {
+        if (houseFreezeMonths(space, now()).includes(month)) {
+          // Run between a month's end and the next month's first week: it is frozen now.
+          await live.until((l) => l.data?.frozen === true)
+        } else {
+          // ... unless the space was created after that month (its UTC month is later, as on a month's first day): the
+          // rules never ask for that month's freeze, so nobody makes one.
+          expect((await live.until((l) => !l.loading)).data).toBeNull()
+          expect(await adminGet(`spaces/${space.id}/months/${month}`)).toBeUndefined()
+        }
+        return
+      }
+      expect((await live.until((l) => !l.loading)).data).toBeNull()
+      await as(alex)
+      await updateSpace(space.id, { penalty: 'A high five' })
+      expect(await adminGet(`spaces/${space.id}/months/${month}`)).toBeUndefined()
+      expect((await adminGet(`spaces/${space.id}`))?.stakesNote).toMatchObject({ by: alex.uid })
+      await updateSpace(space.id, { penalty: space.penalty })
+    } finally {
+      // A listener left open would outlive the test and run as the next signed-in user.
       live.stop()
-      return
     }
-    expect((await live.until((l) => !l.loading)).data).toBeNull()
-    await as(alex)
-    await updateSpace(space.id, { penalty: 'A high five' })
-    expect(await adminGet(`spaces/${space.id}/months/${month}`)).toBeUndefined()
-    expect((await adminGet(`spaces/${space.id}`))?.stakesNote).toMatchObject({ by: alex.uid })
-    live.stop()
-    await updateSpace(space.id, { penalty: space.penalty })
   })
 
   it('stores settlements per pair, and reads only that month', async () => {

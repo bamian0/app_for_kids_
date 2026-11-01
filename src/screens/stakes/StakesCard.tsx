@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { useDeals, useDealsFrom, useProfiles, useStakes } from '../../data/api.ts'
 import { lastPlayedDeal } from '../../domain/deals.ts'
 import { spaceJudges } from '../../domain/scoring.ts'
-import { oldStakesMonth } from '../../domain/stakes.ts'
+import { cutoverAt, oldStakesMonth } from '../../domain/stakes.ts'
 import type { MonthId, MonthlyList, Space, UID, Week, WeekData } from '../../domain/types.ts'
 import { Avatar, Button, Icon, Section, useNav } from '../../ui/index.ts'
 import { personOf } from '../components/people.ts'
@@ -37,7 +37,8 @@ export interface StakesCardProps {
 
 export function StakesCard({ space, profiles, me, nowMs, onInvite, thisWeek, weekData, monthly }: StakesCardProps) {
   const nav = useNav()
-  const dealsFrom = useDealsFrom()
+  // The cutover in force here (SPEC §12.3): recorded, else the month after the one in progress.
+  const dealsFrom = cutoverAt(space, nowMs, useDealsFrom())
   const live = useDeals(space)
   const deals = live.error ? undefined : live.data
   const all = deals ? [...Object.values(deals.open), ...deals.ended] : []

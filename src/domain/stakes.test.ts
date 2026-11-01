@@ -5,6 +5,7 @@ import {
   agreementsOf,
   agreeOutcome,
   buildMonthResults,
+  cutoverAt,
   dealsFromAt,
   DEALS_FROM_MONTH,
   debtLines,
@@ -1045,6 +1046,30 @@ describe('the cutover month (dealsFrom)', () => {
     expect(oldStakesMonth(sp, at('2026-12-05T10:00:00Z'), null, null, '2026-12')).toBeNull()
   })
 
+  it('cutoverAt: the recorded month; none recorded yet → the month after the one in progress; unread → the floor', () => {
+    // Recorded (the first deal's month after): it, never before the floor.
+    expect(cutoverAt(sp, at('2026-11-20T10:00:00Z'), '2026-11')).toBe('2026-11')
+    expect(cutoverAt(sp, at('2026-11-20T10:00:00Z'), '2026-12')).toBe('2026-12')
+    expect(cutoverAt(sp, at('2027-03-20T10:00:00Z'), '2026-12')).toBe('2026-12')
+    expect(cutoverAt(sp, at('2026-11-20T10:00:00Z'), '2026-09')).toBe('2026-11')
+    // Not read (loading, offline; the tests' default): the floor.
+    expect(cutoverAt(sp, at('2026-11-20T10:00:00Z'), undefined)).toBe(DEALS_FROM_MONTH)
+    // Read, nothing recorded: before October completes, November (a ship in time changes nothing).
+    expect(cutoverAt(sp, at('2026-10-29T10:00:00Z'), null)).toBe('2026-11')
+    expect(cutoverAt(sp, OCT_DONE - 1, null)).toBe('2026-11')
+    // Read, nothing recorded, deals ship late: the month in progress keeps its stakes. Its terms count from October's
+    // completion (Saturday Oct 31), so on Nov 1, Nov 3 (its first lists locked that midnight) and Nov 20 it is December.
+    for (const iso of ['2026-10-31T10:00:00Z', '2026-11-01T10:00:00Z', '2026-11-03T10:00:00Z', '2026-11-20T10:00:00Z', '2026-11-27T22:59:00Z']) {
+      expect(cutoverAt(sp, at(iso), null)).toBe('2026-12')
+      expect(oldStakesMonth(sp, at(iso), null, null, cutoverAt(sp, at(iso), null))).toBe('2026-11')
+    }
+    // November complete (Saturday Nov 28): December is in progress, so it keeps its stakes too until a deal records.
+    expect(cutoverAt(sp, at('2026-11-28T10:00:00Z'), null)).toBe('2027-01')
+    // What the first deal then records is the same month: a deploy on Nov 3 or on Nov 20 records December.
+    expect(dealsFromAt(sp, at('2026-11-03T10:00:00Z'))).toBe('2026-12')
+    expect(dealsFromAt(sp, at('2026-11-20T10:00:00Z'))).toBe('2026-12')
+  })
+
   /** mulberry32, so a failure always replays. */
   function rng(seed: number): () => number {
     let a = seed
@@ -1107,5 +1132,16 @@ describe('the cutover month (dealsFrom)', () => {
     }
     // The fixtures do owe streak rewards.
     expect(tiers).toBeGreaterThan(20)
+  })
+  it('a deploy on Nov 3 or Nov 20, before any deal: November owes all its stakes, December only streak rewards', () => {
+    const rand = rng(1103)
+    for (let i = 0; i < 200; i++) {
+      const deployed = at(i % 2 === 0 ? '2026-11-03T10:00:00Z' : '2026-11-20T10:00:00Z')
+      const dealsFrom = cutoverAt(sp, deployed, null)
+      const monthId = i % 4 < 2 ? '2026-11' : '2026-12'
+      const { results, terms, tierRuns } = randomMonth(rand, monthId)
+      const debts = monthDebts(monthId, results, terms, tierRuns)
+      expect(stakesDebts(monthId, results, terms, tierRuns, dealsFrom), `month ${i}`).toEqual(monthId === '2026-11' ? debts : debts.filter((d) => d.kind === 'tier'))
+    }
   })
 })

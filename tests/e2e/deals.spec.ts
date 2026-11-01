@@ -65,9 +65,14 @@ interface People {
   kim: string
 }
 
-/** A fresh project: Lena, Sam and Kim, and their space (the first member owns it), created in September. */
-async function setup(opts: { owner?: 'lena' | 'sam'; judges?: Array<keyof People> } = {}): Promise<People> {
+/**
+ * A fresh project: Lena, Sam and Kim, and their space (the first member owns it), created in September. Deals shipped in
+ * October (the job recorded November as the cutover, public/config.dealsFrom) unless `shipped: 'late'`: nothing
+ * recorded yet, as after a deploy in November before the job has seen the first deal (SPEC §12.3).
+ */
+async function setup(opts: { owner?: 'lena' | 'sam'; judges?: Array<keyof People>; shipped?: 'october' | 'late' } = {}): Promise<People> {
   await resetEmulators()
+  if (opts.shipped !== 'late') await setDealsFrom('2026-11')
   const t = at('2026-09-01T10:00')
   const uids = [] as string[]
   for (const who of [LENA, SAM, KIM]) uids.push(await createAccount(who, COLORS[who.name.split(' ')[0]], t))
@@ -648,11 +653,66 @@ test('the October window: October’s stakes read-only, then gone; November owes
     await expect(title).toContainText('November')
     await expect(lena.getByText(/ owe you: /).filter({ visible: true }).first()).toBeVisible()
     await expect(shown(lena, 'Deals are settled on the Stakes screen.')).toHaveCount(0)
-    await setDealsFrom(null)
   })
 
   await closeAll(a)
 })
+
+// Deals ship late, in November, when the old app already counts November's stakes (SPEC §12.3): on Nov 3 or on Nov 20,
+// before and after the job records the cutover from the first deal, November's stakes stay, read-only, and count.
+for (const [day, deployed] of [['Nov 3', '2026-11-03T15:00'], ['Nov 20', '2026-11-20T15:00']] as const) {
+  test(`a deploy on ${day}: November keeps the stakes agreed for it, read-only, and December has none`, async ({ browser }) => {
+    const p = await setup({ shipped: 'late' })
+    // Lena's stakes, agreed by Sam and Kim in the old app once October was complete: they count for November.
+    const stakes: SeedStakes = { rewardMode: 'group', penaltyMode: 'group', reward: 'Pizza night, on them', penalty: 'Coffee for everyone', tiers: [], updatedAt: at('2026-10-31T10:00') }
+    const agreed = at('2026-10-31T12:00')
+    await setStakes(SPACE_ID, p.lena, { ...stakes, agreed: { [p.sam]: { at: agreed, terms: pairOf(stakes, p.sam) }, [p.kim]: { at: agreed, terms: pairOf(stakes, p.kim) } } })
+    const now = at(deployed)
+    const a = await start(browser, LENA, now)
+    const lena = a.page
+
+    const november = async () => {
+      await expectBlock(lena, 'Nothing at stake after November', 'From December, stakes don’t renew on their own. Make a deal: what you get for hitting 90%, what you owe if you miss, and for how long.')
+      await expect(shown(card(lena), 'November’s stakes')).toBeVisible()
+      await expect(shown(card(lena), 'Pizza night, on them')).toBeVisible()
+    }
+
+    await test.step('Nothing recorded yet: November’s stakes on the card, read-only in Settings', async () => {
+      expect((await db.doc('public/config').get()).get('dealsFrom')).toBeUndefined()
+      await november()
+      await snap(lena, `deals-30-card-late-ship-${day.replace(' ', '').toLowerCase()}`)
+      await lena.getByRole('button', { name: 'Space settings' }).click()
+      await expect(shown(lena, 'November’s house stakes are set. You can change them from December; new deals start from them.')).toBeVisible()
+      await expect(lena.getByLabel('Reward')).toHaveCount(0)
+      await back(lena)
+    })
+
+    await test.step('The first deal: the job records December, and November still counts', async () => {
+      await setDeal(SPACE_ID, lenaDeal(p, { createdAt: now + HOUR }))
+      await runReminders({ db, send: async () => undefined, nowMs: now + 2 * HOUR, log: () => {}, dealsFrom: null })
+      expect((await db.doc('public/config').get()).get('dealsFrom')).toBe('2026-12')
+      await travel(lena, now + 3 * HOUR)
+      await expectBlock(lena, 'Your deal: waiting for Sam and Kim')
+      await expect(shown(card(lena), 'November’s stakes count too, for November.')).toBeVisible()
+    })
+
+    await test.step('December: November’s month view owes its stakes; December’s card has no window', async () => {
+      const weeks = weekIdsInMonth('2026-11')
+      for (const w of weeks) await setPlayedWeek(SPACE_ID, w, weekBounds(w, TZ), { [p.lena]: LENA_TASKS, [p.sam]: SAM_TASKS, [p.kim]: KIM_TASKS }, { marks: { [p.kim]: 0.5 } })
+      await endMonthAt(SPACE_ID, weeks[weeks.length - 1], '2026-11', deadline(weeks[weeks.length - 1]))
+      await travel(lena, at('2026-12-01T10:00'))
+      await expect(shown(card(lena), 'November’s stakes')).toHaveCount(0)
+      await lena.getByRole('radiogroup', { name: 'View' }).getByRole('radio', { name: 'Month', exact: true }).click()
+      const title = lena.locator('.s-month-switch__title').filter({ visible: true })
+      if (!(await title.innerText()).includes('November')) await lena.getByRole('button', { name: 'Previous month' }).click()
+      await expect(title).toContainText('November')
+      await expect(lena.getByText(/ owes? you: /).filter({ visible: true }).first()).toBeVisible()
+      await expect(shown(lena, 'Deals are settled on the Stakes screen.')).toHaveCount(0)
+    })
+
+    await closeAll(a)
+  })
+}
 
 test('streak rewards from November: Lena adds one, Sam agrees', async ({ browser }) => {
   await setup()

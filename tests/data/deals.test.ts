@@ -414,27 +414,32 @@ describe('the deals of a space (useDeals, useDealHistory)', () => {
 })
 
 describe('the cutover month (useDealsFrom)', () => {
+  /** What the hook reads once the session's read answered (this device's copy may answer first, as loading). */
   const read = async () => {
     const live = observe(startDealsFrom)
-    const { data } = await live.until((l) => l.data !== undefined)
+    const { data } = await live.until((l) => !l.loading && l.data !== undefined)
     live.stop()
-    return data
+    return data?.month
   }
 
-  it('DEALS_FROM_MONTH without a config value; the recorded month; malformed or earlier → the floor; one read a session', async () => {
+  it('null without a recorded month; the recorded month; earlier → the floor; malformed → null; one read a session', async () => {
     await as(sam)
     forgetDealsFrom()
-    expect(await read()).toBe(DEALS_FROM_MONTH)
+    // Nothing recorded (no deal yet): null, so the screens keep the month in progress's stakes (cutoverAt).
+    expect(await read()).toBeNull()
     await seed({ 'public/config': { vapidPublicKey: 'k', dealsFrom: '2026-12' } })
     forgetDealsFrom()
     expect(await read()).toBe('2026-12')
     // Read once per session: a later change shows next session.
     await seed({ 'public/config': { vapidPublicKey: 'k', dealsFrom: '2027-01' } })
     expect(await read()).toBe('2026-12')
-    for (const bad of ['2026-10', 'soon', '2026-13', 202612]) {
+    await seed({ 'public/config': { vapidPublicKey: 'k', dealsFrom: '2026-10' } })
+    forgetDealsFrom()
+    expect(await read()).toBe(DEALS_FROM_MONTH)
+    for (const bad of ['soon', '2026-13', 202612]) {
       await seed({ 'public/config': { vapidPublicKey: 'k', dealsFrom: bad } })
       forgetDealsFrom()
-      expect(await read()).toBe(DEALS_FROM_MONTH)
+      expect(await read()).toBeNull()
     }
     forgetDealsFrom()
   })

@@ -7,6 +7,7 @@ import {
   doc,
   FieldPath,
   getDoc,
+  getDocFromCache,
   getDocFromServer,
   getDocs,
   getDocsFromServer,
@@ -163,17 +164,24 @@ export function startDealHistory(spaceId: string): Start<Deal[]> {
 
 const MONTH_ID = /^\d{4}-(0[1-9]|1[0-2])$/
 
-/** public/config.dealsFrom as the app takes it: a valid 'YYYY-MM' at or after DEALS_FROM_MONTH, else the constant. */
-export function cleanDealsFrom(v: unknown): MonthId {
-  return typeof v === 'string' && MONTH_ID.test(v) && v >= DEALS_FROM_MONTH ? v : DEALS_FROM_MONTH
+/** What public/config records as the cutover (SPEC §12.3): `month` is its `dealsFrom` (an earlier month reads as
+ *  DEALS_FROM_MONTH), or null while nothing valid is recorded (no deal yet, or the job hasn't seen the first one). */
+export interface DealsFromRecord {
+  month: MonthId | null
+}
+
+/** public/config.dealsFrom as the app takes it: a valid 'YYYY-MM' (never before DEALS_FROM_MONTH), else null. */
+export function cleanDealsFrom(v: unknown): MonthId | null {
+  if (typeof v !== 'string' || !MONTH_ID.test(v)) return null
+  return v >= DEALS_FROM_MONTH ? v : DEALS_FROM_MONTH
 }
 
 /** The session's one read of public/config (kept once it answered; tried again on the next use after an error). */
-let dealsFromRead: Promise<MonthId> | null = null
+let dealsFromRead: Promise<DealsFromRecord> | null = null
 
-function readDealsFrom(): Promise<MonthId> {
+function readDealsFrom(): Promise<DealsFromRecord> {
   if (!dealsFromRead) {
-    const pending = getDoc(doc(getFirebase().db, 'public', 'config')).then((snap) => cleanDealsFrom(snap.get('dealsFrom')))
+    const pending = getDoc(doc(getFirebase().db, 'public', 'config')).then((snap) => ({ month: cleanDealsFrom(snap.get('dealsFrom')) }))
     dealsFromRead = pending
     pending.catch(() => {
       if (dealsFromRead === pending) dealsFromRead = null
@@ -182,12 +190,29 @@ function readDealsFrom(): Promise<MonthId> {
   return dealsFromRead
 }
 
-/** useDealsFrom's source: the cutover month once read; DEALS_FROM_MONTH on an error (offline without a cached copy). */
-export const startDealsFrom: Start<MonthId> = (emit) => {
+/** useDealsFrom's source: this device's copy of public/config first (so a later session knows at once), then the
+ *  session's read of it; on an error with nothing known, no data (the screens then take DEALS_FROM_MONTH). */
+export const startDealsFrom: Start<DealsFromRecord> = (emit) => {
   let live = true
+  let read = false
+  let cached: DealsFromRecord | undefined
+  getDocFromCache(doc(getFirebase().db, 'public', 'config')).then(
+    (snap) => {
+      if (!live || read) return
+      cached = { month: cleanDealsFrom(snap.get('dealsFrom')) }
+      emit({ data: cached, loading: true, error: null })
+    },
+    () => {},
+  )
   readDealsFrom().then(
-    (month) => live && emit({ data: month, loading: false, error: null }),
-    () => live && emit({ data: DEALS_FROM_MONTH, loading: false, error: null }),
+    (record) => {
+      read = true
+      if (live) emit({ data: record, loading: false, error: null })
+    },
+    (e: unknown) => {
+      read = true
+      if (live) emit({ data: cached, loading: false, error: e instanceof Error ? e : new Error(String(e)) })
+    },
   )
   return () => {
     live = false

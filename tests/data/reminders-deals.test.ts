@@ -391,6 +391,42 @@ describe('the cutover month (dealsFrom)', () => {
     expect(await pushes(undefined)).toEqual({ lines: [], config: false })
   })
 
+  // Deals ship late (it is November and the live app still counts November's stakes): wherever in November the deploy
+  // lands, the stakes agreed for November keep counting. Before the first deal the job keeps them in its pushes, the
+  // first deal records December, and November's verdict quotes them.
+  for (const [day, deploy] of [['Nov 3', '2026-11-03T10:00:00Z'], ['Nov 20', '2026-11-20T10:00:00Z']] as const) {
+    it(`a deploy on ${day}: November keeps its stakes before the first deal, the first deal records December, November's verdict quotes them`, async () => {
+      const shipped = at(deploy)
+      // The day before the ship, in the old app, Lena changes the house stakes: they count for November at once.
+      const changed = shipped - 24 * HOUR
+      await seedSpace(db, 's1', ['a', 'b', 'c'], { stakesNote: { by: 'a', at: ts(changed) } })
+      await people(['a', 'b', 'c'])
+      await settledBefore('s1', ['2026-10'])
+      const push = fakePush()
+      const keys = { publicKey: 'pub', privateKey: 'priv' }
+      // main's read of public/config: nothing recorded yet.
+      expect((await ensureVapidKeys(db, () => keys)).dealsFrom).toBeNull()
+      await runReminders({ db, send: push.send, nowMs: changed + 17 * 60_000, log: quiet, dealsFrom: null })
+      const house = 'New house stakes in s1 | Lena changed them: “Dinner on me” if you hit 90%, “Coffee for a week” if you miss. They count now, where friends haven’t agreed on their own.'
+      expect(push.lines().filter((l) => l.includes('house'))).toEqual([`b | ${house}`, `c | ${house}`])
+      expect((await db.doc('public/config').get()).get('dealsFrom')).toBeUndefined()
+      // The new app: the ship check's first deal, an hour after the deploy.
+      await db.doc('spaces/s1').update({ hasDeals: true })
+      await seedDeal('s1', 'a', 1, ['b', 'c'], { createdAt: ts(shipped + HOUR) })
+      await runReminders({ db, send: push.send, nowMs: shipped + 2 * HOUR, log: quiet, dealsFrom: (await ensureVapidKeys(db, () => keys)).dealsFrom })
+      expect((await db.doc('public/config').get()).get('dealsFrom')).toBe('2026-12')
+      expect((await ensureVapidKeys(db, () => keys)).dealsFrom).toBe('2026-12')
+      // November played (Kim at 0); on Dec 1 its verdict quotes November's stakes.
+      await playWeek('s1', '2026-11-02', ['a', 'b', 'c'], { c: 0 })
+      await runReminders({ db, send: push.send, nowMs: at('2026-12-01T10:17:00Z'), log: quiet, dealsFrom: (await ensureVapidKeys(db, () => keys)).dealsFrom })
+      expect(push.lines().filter((l) => l.includes('November'))).toEqual([
+        'a | You made it: 100% | November in s1 is done. Collect: Dinner on me',
+        'b | You made it: 100% | November in s1 is done. Collect: Dinner on me',
+        'c | You fell short: 0% | November in s1 is done. Pay up: Coffee for a week',
+      ])
+    })
+  }
+
   it('a stray flag without deal docs records nothing', async () => {
     await seedSpace(db, 's1', ['a', 'b'], { hasDeals: true })
     await runReminders({ db, send: noPush, nowMs: at('2026-11-06T03:17:00Z'), log: quiet, dealsFrom: null })

@@ -2,7 +2,6 @@
 // Writes live in sibling modules; this file holds the React hooks and re-exports everything.
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { now } from '../domain/clock.ts'
-import { DEALS_FROM_MONTH } from '../domain/deals.ts'
 import { isGoalId } from '../domain/shared.ts'
 import type {
   Checkin,
@@ -28,7 +27,7 @@ import type {
   WeekId,
 } from '../domain/types.ts'
 import { mergeProfiles, startProfile } from './auth.ts'
-import { dealHistoryKey, dealsKey, DEALS_FROM_KEY, startDealHistory, startDeals, startDealsFrom } from './deals.ts'
+import { dealHistoryKey, dealsKey, DEALS_FROM_KEY, startDealHistory, startDeals, startDealsFrom, type DealsFromRecord } from './deals.ts'
 import { startFriendships, startMyFriendCode } from './friends.ts'
 import { monthDataKey, monthListCounts, monthlyKey, startMonthData, startMonthly } from './monthly.ts'
 import { ensureSpace, startMonthStakes } from './months.ts'
@@ -300,16 +299,17 @@ export type { StakesInput } from './stakes.ts'
 // the messages. Every deal write but settleDeal fails at once offline (MSG.offline); settleDeal queues like settlePairs.
 
 /**
- * The cutover month in force, `dealsFrom` (SPEC §12.3): the first month with no month stakes. One getDoc of
- * public/config per session (store key `config|dealsFrom`): its `dealsFrom` when it is a valid 'YYYY-MM' at or after
- * DEALS_FROM_MONTH (the reminders job records it once, from the first deal), else DEALS_FROM_MONTH, which is also the
- * answer while it loads, offline (unless the cache has the doc) and on an error. Screens pass it to the domain's
- * stakesDebts, monthHasStakes and oldStakesMonth.
+ * What public/config records as the cutover (SPEC §12.3), for the domain's `cutoverAt(space, nowMs, …)`, which gives
+ * the `dealsFrom` every screen that decides by month passes on (stakesDebts, monthHasStakes, oldStakesMonth): the
+ * recorded month (the reminders job writes it once, from the first deal; an earlier one reads as DEALS_FROM_MONTH);
+ * null when nothing valid is recorded (then the month in progress keeps its stakes: cutoverAt takes the month after
+ * it); undefined until known (no answer yet, or offline without this device's copy: cutoverAt takes the floor).
+ * This device's copy answers first, then one getDoc per session (store key `config|dealsFrom`).
  */
-export function useDealsFrom(): MonthId {
+export function useDealsFrom(): MonthId | null | undefined {
   const { uid } = useAuth()
-  const live = useLive<MonthId>(uid ? DEALS_FROM_KEY : null, startDealsFrom)
-  return live.data ?? DEALS_FROM_MONTH
+  const live = useLive<DealsFromRecord>(uid ? DEALS_FROM_KEY : null, startDealsFrom)
+  return live.data?.month
 }
 
 const NO_DEALS: Live<DealsView> = Object.freeze({ data: Object.freeze({ open: {}, ended: [] }) as DealsView, loading: false, error: null })

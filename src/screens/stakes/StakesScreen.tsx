@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { agreeToStakes, useAuth, useDeals, useDealsFrom, useLatestResults, useMonthly, useProfiles, useSpace, useStakes, useWeek } from '../../data/api.ts'
 import { dealFriends, lastPlayedDeal } from '../../domain/deals.ts'
 import { spaceJudges } from '../../domain/scoring.ts'
-import { memberTerms, oldStakesMonth, pairTerms } from '../../domain/stakes.ts'
+import { cutoverAt, memberTerms, oldStakesMonth, pairTerms } from '../../domain/stakes.ts'
 import { monthIdForWeek, weekIdFor } from '../../domain/time.ts'
 import type { Deal, MemberStakes, Space, UID } from '../../domain/types.ts'
 import { Avatar, Button, CheckCircle, EmptyState, Facts, GlassButton, Icon, Row, Screen, Section, haptic, useAlert, useNav, useSheet, useToast } from '../../ui/index.ts'
@@ -95,7 +95,8 @@ function StakesBody({ space, focus }: { space: Space; focus?: string }) {
   const nowMs = useNow()
   const nav = useNav()
   const sheet = useSheet()
-  const dealsFrom = useDealsFrom()
+  // The cutover in force here (SPEC §12.3): recorded, else the month after the one in progress.
+  const dealsFrom = cutoverAt(space, nowMs, useDealsFrom())
   const thisWeekId = weekIdFor(nowMs, space.timezone)
   // Shared with the Space screen's listeners: this week's doc (the clock, its result) and this month's list (the
   // October window).

@@ -24,7 +24,7 @@ import { formatInviteCode } from '../domain/ids.ts'
 import { isWeekPaused, pauseChoices, pauseView } from '../domain/pause.ts'
 import { boundsFor, firstUnlockedWeek } from '../domain/schedule.ts'
 import { judgesOf, spaceJudges } from '../domain/scoring.ts'
-import { oldStakesMonth } from '../domain/stakes.ts'
+import { cutoverAt, oldStakesMonth } from '../domain/stakes.ts'
 import { addWeeks, monthIdForWeek, weekIdFor } from '../domain/time.ts'
 import type { Deal, MonthlyData, Space, UID, WeekData, WeekId } from '../domain/types.ts'
 import { Avatar, EmptyState, GlassButton, Row, Screen, Section, TextArea, TextFieldRow, useAlert, useNav, useToast } from '../ui/index.ts'
@@ -101,7 +101,8 @@ function SettingsContent({ space }: { space: Space }) {
   const thisDoc = thisData?.week ?? null
   const nextDoc = nextData?.week ?? null
   const monthly = useMonthly(space, monthIdForWeek(thisWeek)).data
-  const dealsFrom = useDealsFrom()
+  // The cutover in force here (SPEC §12.3): recorded, else the month after the one in progress.
+  const dealsFrom = cutoverAt(space, nowMs, useDealsFrom())
   // The October window (SPEC §12.3): October's house stakes are set; the owner sees them read-only.
   const oldMonth = oldStakesMonth(space, nowMs, thisDoc, monthly?.monthly ?? null, dealsFrom)
   const editHouse = isOwner && !oldMonth

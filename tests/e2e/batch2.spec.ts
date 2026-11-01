@@ -13,6 +13,7 @@
 //   npx firebase emulators:exec --only auth,firestore --project demo-stakes "npx playwright test batch2"
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
 import { scheduleProblem, scheduleProblemText } from '../../src/domain/schedule.ts'
+import { freshVerdictMonth } from '../../src/screens/components/month.ts'
 import { DEALS_FROM_MONTH } from '../../src/domain/stakes.ts'
 import {
   addMonths,
@@ -319,7 +320,12 @@ test('the owner changes the week’s times: notice, read-only for friends, the n
 
   await test.step('Lena’s Spaces card and Space screen say so; dismissing the notice sticks', async () => {
     await signIn(lena, LENA)
-    await expect(lena.getByRole('button', { name: new RegExp(SPACE.name) }).first()).toContainText('New times from next week')
+    // For a week after a month ends, its verdict leads the Spaces card instead (this runs on the real date): then the
+    // notice is on the Space screen only.
+    const verdict = freshVerdictMonth({ timezone: TZ, joinedAt: { [lenaUid]: t0 - 30 * DAY } }, lenaUid, Date.now())
+    const spaceCard = lena.getByRole('button', { name: new RegExp(SPACE.name) }).first()
+    if (verdict) await expect(spaceCard).toContainText(`${formatMonth(verdict).split(' ')[0]}: `)
+    else await expect(spaceCard).toContainText('New times from next week')
     await snap(lena, 'b2-03-spaces-new-times', 1000)
     await openSpace(lena)
     const notice = section(lena, 'New times from next week')

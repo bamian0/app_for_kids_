@@ -509,9 +509,10 @@ describe('house stakes (SPEC §9.7)', () => {
   })
 
   test('the previous app\'s early freeze of this month doesn\'t count; re-freezing it in the batch does', async () => {
-    // This month ('2026-10' or later) has just completed; the previous app froze it at its first lock.
+    // This month ('2026-10' or later) has just completed; the previous app froze it at its first lock. Last month is
+    // frozen as it should be, after it completed (an early freeze of it would need re-freezing too from '2026-10' on).
     await setup({}, {
-      [`spaces/s1/months/${P}`]: frozenAt(Date.now() - 20 * DAY),
+      [`spaces/s1/months/${P}`]: frozenAt(Date.now() - DAY),
       [lastWeek(C)]: weekEnding(Date.now() - HOUR),
       [`spaces/s1/months/${C}`]: { reward: 'Old dinner', penalty: 'Old coffee', createdAt: ts(Date.now() - 20 * DAY) },
     })

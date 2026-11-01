@@ -1,7 +1,7 @@
 import { DateTime } from 'luxon'
 import { describe, expect, it } from 'vitest'
 import { dealClock, dealState } from '../../domain/deals.ts'
-import { DEALS_FROM_MONTH } from '../../domain/stakes.ts'
+import { cutoverAt, DEALS_FROM_MONTH, oldStakesMonth } from '../../domain/stakes.ts'
 import type { MemberMonthResult } from '../../domain/scoring.ts'
 import type { Deal, DealPeriod, DealsView, Space, UID } from '../../domain/types.ts'
 import { verdictStatus, verdictText } from '../components/month.ts'
@@ -178,6 +178,27 @@ describe('the stakes card: your block', () => {
     expect(octoberHeader('2026-10')).toBe('October’s stakes')
     expect(octoberAlsoLine('2026-10')).toBe('October’s stakes count too, for October.')
     expect(octoberAlsoLine('2026-11')).toBe('November’s stakes count too, for November.')
+  })
+
+  it('a deploy on Nov 3 or Nov 20, before the job recorded the cutover: November’s stakes stay on the card, read-only', () => {
+    for (const iso of ['2026-11-03T15:00', '2026-11-20T15:00']) {
+      const t = at(iso)
+      // Nothing recorded yet (null): the month in progress keeps its stakes; once recorded, the same month.
+      for (const recorded of [null, '2026-12'] as const) {
+        const dealsFrom = cutoverAt(SP, t, recorded)
+        expect(dealsFrom, iso).toBe('2026-12')
+        const oldMonth = oldStakesMonth(SP, t, null, null, dealsFrom)
+        expect(oldMonth, iso).toBe('2026-11')
+        const b = card(t, { oldMonth })
+        expect([b.title, b.text], iso).toEqual(['Nothing at stake after November', `From December, stakes don’t renew on their own. ${'Make a deal: what you get for hitting 90%, what you owe if you miss, and for how long.'}`])
+        expect(octoberHeader(oldMonth!)).toBe('November’s stakes')
+        expect(octoberFooter(oldMonth!)).toBe('These count for November, as agreed by now. From December nothing renews on its own: make a deal.')
+      }
+      // Not read yet (loading, offline without this device's copy): the floor, as before.
+      expect(oldStakesMonth(SP, t, null, null, cutoverAt(SP, t, undefined))).toBeNull()
+    }
+    // After a ship in time (recorded November), November has no window.
+    expect(oldStakesMonth(SP, at('2026-11-20T15:00'), null, null, cutoverAt(SP, at('2026-11-20T15:00'), '2026-11'))).toBeNull()
   })
 
   it('waits for agreement, saying when it would start and until when', () => {

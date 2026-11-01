@@ -737,6 +737,19 @@ export function dealsFromAt(space: Pick<Space, 'timezone' | 'schedule'>, t: numb
   return after > DEALS_FROM_MONTH ? after : DEALS_FROM_MONTH
 }
 
+/**
+ * The cutover in force for a space at `nowMs` (SPEC §12.3), what the app and the job pass on as `dealsFrom`, from what
+ * is recorded in public/config: a month → it (the first deal recorded it); null (read: nothing recorded yet, so no deal
+ * exists or the job hasn't seen it) → the month the first deal would record if made now (dealsFromAt), so the month in
+ * progress keeps the stakes agreed for it, however late deals ship; undefined (not read: loading, offline, the tests'
+ * default) → DEALS_FROM_MONTH.
+ */
+export function cutoverAt(space: Pick<Space, 'timezone' | 'schedule'>, nowMs: number, recorded: MonthId | null | undefined): MonthId {
+  if (recorded === undefined) return DEALS_FROM_MONTH
+  if (recorded === null) return dealsFromAt(space, nowMs)
+  return recorded > DEALS_FROM_MONTH ? recorded : DEALS_FROM_MONTH
+}
+
 /** A month has month stakes (rewards and penalties of its own, §9.7) only before `dealsFrom`. */
 export function monthHasStakes(monthId: MonthId, dealsFrom: MonthId = DEALS_FROM_MONTH): boolean {
   return monthId < dealsFrom

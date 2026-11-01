@@ -27,7 +27,7 @@ import { boundsFor } from '../src/domain/schedule.ts'
 import { computeMonth, judgesOf, monthEndsAt, monthEndsAtFor } from '../src/domain/scoring.ts'
 import { isGoalId } from '../src/domain/shared.ts'
 import { ringOf, statsOf } from '../src/domain/showcase.ts'
-import { buildMonthResults, DEALS_FROM_MONTH, dealsFromAt, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
+import { buildMonthResults, cutoverAt, DEALS_FROM_MONTH, dealsFromAt, FIRST_RESULTS_MONTH, freezeBinds, monthTerms, type House } from '../src/domain/stakes.ts'
 import { addMonths, addWeeks, firstMonthOf, weekIdFor, weekIdsInMonth } from '../src/domain/time.ts'
 import type {
   Deal,
@@ -443,12 +443,12 @@ export async function runReminders({
     spaces: 0, windows: 0, sent: 0, devices: 0, skipped: 0, expiredSubscriptions: 0, failedDeliveries: 0, skippedSpaces: 0, errors: 0, results: 0, reads: 0,
     rings: 0, stats: 0, cleaned: 0, goals: 0, deals: 0, dealsEnded: 0,
   }
-  /** The cutover in force for this run (SPEC §12.3): given, recorded below from the first deal, or the floor; null
-   *  while main read none and no deal exists to record it from (then each space's is cutoverOf's). */
-  let dealsFrom: MonthId | null = givenDealsFrom === null ? null : (givenDealsFrom && storedDealsFrom(givenDealsFrom)) || DEALS_FROM_MONTH
-  /** A space's cutover: the run's, else (nothing recorded, no deal yet: the job runs this code before the ship) the one
-   *  the first deal would record if made now. A late ship then keeps the month in progress's stakes in the pushes too. */
-  const cutoverOf = (space: Space): MonthId => dealsFrom ?? dealsFromAt(space, nowMs)
+  /** The cutover recorded for this run (SPEC §12.3): given by main, or recorded below from the first deal; null while
+   *  nothing is (no deal yet: the job runs this code before the ship); undefined when not given (the tests). */
+  let dealsFrom: MonthId | null | undefined = typeof givenDealsFrom === 'string' ? (storedDealsFrom(givenDealsFrom) ?? DEALS_FROM_MONTH) : givenDealsFrom
+  /** A space's cutover (cutoverAt): the recorded one; with none yet, the month the first deal would record now, so the
+   *  month in progress keeps its stakes in every push however late deals ship; the floor when not given. */
+  const cutoverOf = (space: Space): MonthId => cutoverAt(space, nowMs, dealsFrom)
   /** Deal period loads this run may still make, across all spaces. */
   let dealLoadsLeft = DEAL_LOADS_PER_RUN
   const deviceCache = new Map<UID, Promise<Device[]>>()
